@@ -1,0 +1,21 @@
+name: raddb
+channels: [conda-forge]
+dependencies:
+  - fsspec
+  - s3fs
+  - pyyaml
+  - donfig
+  - jupyter
+  - xarray
+  - numpy
+  - pandas
+  - xradar
+  - arm_pyart
+  - matplotlib
+  - netcdf4
+  - pytest
+  - pytest-cov
+  - pytest-mock
+  - pytest-sugar
+  - tqdm
+  - trollsift
