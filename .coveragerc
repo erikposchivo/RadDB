@@ -1,0 +1,14 @@
+[run]
+source =
+	raddb
+omit =
+	*docs*
+	*tutorials*
+	raddb/etc/*
+	raddb/_version.py
+
+[report]
+exclude_lines =
+	pragma: no cover
+	def __repr__
+	def __str__
