@@ -12,7 +12,7 @@ DATA_DIR = "/ltenas8/users/giacobbi/raddb/test_output"
 # Features to use for UMAP (Polarimetric variables)
 FEATURES = ["DBZH", "ZDR", "RHOHV", "PHIDP"] 
 
-# Testing configuration for date, NEXT STEP: AUTOMATIZE THE ENTIRE PROCESS
+# TESTING configuration for date, NEXT STEP: AUTOMATIZE THE ENTIRE PROCESS
 DATA_DIR += "/L/2021/08/28/"
 
 #%%
@@ -37,7 +37,7 @@ if df.empty:
 # 2. Data Transformation (Normalization)
 # -----------------------------------------------------------------------------
 print("Step 2: Normalizing data...")
-df_scaled, scaler = normalize_data(df, FEATURES, method="minmax")
+df_scaled, scaler = normalize_data(df, FEATURES, method="standard")
 
 #check the scaled data
 #print(f"Scaler parameters: {scaler.get_params()}")

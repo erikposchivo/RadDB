@@ -812,7 +812,7 @@ def load_metranet_sweep(radar_fpath,
     # Add hydroclass from file 
     if hydroclassif_fpath is not None:
         add_hydroclass_from_file(rad_obj, hydroclassif_fpath=hydroclassif_fpath)
-    elif "height_above_iso0" in rad_obj.fields:
+    if "height_above_iso0" in rad_obj.fields:
         # Compute hydrometeor classification
         hydro = pyart.retrieve.hydroclass_semisupervised(
             rad_obj,

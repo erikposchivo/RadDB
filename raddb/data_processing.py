@@ -24,6 +24,9 @@ import pyart
 import radar_api
 #from radar_api.utils.xradar import get_mch_datatree_from_pyart
 
+# local imports
+from RadarProcessing_examplecode.functions import read_static_visibility, add_visibility
+
 
 #%%
 network = "MCH_LTE"
@@ -83,9 +86,11 @@ def create_volume_dataframe(metranet_filepaths, network="MCH_LTE", product="POL"
 #volume_df = create_volume_dataframe(filepaths[:20], network=network, product=product)
 
 #%%
+# TODO: make stand alone fucntion for create_radar_lut, do not split anymore
+# 1 prepare pol data, 2. create_lut
 def filter_and_split_volume(df, radar_name, z_col="DBZH"):
     """
-    2. Filters out empty sky (Z <= 0), generates gate_ids, and splits the data
+    2. Filters out empty sky (dBZ <= 0), generates gate_ids, and splits the data
        into a spatial LUT DataFrame and a Polarimetric DataFrame.
     """    
     # Filter: Remove Z <= 0 (Keep strictly > 0)
@@ -104,6 +109,7 @@ def filter_and_split_volume(df, radar_name, z_col="DBZH"):
     #print(f"gate_id example: {df_filtered['gate_id'].iloc[0]}")
     
     # Split the DataFrame
+    # TODO: add x, y, z, coords
     lut_columns = ["gate_id", "latitude", "longitude", "altitude", "elevation", "range", "azimuth", "sweep"]
     pol_columns = ["gate_id", "time", "DBZH", "ZDR", "RHOHV", "PHIDP"]
 
@@ -120,7 +126,7 @@ def filter_and_split_volume(df, radar_name, z_col="DBZH"):
 # test using volume_df from previous step
 #df_lut, df_polar = filter_and_split_volume(volume_df, radar_name=radar, z_col="DBZH")
 
-#%%
+#%% SAVE FUNCTION
 
 def save_volume_parquet(df_lut, df_polar, radar_name, base_output_path):
     """
@@ -138,6 +144,7 @@ def save_volume_parquet(df_lut, df_polar, radar_name, base_output_path):
     # Generate a clean string for the filename (avoiding colons which can break some filesystems)
     filename_date_str = volume_time.strftime("%Y%m%d_%H%M%S")
     
+    #TODO: make small function for string definition (small def)
     lut_filepath = save_dir / f"{radar_name}_{filename_date_str}_LUT.parquet"
     polar_filepath = save_dir / f"{radar_name}_{filename_date_str}_POLAR.parquet"
     
@@ -234,4 +241,69 @@ archive_metranet_to_parquet(
     max_workers=4, 
 )
 
+#%%
+# open datatree volume and add visibilty  
+# also check visibility
+filepaths = radar_api.find_files(
+    network=network,
+    radar=radar,
+    start_time=start_time,
+    end_time=end_time,
+    product=product,
+    verbose=True,
+    protocol="local",
+)
 
+# Configuration for visibility
+static_vis_dir = "/ltenas8/data/Rad4Alp_LUTs/static_vis"
+radar_letter = radar  # "L"
+sweep_number = 1
+
+#%% TEST VISIBILITY
+# 1. Load static visibility fields
+vis_dict = read_static_visibility(radar_letter=radar_letter,
+                                  static_vis_dir=static_vis_dir, 
+                                  verbose=True)
+
+# check visibility
+print(f"Visibility keys (sweep numbers): {list(vis_dict.keys())}")
+print(f"Visibility shape for sweep {sweep_number}: {vis_dict[sweep_number].shape}")
+
+#plot visiblity map
+import matplotlib.pyplot as plt
+plt.imshow(vis_dict[sweep_number])
+plt.show()
+
+
+
+#%% TEST VISIBILITY ATTACHMENT
+# 2. Open a single sweep to test visibility attachment
+test_sweep_path = filepaths[0]
+dt = radar_api.open_datatree(test_sweep_path, network=network, product=product)
+
+# Extract the sweep name (e.g., 'sweep_0')
+list_sweeps = [s for s in dt if re.fullmatch(r"sweep_\d+", s)]
+sweep_name = list_sweeps[0]
+
+
+#%% TEST VISIBILITY ATTACHMENT
+# 3. Convert to pyart object to use the visibility functions
+# Note: radar_api.open_pyart is used here as add_visibility expects a pyart object
+rad_obj = radar_api.open_pyart(test_sweep_path, network=network, product=product)
+
+# Retrieve visibility for this specific sweep (METRANET sweep 1-20)
+# We extract the sweep number from the filename to match the dictionary
+current_sweep_num = int(test_sweep_path.split('.')[-1])
+visibility_array = vis_dict[current_sweep_num]
+
+
+#%%
+# 4. Add visibility to the radar object
+add_visibility(rad_obj, visibility_array)
+
+print(f"Visibility added to {sweep_name}. Field keys: {rad_obj.fields.keys()}")
+
+
+
+
+volume_df = create_volume_dataframe(filepaths[:20], network=network, product=product)

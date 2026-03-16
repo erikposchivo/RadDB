@@ -48,7 +48,7 @@ qpegrid_to_rad_dir = "/ltenas8/data/Rad4Alp_LUTs/qpegrid_to_rad"
 
 # Define radar 
 network = "MCH_LTE"
-radar = "MLA" #  MLA, MLD, MLL, MLP, MLW 
+radar = "A" #  MLA, MLD, MLL, MLP, MLW 
 start_time = "2021-02-01 12:00:00"
 end_time = "2021-02-31 13:00:00"
  
@@ -58,7 +58,7 @@ filepaths = radar_api.find_files(
     radar=radar,
     start_time=start_time,
     end_time=end_time,
-    # product="POL", 
+    product="POL", 
     protocol="local",
 )
 
