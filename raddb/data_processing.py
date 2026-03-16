@@ -22,6 +22,7 @@ import pyart
 
 # feature-local-archive branch (Gionata Ghiggi)
 import radar_api
+import gpm.gv
 #from radar_api.utils.xradar import get_mch_datatree_from_pyart
 
 # local imports
@@ -88,6 +89,7 @@ def create_volume_dataframe(metranet_filepaths, network="MCH_LTE", product="POL"
 #%%
 # TODO: make stand alone fucntion for create_radar_lut, do not split anymore
 # 1 prepare pol data, 2. create_lut
+
 def filter_and_split_volume(df, radar_name, z_col="DBZH"):
     """
     2. Filters out empty sky (dBZ <= 0), generates gate_ids, and splits the data
@@ -241,7 +243,14 @@ archive_metranet_to_parquet(
     max_workers=4, 
 )
 
+#=========================================================
 #%%
+network = "MCH_LTE"
+radar = "A"
+product = "HYM" # products: ["HYM", "HZT", "POL"] 
+start_time = "2021-08-28 06:00:00"
+end_time = "2021-08-29 20:40:00" 
+
 # open datatree volume and add visibilty  
 # also check visibility
 filepaths = radar_api.find_files(
@@ -254,27 +263,49 @@ filepaths = radar_api.find_files(
     protocol="local",
 )
 
+#check filepaths
+print(f"Number of files found: {len(filepaths)}")
+print(f"Example filepath: {filepaths[-1]}")
+
+#%% TEST VISIBILITY
+# 1. Load static visibility fields
 # Configuration for visibility
 static_vis_dir = "/ltenas8/data/Rad4Alp_LUTs/static_vis"
 radar_letter = radar  # "L"
 sweep_number = 1
 
-#%% TEST VISIBILITY
-# 1. Load static visibility fields
 vis_dict = read_static_visibility(radar_letter=radar_letter,
                                   static_vis_dir=static_vis_dir, 
                                   verbose=True)
 
-# check visibility
-print(f"Visibility keys (sweep numbers): {list(vis_dict.keys())}")
+# check visibility, print basic info about the visibility dictionary
+print(f"Visibility dictionary keys (sweep numbers): {list(vis_dict.keys())}")
 print(f"Visibility shape for sweep {sweep_number}: {vis_dict[sweep_number].shape}")
+print(f"Describe visibility values for sweep {sweep_number}:\n{pd.Series(vis_dict[sweep_number].flatten()).describe()}")
 
 #plot visiblity map
 import matplotlib.pyplot as plt
 plt.imshow(vis_dict[sweep_number])
 plt.show()
 
+#%%open 1 datatre
+#i = 2
+#sweep_filepath = filepaths[i]
+#dt = radar_api.open_datatree(sweep_filepath, network=network, product=product)
+#ds = dt[f'sweep_{i}'].to_dataset()
 
+#ds["visibility"] = xr.ones_like(ds["DBZH"]) / (vis_dict[i+1] / 100)
+#ds["visibility"].xradar_dev.plot_map(vmin=0, vmax=5)
+
+
+for i in range(6):
+    sweep_filepath = filepaths[i]
+    dt = radar_api.open_datatree(sweep_filepath, network=network, product=product)
+    ds = dt[f'sweep_{i}'].to_dataset()
+
+    ds["visibility"] = xr.ones_like(ds["DBZH"])  * vis_dict[i+1]
+    ds["visibility"].xradar_dev.plot_map(vmin=0, vmax=100)
+ 
 
 #%% TEST VISIBILITY ATTACHMENT
 # 2. Open a single sweep to test visibility attachment
@@ -303,7 +334,3 @@ add_visibility(rad_obj, visibility_array)
 
 print(f"Visibility added to {sweep_name}. Field keys: {rad_obj.fields.keys()}")
 
-
-
-
-volume_df = create_volume_dataframe(filepaths[:20], network=network, product=product)
