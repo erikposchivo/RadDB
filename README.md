@@ -1,191 +1,299 @@
-<div align="center">
+# RadDB - Radar Database Package
 
-# Welcome to RadDB
+A comprehensive Python package for processing, storing, and analyzing Swiss weather radar data (METRANET format) using PyART and xradar.
 
-![Radars currently accessible through RadDB](/docs/source/static/raddb_coverage.png)
+## Overview
 
-|                   |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Deployment        | [![PyPI](https://badge.fury.io/py/raddb.svg?style=flat)](https://pypi.org/project/raddb/) [![Conda](https://img.shields.io/conda/vn/conda-forge/radar-api.svg?logo=conda-forge&logoColor=white&style=flat)](https://anaconda.org/conda-forge/radar-api)                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| Activity          | [![PyPI Downloads](https://img.shields.io/pypi/dm/raddb.svg?label=PyPI%20downloads&style=flat)](https://pypi.org/project/raddb/) [![Conda Downloads](https://img.shields.io/conda/dn/conda-forge/radar-api.svg?label=Conda%20downloads&style=flat)](https://anaconda.org/conda-forge/radar-api)                                                                                                                                                                                                                                                                                                                                                                                       |
-| Python Versions   | [![Python Versions](https://img.shields.io/badge/Python-3.10%20%203.11%20%203.12%20%203.13-blue?style=flat)](https://www.python.org/downloads/)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| Supported Systems | [![Linux](https://img.shields.io/github/actions/workflow/status/erikposchivo/raddb/.github/workflows/tests.yaml?label=Linux&style=flat)](https://github.com/erikposchivo/raddb/actions/workflows/tests.yaml) [![macOS](https://img.shields.io/github/actions/workflow/status/erikposchivo/raddb/.github/workflows/tests.yaml?label=macOS&style=flat)](https://github.com/erikposchivo/raddb/actions/workflows/tests.yaml) [![Windows](https://img.shields.io/github/actions/workflow/status/erikposchivo/raddb/.github/workflows/tests_windows.yaml?label=Windows&style=flat)](https://github.com/erikposchivo/raddb/actions/workflows/tests_windows.yaml)                                                |
-| Project Status    | [![Project Status](https://www.repostatus.org/badges/latest/active.svg?style=flat)](https://www.repostatus.org/#active)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| Build Status      | [![Tests](https://github.com/erikposchivo/raddb/actions/workflows/tests.yaml/badge.svg?style=flat)](https://github.com/erikposchivo/raddb/actions/workflows/tests.yaml) [![Lint](https://github.com/erikposchivo/raddb/actions/workflows/lint.yaml/badge.svg?style=flat)](https://github.com/erikposchivo/raddb/actions/workflows/lint.yaml) [![Docs](https://readthedocs.org/projects/raddb/badge/?version=latest&style=flat)](https://radar-api.readthedocs.io/en/latest/)                                                                                                                                                                                                                      |
-| Linting           | [![Black](https://img.shields.io/badge/code%20style-black-000000.svg?style=flat)](https://github.com/psf/black) [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json&style=flat)](https://github.com/astral-sh/ruff) [![Codespell](https://img.shields.io/badge/Codespell-enabled-brightgreen?style=flat)](https://github.com/codespell-project/codespell)                                                                                                                                                                                                                                                                 |
-| Code Coverage     | [![Coveralls](https://coveralls.io/repos/github/erikposchivo/raddb/badge.svg?branch=main&style=flat)](https://coveralls.io/github/erikposchivo/raddb?branch=main) [![Codecov](https://codecov.io/gh/erikposchivo/raddb/branch/main/graph/badge.svg?token=G7IESZ02CW?style=flat)](https://codecov.io/gh/erikposchivo/raddb)                                                                                                                                                                                                                                                                                                                                                                            |
-| Code Quality      | [![Codefactor](https://www.codefactor.io/repository/github/erikposchivo/raddb/badge?style=flat)](https://www.codefactor.io/repository/github/erikposchivo/raddb) [![Codebeat](https://codebeat.co/badges/57498d71-f042-473f-bb8e-9b45e50572d8?style=flat)](https://codebeat.co/projects/github-com-erikposchivo-raddb-main) [![Codacy](https://app.codacy.com/project/badge/Grade/bee842cb10004ad8bb9288256f2fc8af?style=flat)](https://app.codacy.com/gh/erikposchivo/raddb/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade) [![Codescene](https://codescene.io/projects/63299/status-badges/average-code-health?style=flat)](https://codescene.io/projects/63299) |
-| License           | [![License](https://img.shields.io/github/license/erikposchivo/raddb?style=flat)](https://github.com/erikposchivo/raddb/blob/main/LICENSE)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| Community         | [![Discourse](https://img.shields.io/badge/Slack-raddb-green.svg?logo=slack&style=flat)](https://openradar.discourse.group/) [![GitHub Discussions](https://img.shields.io/badge/GitHub-Discussions-green?logo=github&style=flat)](https://github.com/erikposchivo/raddb/discussions)                                                                                                                                                                                                                                                                                                                                                                                                       |
-| Citation          | [![DOI](https://zenodo.org/badge/922589509.svg?style=flat)](https://doi.org/10.5281/zenodo.14743651)                                                                                                                                                                                                                                                                                                                                                                                    </div>                                                                                                                                                                                                |
+RadDB provides a complete pipeline for:
+1. **Reading** METRANET radar files (dual-polarimetric data)
+2. **Processing** with PyART: visibility correction, KDP computation, attenuation correction
+3. **Enriching** with hydrometeor classification (operational & PyART-based) and isotherm height (HZT)
+4. **Converting** PyART radar objects to xradar DataTrees
+5. **Storing** data efficiently in parquet format with gate_id indexing
+6. **Loading** and visualizing processed data (PPI, RHI, CAPPI plots)
 
-[**Documentation: https://radar-api.readthedocs.io**](https://radar-api.readthedocs.io/)
+## Key Features
 
-<div align="left">
+### 🚀 Complete Processing Pipeline
+- Visibility correction using static LUTs
+- KDP (specific differential phase) computation
+- Attenuation correction (ZPHI algorithm)
+- Hydrometeor classification (operational MCH & PyART semi-supervised)
+- Isotherm height (HZT) integration with 5-minute interpolation
 
-## 🚀 Quick start
+### 📊 Efficient Storage
+- **LUT (Look-Up Table)**: Static geographical information (lat, lon, alt, x, y, z) stored separately
+- **POLAR Data**: Dynamic dual-polarization values linked via `gate_id`
+- Parquet format for fast I/O and compression
+- Directory structure: `base_path/radar/year/month/day/`
 
-RadDB provides an easy-to-use python interface to find, download and
-read weather radar data from several meteorological services.
+### 🎨 Visualization
+- PPI (Plan Position Indicator)
+- RHI (Range Height Indicator)
+- CAPPI (Constant Altitude PPI)
+- Volume panels
+- Classified hydrometeor displays
 
-RadDB currently provides data access to the following
-radar networks: `NEXRAD`, `IDEAM` and `FMI`.
+### 🔧 Flexible API
+- **High-level API**: Simple `RadDB` class for common workflows
+- **Low-level API**: Fine-grained control over processing steps
+- **PyART integration**: Direct access to radar objects
 
-The list of available radars can be retrieved using:
-
-```python
-import raddb
-
-raddb.available_networks()
-raddb.available_radars()
-raddb.available_radars(network="NEXRAD")
-```
-
-Before starting using RadDB, we highly suggest to save into a configuration file
-the directory on your local disk where to save the radar data of interest.
-
-To facilitate the creation of the RadDB configuration file, you can adapt and execute the following script:
-
-```python
-import raddb
-
-base_dir = (
-    "<path/to/directory/RADAR"  # path to the directory where to download the data
-)
-raddb.define_configs(base_dir=base_dir)
-
-# You can check that the config file has been correctly created with:
-configs = raddb.read_configs()
-print(configs)
-```
-
-______________________________________________________________________
-
-### 📥 Download radar data
-
-You can start to download radar data editing the following code example:
-
-```python
-import raddb
-
-start_time = "2021-09-07 17:00:00"
-end_time = "2021-09-07 17:30:00"
-
-radar = "KMKX"
-network = "NEXRAD"
-
-filepaths = raddb.download_files(
-    network=network,
-    radar=radar,
-    start_time=start_time,
-    end_time=end_time,
-)
-```
-
-______________________________________________________________________
-
-### 💫 Open radar files into xarray or pyart
-
-RadDB allows to read directly radar data from the cloud without the
-need to previously download and save the files on your disk.
-
-RadDB make use of pyart and xradar readers to open the files into either
-an xarray object or pyart radar object.
-
-```python
-import raddb
-import pyart
-
-# Search for files on cloud bucket
-filepaths = raddb.find_files(
-    network=network,
-    radar=radar,
-    start_time=start_time,
-    end_time=end_time,
-    protocol="s3",
-)
-print(filepaths)
-
-# Define the file to open
-filepath = filepaths[0]
-
-# Open all sweeps of a radar volume into a xradar datatree
-dt = raddb.open_datatree(filepath, network=network)
-
-# Extract the radar sweep of interest
-ds = dt["sweep_0"].to_dataset()
-
-# Open directly a single radar sweep into a xradar dataset
-ds = raddb.open_dataset(filepath, network=network, sweep="sweep_0")
-
-# Open all sweeps of a radar volume into a pyart radar object
-radar_obj = raddb.open_pyart(filepath, network=network)
-
-# Display the data with pyart
-display = pyart.graph.RadarDisplay(radar_obj)
-display.plot("reflectivity", cmap="pyart_ChaseSpectral", vmin=-20, vmax=70)
-display.set_limits((-150, 150), (-150, 150))
-```
-
-______________________________________________________________________
-
-## 📖 Documentation
-
-To discover RadDB utilities and functionalities,
-please read the software documentation available at [https://radar-api.readthedocs.io/en/latest/](https://radar-api.readthedocs.io/en/latest/).
-
-All RadDB tutorials are available as Jupyter Notebooks in the [`tutorial`](https://github.com/erikposchivo/raddb/tree/main/tutorials) directory.
-
-______________________________________________________________________
-
-## 🛠️ Installation
-
-### conda
-
-RadDB can be installed via [conda][conda_link] on Linux, Mac, and Windows.
-Install the package by typing the following command in the terminal:
+## Installation
 
 ```bash
-conda install radar-api
+# Install in development mode
+cd /path/to/RadDB
+pip install -e .
 ```
 
-In case conda-forge is not set up for your system yet, see the easy to follow instructions on [conda-forge][conda_forge_link].
+### Dependencies
+- pyart
+- pyart-mch
+- xradar
+- xarray
+- pandas
+- numpy
+- pyyaml
+- radar-api
 
-### pip
+## Quick Start
 
-RadDB can be installed also via [pip][pip_link] on Linux, Mac, and Windows.
-On Windows you can install [WinPython][winpy_link] to get Python and pip running.
-Then, install the RadDB package by typing the following command in the terminal:
+### 1. High-Level API (Recommended)
 
-```bash
-pip install radar-api
+```python
+import raddb
+
+# Initialize
+db = raddb.RadDB(
+    base_path="/ltenas8/users/giacobbi/raddb",  # Output directory for processed data
+    raw_data_dir="/ltenas8/data/RADAR",          # Input directory for raw METRANET files
+    network="MCH_LTE",
+)
+
+# Generate LUT (once per radar)
+# db.generate_lut(radar="MLA", sample_volume_filepaths=sweep_files)
+
+# Process and store data
+results = db.process_and_store(
+    radar="MLA",
+    start_time="2021-08-28 06:00",
+    end_time="2021-08-28 18:00",
+    hzt_enabled=True,
+    hym_enabled=True,
+    compute_pyart_hc=True,
+)
+
+# Load as DataFrame
+df = db.load_parquet_data(
+    radar="MLA",
+    start_time="2021-08-28 12:00",
+    end_time="2021-08-28 13:00",
+)
+
+# Load as DataTree for plotting
+dt = db.load_datatree(
+    radar="MLA",
+    start_time="2021-08-28 12:00",
+    end_time="2021-08-28 12:05",
+)
+
+# Visualize
+raddb.plot_ppi(dt, sweep=1, variable="DBZH")
+raddb.plot_rhi(dt, azimuth=90, variable="DBZH")
+raddb.plot_classified_ppi(dt, sweep=1)
 ```
 
-To install the latest development version via pip, see the [documentation][dev_install_link].
+## Architecture
 
-## 💭 Feedback and Contributing Guidelines
+### Processing Pipeline
 
-If you aim to contribute your data or discuss the future development of RadDB,
-we suggest to join the [**Open Radar Science Discourse Group**](https://openradar.discourse.group/).
+```
+METRANET Files (sweeps 1-20)
+    ↓
+PyART Radar Object Processing
+    ├─ Visibility correction
+    ├─ KDP computation
+    ├─ Attenuation correction
+    ├─ HZT integration (5-min interpolation)
+    ├─ Operational HC (from files)
+    └─ PyART HC (semi-supervised)
+    ↓
+xradar DataTree
+    ↓
+DataFrame with gate_id
+    ├─ LUT: Static geo info
+    └─ POLAR: Dynamic values
+    ↓
+Parquet Storage
+```
 
-Feel free to also open a [GitHub Issue](https://github.com/erikposchivo/raddb/issues) or a [GitHub Discussion](https://github.com/erikposchivo/raddb/discussions) specific to your questions or ideas.
+### Directory Structure
 
-## Citation
+```
+/ltenas8/users/giacobbi/raddb/
+├── MLA/
+│   ├── LUT/
+│   │   ├── MLA_LUT.parquet        # Static geographical data
+│   │   └── MLA_info.yaml          # Radar metadata
+│   ├── 2021/
+│   │   └── 08/
+│   │       └── 28/
+│   │           ├── MLA_20210828_120000_LUT.parquet
+│   │           ├── MLA_20210828_120000_POLAR.parquet
+│   │           ├── MLA_20210828_120500_LUT.parquet
+│   │           └── MLA_20210828_120500_POLAR.parquet
+├── MLD/
+│   └── ...
+└── ...
+```
 
-If you are using RadDB in your publication please cite our Zenodo repository:
+### Data Features
 
-> Ghiggi Gionata. erikposchivo/raddb. Zenodo. [![<https://doi.org/10.5281/zenodo.14743651>](https://zenodo.org/badge/922589509.svg?style=flat)](https://doi.org/10.5281/zenodo.14743651)
+#### LUT (Look-Up Table)
+```
+gate_id, sweep, azimuth, range, latitude, longitude, altitude, x, y, z, elevation_angle
+```
 
-If you want to cite a specific software version, have a look at the [Zenodo site](https://doi.org/10.5281/zenodo.14743651).
+#### POLAR Data
+```
+gate_id, time, DBZH, ZDR, RHOHV, PHIDP, HC_MCH, HC_PYART, HZT
+```
+
+Where:
+- `gate_id`: Unique identifier (e.g., "MLA_s01_a0.5_r001000")
+- `DBZH`: Reflectivity (dBZ)
+- `ZDR`: Differential reflectivity (dB)
+- `RHOHV`: Cross-correlation coefficient
+- `PHIDP`: Differential phase (degrees)
+- `HC_MCH`: Operational hydrometeor classification (MeteoSwiss)
+- `HC_PYART`: PyART semi-supervised hydrometeor classification
+- `HZT`: Height of 0°C isotherm (m)
+
+## Module Structure
+
+```
+raddb/
+├── __init__.py           # Public API exports
+├── api.py                # High-level RadDB class
+├── pipeline.py           # Processing orchestration
+├── radar_processing.py   # PyART processing functions
+├── io_core.py            # Data conversion functions
+├── lut.py                # LUT generation and management
+├── plot.py               # Visualization functions
+└── helper.py             # Utility functions
+```
+
+## Advanced Usage
+
+### Working with PyART Objects
+
+```python
+import raddb
+
+# Load and process a single sweep
+rad_obj, x, y, z = raddb.load_metranet_sweep(
+    radar_fpath="/path/to/MLA2108628120000U.001",
+    hydroclassif_fpath="/path/to/YM_file",  # optional
+    hzt_cartesian=hzt_array,                # optional
+    visibility=vis_array,                   # optional
+    compute_pyart_hc=True,
+)
+
+# Access PyART fields
+print(rad_obj.fields.keys())
+dbz = rad_obj.get_field(0, 'reflectivity')
+
+# Convert to xradar dataset
+ds = raddb.pyart_to_xradar_dataset(rad_obj)
+```
+
+### Custom Processing
+
+```python
+import raddb
+
+# Process volume with custom parameters
+dt = raddb.process_metranet_volume(
+    sweep_filepaths=sweep_files,
+    network="MCH_LTE",
+    radar="MLA",
+    volume_time=datetime(2021, 8, 28, 12, 0),
+    static_vis_dir="/path/to/static_vis",
+    qpegrid_to_rad_dir="/path/to/qpegrid",
+    hzt_enabled=True,
+    hym_enabled=True,
+    compute_pyart_hc=True,
+)
+
+# Archive with custom threshold
+lut_path, polar_path = raddb.archive_volume_to_parquet(
+    dt=dt,
+    radar="MLA",
+    base_output_path="/output/path",
+    dbzh_threshold=10.0,  # Only save gates with DBZH > 10
+)
+```
+
+## Configuration
+
+Default paths can be configured when initializing `RadDB`:
+
+```python
+db = raddb.RadDB(
+    base_path="/custom/output/path",           # Where to save processed parquet files
+    raw_data_dir="/path/to/raw/METRANET/data", # Where raw radar files are located
+    network="MCH_LTE",
+    static_vis_dir="/path/to/visibility/luts",
+    qpegrid_to_rad_dir="/path/to/qpe/luts",
+)
+```
+
+**Important**: The `raw_data_dir` parameter is required if you don't have a `radar_api` configuration file set up. This directory should contain your raw METRANET radar files organized by the radar_api convention (network/radar/year/month/day/).
+
+## Examples
+
+See `examples/example_usage.py` for comprehensive examples covering:
+- High-level API workflow
+- Low-level processing control
+- Direct PyART object manipulation
+- Custom visualization
+
+## Hydrometeor Classification
+
+### Classes
+- **NC**: Not classified
+- **AG**: Aggregates
+- **CR**: Ice crystals
+- **LR**: Light rain
+- **RP**: Rimed particles
+- **RN**: Rain
+- **VI**: Vertically oriented ice
+- **WS**: Wet snow
+- **MH**: Melting hail
+- **IH/HDG**: Dry hail / high density graupel
+
+### Two Types
+1. **HC_MCH**: Operational classification from MeteoSwiss (from HYM files)
+2. **HC_PYART**: Semi-supervised classification using PyART's algorithm
+
+## Performance Tips
+
+1. **Parallel Processing**: Use `max_workers > 1` for batch processing
+2. **Memory**: Process volumes sequentially for large time ranges
+3. **Storage**: Use `dbzh_threshold` to filter low-reflectivity gates
+4. **Plotting**: Use `rasterized=True` in plots for large datasets
+
+## References
+
+- PyART: [https://arm-doe.github.io/pyart/](https://arm-doe.github.io/pyart/)
+- xradar: [https://docs.openradarscience.org/projects/xradar/](https://docs.openradarscience.org/projects/xradar/)
+- RainForest: [https://github.com/MeteoSwiss/rainforest](https://github.com/MeteoSwiss/rainforest)
 
 ## License
 
-The content of this repository is released under the terms of the [MIT license](LICENSE).
+See LICENSE file.
 
-</div>
+## Contributing
 
-[conda_forge_link]: https://github.com/conda-forge/radar-api-feedstock#installing-radar-api
-[conda_link]: https://docs.conda.io/en/latest/miniconda.html
-[dev_install_link]: https://radar-api.readthedocs.io/en/latest/02_installation.html#installation-for-contributors
-[pip_link]: https://pypi.org/project/radar-api
-[winpy_link]: https://winpython.github.io/
+Contributions are welcome! Please open an issue or submit a pull request.
