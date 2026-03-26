@@ -1,7 +1,15 @@
 """
-RadDB Package — PyART-based radar data processing and storage.
+RadDB Package — Generic radar data archiving and reconstruction.
+
+RadDB archives xarray DataTree volumes as Parquet files with an efficient
+LUT-based layout.  It is network-agnostic: any DataTree with the standard
+xradar coordinate layout can be archived and reconstructed.
+
+MCH/METRANET-specific ingestion code lives in ``mch_pipeline.py``
+(outside the package, excluded via .gitignore).
 """
 from __future__ import annotations
+
 import contextlib
 import os
 from importlib.metadata import PackageNotFoundError, version
@@ -15,17 +23,16 @@ from raddb.helper import (
     check_dataframe,
     list_sweep_names,
     normalize_radar_name,
+    StageTimer,
 )
 
 # I/O functions
 from raddb.io_core import (
-    metranet_to_datatree,
-    volume_to_datatree,
-    pyart_to_xradar_dataset,
-    pyart_volume_to_datatree,
     datatree_to_dataset,
     datatree_to_dataframe,
     datatree_to_parquet,
+    parquet_to_dataframe,
+    parquet_to_datatree,
     labels_to_dataframe,
     join_labels_with_lut,
     reconstruct_sweep_dataset,
@@ -34,9 +41,11 @@ from raddb.io_core import (
 
 # LUT functions
 from raddb.lut import (
+    antenna_vectors_to_cartesian,
+    cartesian_to_geographic,
     compute_gate_xyz,
     generate_gate_id,
-    generate_radar_lut,
+    generate_lut_from_datatree,
     load_radar_lut,
     load_radar_info,
     get_full_sweep_index,
@@ -44,27 +53,11 @@ from raddb.lut import (
 
 # Pipeline functions
 from raddb.pipeline import (
-    process_metranet_volume,
-    archive_volume_to_parquet,
-    process_and_archive_metranet,
-    archive_metranet_to_parquet,  # backwards compatibility
-)
-
-# Radar processing functions
-from raddb.radar_processing import (
-    load_metranet_sweep,
-    hzt_hourly_to_5min,
-    read_static_visibility,
-    read_qpegrid_to_rad,
-    correct_gate_cartesian_coordinates,
-    add_visibility,
-    correct_reflectivity_for_visibility,
-    compute_kdp,
-    correct_attenuation,
-    add_hydroclass_from_file,
-    compute_hydroclass_semisupervised,
-    add_hzt_data,
-    add_height_over_iso0,
+    filter_clear_sky,
+    archive_volume,
+    archive_volumes,
+    archive_volumes_dask,
+    archive_volumes_multi_radar,
 )
 
 # Plotting functions
@@ -77,6 +70,14 @@ from raddb.plot import (
     plot_classified_rhi,
 )
 
+# Profiling helpers
+from raddb.helper import (
+    plot_stage_totals,
+    plot_volume_timing,
+    plot_sweep_timing,
+    plot_profiling_dashboard,
+)
+
 __all__ = [
     # High-level API
     "RadDB",
@@ -85,44 +86,32 @@ __all__ = [
     "check_dataframe",
     "list_sweep_names",
     "normalize_radar_name",
+    "StageTimer",
     # I/O functions
-    "metranet_to_datatree",
-    "volume_to_datatree",
-    "pyart_to_xradar_dataset",
-    "pyart_volume_to_datatree",
     "datatree_to_dataset",
     "datatree_to_dataframe",
     "datatree_to_parquet",
+    "parquet_to_dataframe",
+    "parquet_to_datatree",
     "labels_to_dataframe",
     "join_labels_with_lut",
     "reconstruct_sweep_dataset",
     "reconstruct_datatree",
     # LUT functions
+    "antenna_vectors_to_cartesian",
+    "cartesian_to_geographic",
     "compute_gate_xyz",
     "generate_gate_id",
-    "generate_radar_lut",
+    "generate_lut_from_datatree",
     "load_radar_lut",
     "load_radar_info",
     "get_full_sweep_index",
     # Pipeline functions
-    "process_metranet_volume",
-    "archive_volume_to_parquet",
-    "process_and_archive_metranet",
-    "archive_metranet_to_parquet",
-    # Radar processing functions
-    "load_metranet_sweep",
-    "hzt_hourly_to_5min",
-    "read_static_visibility",
-    "read_qpegrid_to_rad",
-    "correct_gate_cartesian_coordinates",
-    "add_visibility",
-    "correct_reflectivity_for_visibility",
-    "compute_kdp",
-    "correct_attenuation",
-    "add_hydroclass_from_file",
-    "compute_hydroclass_semisupervised",
-    "add_hzt_data",
-    "add_height_over_iso0",
+    "filter_clear_sky",
+    "archive_volume",
+    "archive_volumes",
+    "archive_volumes_dask",
+    "archive_volumes_multi_radar",
     # Plotting functions
     "plot_ppi",
     "plot_rhi",
@@ -130,6 +119,11 @@ __all__ = [
     "plot_volume_panel",
     "plot_classified_ppi",
     "plot_classified_rhi",
+    # Profiling helpers
+    "plot_stage_totals",
+    "plot_volume_timing",
+    "plot_sweep_timing",
+    "plot_profiling_dashboard",
 ]
 
 _root_path = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))

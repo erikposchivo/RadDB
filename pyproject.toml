@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "raddb"
-description = "Python software to retrieve weather radar data from cloud buckets"
+description = "Generic radar data archiving library — archive xarray DataTree volumes as Parquet"
 readme = "README.md"
 authors = [
 	{ name = "Gionata Ghiggi", email = "gionata.erikposchivo@epfl.ch" },
@@ -35,16 +35,18 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Hydrology",
     "Topic :: Scientific/Engineering :: Image Processing",
 ]
-keywords = ["Weather", "Radar", "Precipitation", "NEXRAD", "FMI"]
+keywords = ["Weather", "Radar", "Precipitation", "Parquet", "DataTree", "Archive"]
 dependencies = [
-    "fsspec",
-    "s3fs",
-    "pyyaml",
-    "donfig",
-    "trollsift",
     "numpy",
     "pandas",
-    "tqdm",
+    "xarray",
+    "pyyaml",
+    "pyarrow",
+    "dask",
+    "distributed",
+    "fsspec",
+    "s3fs",
+    "matplotlib",
 ]
 requires-python = ">=3.10"
 dynamic = ["version"]

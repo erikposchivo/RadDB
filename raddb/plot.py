@@ -14,8 +14,8 @@ from raddb.helper import list_sweep_names
 logger = logging.getLogger(__name__)
 
 # --- Configurations --- #
-_CMAPS = {"DBZH": "jet", "ZDR": "RdBu", "RHOHV": "viridis", "PHIDP": "hsv", "HC": "Set1", "hydrometeor_class": "Set1", "HZT": "viridis"}
-_VLIMS = {"DBZH": (-10, 60), "ZDR": (-2, 6), "RHOHV": (0.6, 1.05), "PHIDP": (0, 180), "HC": (0, 9), "HZT": (0, 5000)}
+_CMAPS = {"DBZH": "tab20", "ZDR": "RdBu", "RHOHV": "viridis", "PHIDP": "hsv", "HC": "Set1", "hydrometeor_class": "Set1", "HZT": "viridis"}
+_VLIMS = {"DBZH": (-10, 60), "ZDR": (-2, 10), "RHOHV": (0.6, 1.05), "PHIDP": (0, 180), "HC": (0, 9), "HZT": (0, 5000)}
 HC_CLASS_NAMES = {0: "NC", 1: "AG", 2: "CR", 3: "LR", 4: "RP", 5: "RN", 6: "VI", 7: "WS", 8: "MH", 9: "IH/HDG"}
 
 def _get_cmap_vlim(var: str, vmin, vmax, cmap):

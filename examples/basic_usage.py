@@ -2,181 +2,203 @@
 Basic Usage Example for RadDB
 ==============================
 
-This example demonstrates the essential workflow for processing radar data:
+This example demonstrates the essential workflow for archiving radar data:
 1. Initialize RadDB
-2. Generate the LUT (once per radar — stores static spatial info)
-3. Process and store polarimetric data
+2. Generate the LUT from a sample DataTree (once per radar)
+3. Archive DataTree volumes to Parquet
 4. Load and visualize the results
 
-The key design idea: the LUT (gate coordinates, elevation angles, etc.) is
-**static** and generated only once.  Each volume scan then only stores the
-**polarimetric** data (DBZH, ZDR, RHOHV, …) together with a ``gate_id`` that
-links every gate back to the LUT.  This keeps downstream ML datasets small
-and avoids redundant spatial information.
-
-Requirements:
-- Radar data files in METRANET format
+RadDB is a **generic** library — it works with any xarray DataTree.
+MCH/METRANET-specific ingestion is handled separately by mch_pipeline.py.
 
 Author: RadDB Package
-Date: 2026-03-24
+Date: 2026-03-25
 """
 #%%
 from pathlib import Path
 import raddb
-import radar_api
 
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
 
-# Directory paths — adjust these to match your system
+# Base directory for RadDB storage (LUT + POLAR parquet files)
 BASE_PATH = "/home/erik_poschivo/Desktop/LTE_project/ltenas8/users/giacobbi/raddb"
-RAW_DATA_DIR = "/home/erik_poschivo/Desktop/LTE_project/ltenas8/data/RADAR"
 
-# Radar and network configuration
-# Note: Radar name can be "MLA" or just "A" — both formats are supported
-RADAR_NAME = "A"  # Or "MLA", "D", "MLD", etc.
-NETWORK = "MCH_LTE"
+# Radar identifier (single letter)
+RADAR_NAME = "L"
 
-# Time range to process
-START_TIME = "2021-08-28 06:00"
-END_TIME = "2021-08-28 19:55"
-
-#%%
 # =============================================================================
 # STEP 1: Initialize RadDB
 # =============================================================================
 
 print("Initializing RadDB...")
-db = raddb.RadDB(
-    base_path=BASE_PATH,
-    raw_data_dir=RAW_DATA_DIR,
+db = raddb.RadDB(base_path=BASE_PATH)
+
+
+# =============================================================================
+# STEP 2: Get a DataTree (from MCH pipeline or any other source)
+# =============================================================================
+# RadDB is generic — it archives any xarray DataTree.  Here we show
+# how to use the MCH-specific pipeline to produce DataTrees from
+# METRANET files.  You can skip this and provide DataTrees from any source.
+
+print("\nLoading DataTree via MCH pipeline...")
+
+# Import the MCH pipeline (not part of the RadDB package)
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from mch_pipeline import process_mch_volume, find_files_with_fallback, _group_files_by_volume, _parse_volume_time
+
+RAW_DATA_DIR = "/home/erik_poschivo/Desktop/LTE_project/ltenas8/data/RADAR"
+NETWORK = "MCH_LTE"
+START_TIME = "2024-08-01 12:00"
+END_TIME = "2024-08-15 12:00"
+
+# Find METRANET files
+fps = find_files_with_fallback(
     network=NETWORK,
-    # Optional: disable features if not needed or not available
-    static_vis_dir=None,  # Set to path if you have visibility LUTs
-    qpegrid_to_rad_dir=None,  # Set to path if you have QPE grid LUTs
-)
-
-#%%
-# =============================================================================
-# STEP 2: Generate the LUT (run ONCE per radar)
-# =============================================================================
-# The LUT stores static spatial information (gate coordinates, elevation
-# angles, etc.) and is reused for every subsequent volume.  If the LUT
-# already exists on disk it will NOT be regenerated.
-
-print(f"\nGenerating LUT for radar {RADAR_NAME} (skipped if already exists)...")
-
-# We need one sample volume (all sweeps) to derive the radar geometry.
-sample_files = radar_api.find_files(
-    network=NETWORK,
-    radar=RADAR_NAME,
-    start_time=START_TIME,
-    end_time=END_TIME,  # just one volume is enough
-    product="POL",
-    protocol="local",
-    base_dir=RAW_DATA_DIR,
-)
-
-if sample_files:
-    lut_path = db.generate_lut(radar=RADAR_NAME, sample_volume_filepaths=sample_files)
-    print(f"  LUT ready at: {lut_path}")
-else:
-    print("  WARNING: no sample files found — cannot generate LUT.")
-
-#%%
-# =============================================================================
-# STEP 3: Process and Store Polarimetric Data
-# =============================================================================
-# Only the polarimetric measurements (+ gate_id) are stored per volume.
-# Missing HZT / HYM files are tolerated — the corresponding columns are
-# filled with NaN so that downstream ML training can still proceed.
-
-print(f"\nProcessing radar {RADAR_NAME} from {START_TIME} to {END_TIME}...")
-
-results = db.process_and_store(
     radar=RADAR_NAME,
     start_time=START_TIME,
     end_time=END_TIME,
-    hzt_enabled=False,  # Disable HZT (isotherm height) if not available
-    hym_enabled=False,  # Disable operational hydrometeor classification
-    compute_pyart_hc=False,  # Disable PyART hydrometeor classification
-    max_workers=8,
+    product="POL",
+    raw_data_dir=RAW_DATA_DIR,
     verbose=True,
 )
 
-successful = sum(1 for r in results if r["success"])
-failed = sum(1 for r in results if not r["success"])
-
-print(f"\nProcessing complete:")
-print(f"  Successful: {successful}/{len(results)}")
-print(f"  Failed:     {failed}/{len(results)}")
-
-if failed > 0:
-    print("\nFailed volumes:")
-    for r in results:
-        if not r["success"]:
-            print(f"  - {r['time']}: {r['error']}")
+# Group into volumes
+volumes = _group_files_by_volume(fps)
+print(f"Found {len(fps)} sweep files -> {len(volumes)} volume(s)")
 
 #%%
 # =============================================================================
-# STEP 4: Load Processed Data (as xarray DataTree)
+# STEP 3: Generate the LUT (run ONCE per radar)
 # =============================================================================
-# load_datatree() loads the latest volume in the time range, joins it with
-# the LUT (via gate_id) to restore spatial coordinates, and reconstructs
-# a full xarray DataTree suitable for plotting.
+# The LUT stores static spatial information and is reused for every volume.
+# It requires one sample DataTree to derive the geometry.
 
-if successful > 0:
-    print(f"\nLoading processed data for radar {RADAR_NAME}...")
+print(f"\nGenerating LUT for radar {RADAR_NAME} (skipped if already exists)...")
 
-    dt = db.load_datatree(
+# Process the first volume to get a sample DataTree
+first_stem, first_paths = list(volumes.items())[0]
+vol_time = _parse_volume_time(first_stem)
+
+dt_sample = process_mch_volume(
+    sweep_filepaths=first_paths,
+    network=NETWORK,
+    radar=RADAR_NAME,
+    volume_time=vol_time,
+    raw_data_dir=RAW_DATA_DIR,
+    hzt_enabled=False,
+    hym_enabled=False,
+    compute_pyart_hc=False,
+    verbose=True,
+)
+
+lut_path = db.generate_lut(
+    radar=RADAR_NAME,
+    sample_datatree=dt_sample,
+    ke=1.25,
+    network=NETWORK,
+)
+print(f"  LUT ready at: {lut_path}")
+
+#%%
+# =============================================================================
+# STEP 4: Archive DataTree Volumes to Parquet
+# =============================================================================
+# Each volume is archived as a POLAR parquet file.  Clear-sky gates
+# (DBZH <= 0) are automatically removed to reduce file sizes.
+
+print(f"\nArchiving {len(volumes)} volume(s)...")
+
+timer = raddb.StageTimer()
+
+# Process and archive each volume
+for stem, sweep_paths in list(volumes.items())[:3]:  # first 3 for demo
+    vol_time = _parse_volume_time(stem)
+    print(f"\n  Processing volume {stem}...")
+
+    # Step A: MCH pipeline -> DataTree
+    dt = process_mch_volume(
+        sweep_filepaths=sweep_paths,
+        network=NETWORK,
         radar=RADAR_NAME,
-        start_time=START_TIME,
-        end_time=END_TIME,
+        volume_time=vol_time,
+        raw_data_dir=RAW_DATA_DIR,
+        hzt_enabled=False,
+        hym_enabled=False,
+        compute_pyart_hc=False,
+        verbose=False,
     )
 
-    sweeps = raddb.list_sweep_names(dt)
-    print(f"  Loaded {len(sweeps)} sweeps: {sweeps}")
-
-    # ==================================================================
-    # STEP 5: Visualize Data
-    # ==================================================================
-
-    print("\nGenerating visualization...")
-
-    raddb.plot_ppi(
+    # Step B: Archive with RadDB (generic)
+    polar_path = db.archive_volume(
         dt,
-        sweep=1,
-        variable="DBZH",
-        title=f"Radar {RADAR_NAME} - Reflectivity (Sweep 1)",
+        radar=RADAR_NAME,
+        dbzh_threshold=0.0,  # remove clear sky
+        timer=timer,
+        volume_label=stem,
     )
+    print(f"  Saved: {polar_path}")
 
-    print("  Plot created successfully!")
-    print("\nBasic workflow complete!")
-
-else:
-    print("\nNo data was successfully processed. Check the error messages above.")
+timer.print_summary()
 
 #%%
 # =============================================================================
-# ADDITIONAL OPTIONS
+# STEP 5: Load Processed Data
 # =============================================================================
 
-# Load polarimetric data as a pandas DataFrame (for ML training):
-# df = db.load_parquet_data(
-#     radar=RADAR_NAME,
-#     start_time=START_TIME,
-#     end_time=END_TIME,
-#     data_type="POLAR",
-# )
-# print(df.head())
-# The DataFrame contains a "gate_id" column that links every row back to
-# the LUT so you can recover spatial coordinates after classification.
+print(f"\nLoading processed data for radar {RADAR_NAME}...")
 
-# Get radar metadata:
-# radar_info = db.get_radar_info(RADAR_NAME)
-# print(f"Radar location: {radar_info['latitude']}, {radar_info['longitude']}")
+# Load as DataFrame (for ML / analysis)
+df = db.load_dataframe(
+    radar=RADAR_NAME,
+    start_time=START_TIME,
+    end_time=END_TIME,
+)
+print(f"  DataFrame: {len(df):,} rows, columns: {list(df.columns)}")
+print(df.head())
 
-# Get the Look-Up Table directly:
-# lut = db.get_lut(RADAR_NAME)
-# print(lut.head())
+#%%
+# Load as DataTree (for visualization)
+dt = db.load_datatree(
+    radar=RADAR_NAME,
+    start_time=START_TIME,
+    end_time=END_TIME,
+)
+sweeps = raddb.list_sweep_names(dt)
+print(f"  DataTree: {len(sweeps)} sweeps: {sweeps}")
+
+#%%
+# =============================================================================
+# STEP 6: Visualize
+# =============================================================================
+
+print("\nGenerating PPI plot...")
+raddb.plot_ppi(
+    dt,
+    sweep=1,
+    variable="DBZH",
+    title=f"Radar {RADAR_NAME} - Reflectivity (Sweep 1)",
+)
+
+# Get radar metadata
+radar_info = db.get_radar_info(RADAR_NAME)
+print(f"\nRadar location: {radar_info['latitude']}, {radar_info['longitude']}")
+
+print("\nBasic workflow complete!")
+
+#%%
+# =============================================================================
+# ADDITIONAL: Load with spatial coordinates (merge with LUT)
+# =============================================================================
+
+df_with_coords = db.load_dataframe(
+    radar=RADAR_NAME,
+    start_time=START_TIME,
+    end_time=END_TIME,
+    merge_lut=True,  # adds azimuth, range, x, y, z, lat, lon, alt
+)
+print(f"\nDataFrame with LUT: {len(df_with_coords):,} rows")
+print(f"Columns: {list(df_with_coords.columns)}")
