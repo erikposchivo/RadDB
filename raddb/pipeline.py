@@ -9,10 +9,11 @@ standard xradar layout (sweep_N groups with azimuth/range coordinates
 and polarimetric variables) can be archived.
 
 Features:
-- Clear-sky filtering (remove gates with DBZH <= threshold)
+- Flexible filtering (any feature, threshold, and comparison logic)
 - Single-volume archiving
-- Batch archiving with Dask parallelization
+- Sequential batch archiving
 - Multi-radar support
+- Utilities to add new features to DataTree or DataFrame
 """
 from __future__ import annotations
 
@@ -30,7 +31,7 @@ from raddb.io_core import (
     _save_polar_parquet,
     datatree_to_dataframe,
 )
-from raddb.lut import generate_gate_id
+from raddb.lut import RADAR_TO_IDX
 from raddb.helper import (
     list_sweep_names,
     normalize_radar_name,
@@ -42,43 +43,124 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# CLEAR-SKY FILTER
+# FILTER LOGIC REGISTRY
 # ============================================================================
 
-def filter_clear_sky(
-    dt: xr.DataTree,
-    threshold: float = 0.0,
-    variable: str = "DBZH",
-) -> xr.DataTree:
-    """Remove clear-sky gates from a DataTree.
+FILTER_LOGICS: dict[str, callable] = {
+    "==": lambda a, b: a == b,
+    "!=": lambda a, b: a != b,
+    ">":  lambda a, b: a > b,
+    ">=": lambda a, b: a >= b,
+    "<":  lambda a, b: a < b,
+    "<=": lambda a, b: a <= b,
+}
 
-    Sets gates where ``variable <= threshold`` to NaN across **all**
-    data variables in each sweep.  This significantly reduces parquet
-    file sizes when archiving.
+
+# ============================================================================
+# DATAFRAME FILTER
+# ============================================================================
+
+def filter_df(
+    df: pd.DataFrame,
+    feature: str = "DBZH",
+    threshold: float = 0.0,
+    logic: str = ">",
+) -> pd.DataFrame:
+    """Filter a DataFrame, keeping rows where ``feature [logic] threshold``.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input DataFrame.
+    feature : str
+        Column name to filter on (default ``"DBZH"``).
+    threshold : float
+        Comparison value.
+    logic : str
+        Comparison operator: ``'>'``, ``'>='``, ``'<'``, ``'<='``,
+        ``'=='``, ``'!='``.  Default ``'>'``.
+
+    Returns
+    -------
+    pd.DataFrame
+        Filtered DataFrame with non-matching rows dropped (index reset).
+
+    Raises
+    ------
+    KeyError
+        If ``feature`` is not a column of ``df``.
+    ValueError
+        If ``logic`` is not one of the supported operators.
+    """
+    fn = FILTER_LOGICS.get(logic)
+    if fn is None:
+        raise ValueError(
+            f"Unknown logic '{logic}'. Choose from: {list(FILTER_LOGICS)}"
+        )
+    if feature not in df.columns:
+        raise KeyError(f"Feature '{feature}' not found in DataFrame columns.")
+    mask = fn(df[feature].to_numpy(), threshold)
+    return df[mask].reset_index(drop=True)
+
+
+# ============================================================================
+# DATATREE FILTER
+# ============================================================================
+
+def filter_dt(
+    dt: xr.DataTree,
+    feature: str = "DBZH",
+    threshold: float = 0.0,
+    logic: str = ">",
+) -> xr.DataTree:
+    """Filter a DataTree, masking gates where ``feature [logic] threshold`` is False.
+
+    Gates that do **not** satisfy the condition are set to NaN across all
+    data variables in each sweep.  Gates that *do* satisfy the condition
+    keep their original values unchanged — including legitimate zero values.
+
+    .. note::
+        This operates on the multidimensional DataTree structure via
+        ``xr.Dataset.where()``.  For tabular (row-level) filtering use
+        :func:`filter_df` instead, which drops non-matching rows entirely.
 
     Parameters
     ----------
     dt : xr.DataTree
-        Input DataTree with sweep groups.
+        Input DataTree with ``sweep_N`` groups.
+    feature : str
+        Variable name to use as the filter criterion (default ``"DBZH"``).
     threshold : float
-        Gates with ``variable <= threshold`` are considered clear sky.
-        Default is 0.0 (removes all DBZH <= 0 dBZ).
-    variable : str
-        Variable to threshold on (default ``"DBZH"``).
+        Comparison value.
+    logic : str
+        Comparison operator: ``'>'``, ``'>='``, ``'<'``, ``'<='``,
+        ``'=='``, ``'!='``.  Default ``'>'``.
 
     Returns
     -------
     xr.DataTree
-        New DataTree with clear-sky gates set to NaN.
+        New DataTree where non-matching gates have NaN for all variables.
+        Matching gates are left entirely unchanged (zeros remain zeros).
+
+    Raises
+    ------
+    ValueError
+        If ``logic`` is not a supported operator.
     """
+    fn = FILTER_LOGICS.get(logic)
+    if fn is None:
+        raise ValueError(
+            f"Unknown logic '{logic}'. Choose from: {list(FILTER_LOGICS)}"
+        )
+
     sweep_names = list_sweep_names(dt)
     dict_ds = {}
 
     for sweep_name in sweep_names:
         ds = dt[sweep_name].to_dataset()
-        if variable in ds:
-            mask = ds[variable] <= threshold
-            ds = ds.where(~mask)
+        if feature in ds:
+            keep_mask = fn(ds[feature], threshold)
+            ds = ds.where(keep_mask)
         dict_ds[sweep_name] = ds
 
     return xr.DataTree.from_dict(dict_ds)
@@ -92,16 +174,26 @@ def archive_volume(
     dt: xr.DataTree,
     radar: str,
     base_output_path: str,
-    dbzh_threshold: float = 0.0,
+    filter_feature: str = "DBZH",
+    filter_threshold: float = 0.0,
+    filter_logic: str = ">",
     timer=None,
     volume: str | None = None,
 ) -> str:
     """Archive a single DataTree volume to Parquet format.
 
-    Converts the DataTree to a DataFrame, generates ``gate_id`` for each
-    gate (linking back to the LUT), filters out clear-sky gates
-    (``DBZH <= dbzh_threshold``), and saves the result as a POLAR parquet
-    file.
+    Converts the DataTree to a DataFrame, generates a ``gate_id`` for each
+    gate (linking back to the LUT), drops gates that do not satisfy
+    ``filter_feature [filter_logic] filter_threshold``, and saves the
+    result as a POL parquet file.
+
+    Non-matching gates are **dropped** (row removal), so zero values in
+    surviving gates are never converted to NaN.  NaN values in the
+    reconstruction come only from gates absent in the parquet (i.e. gates
+    that were filtered out or had no data in the original DataTree).
+
+    HZT availability check: if ``"HZT"`` is not present in the DataTree,
+    ``"HC_PYART"`` is also skipped because it requires HZT to be meaningful.
 
     Parameters
     ----------
@@ -111,9 +203,12 @@ def archive_volume(
         Radar identifier (single letter, e.g. ``"A"``).
     base_output_path : str
         Base output directory for parquet files.
-    dbzh_threshold : float
-        Minimum DBZH value to keep.  Gates with ``DBZH <= threshold``
-        are excluded (clear-sky removal).  Default 0.0.
+    filter_feature : str
+        Column to use for gate filtering (default ``"DBZH"``).
+    filter_threshold : float
+        Threshold value for the filter (default ``0.0``).
+    filter_logic : str
+        Comparison operator (default ``">"``).
     timer : StageTimer, optional
         Profiling timer.
     volume : str, optional
@@ -122,9 +217,15 @@ def archive_volume(
     Returns
     -------
     str
-        Path to the saved POLAR parquet file.
+        Path to the saved POL parquet file.
     """
     radar = normalize_radar_name(radar)
+    fn = FILTER_LOGICS.get(filter_logic)
+    if fn is None:
+        raise ValueError(
+            f"Unknown filter_logic '{filter_logic}'. "
+            f"Choose from: {list(FILTER_LOGICS)}"
+        )
 
     with (
         timer.time_stage("datatree_to_df", volume=volume)
@@ -133,26 +234,57 @@ def archive_volume(
     ):
         df = datatree_to_dataframe(dt)
 
-    # Generate gate_id to link back to the central LUT
     with (
         timer.time_stage("generate_gate_ids", volume=volume)
         if timer
         else _nullctx()
     ):
-        df["gate_id"] = df.apply(
-            lambda row: generate_gate_id(
-                radar,
-                int(row["sweep"]),
-                float(row["azimuth"]),
-                float(row["range"]),
-            ),
-            axis=1,
+        # Step 1: filter mask — row dropping, NOT NaN conversion.
+        # This preserves zero values in surviving gates as zeros.
+        if filter_feature in df.columns:
+            _mask = fn(df[filter_feature].to_numpy(), filter_threshold)
+        else:
+            logger.warning(
+                "filter_feature '%s' not found in DataFrame; keeping all gates.",
+                filter_feature,
+            )
+            _mask = np.ones(len(df), dtype=bool)
+
+        # Step 2: gate_ids on surviving rows only (pure numpy int64)
+        _radar_idx = np.int64(RADAR_TO_IDX[radar.upper()])
+        _sweep_v   = df["sweep"].to_numpy(dtype=np.int64)[_mask]
+        _az_int    = np.round(
+            df["azimuth"].to_numpy(dtype=np.float64)[_mask] * 10
+        ).astype(np.int64)
+        _rng_int   = df["range"].to_numpy(dtype=np.int64)[_mask]
+        _gate_ids  = (
+            _radar_idx * np.int64(1_000_000_000_000)
+            + _sweep_v  * np.int64(   10_000_000_000)
+            + _az_int   * np.int64(        1_000_000)
+            + _rng_int
         )
-        # Clear-sky removal
-        df_polar_full = df[df["DBZH"] > dbzh_threshold].copy()
-        df_polar = df_polar_full[
-            [c for c in POLAR_COLUMNS if c in df_polar_full.columns]
-        ].copy()
+
+        # Step 3: column selection.
+        # Skip HC_PYART when HZT is not available (HC_PYART requires HZT).
+        _hzt_available = "HZT" in df.columns
+        if not _hzt_available:
+            logger.debug(
+                "HZT not available in DataTree — skipping HC_PYART column."
+            )
+        _polar_cols = [
+            c for c in POLAR_COLUMNS
+            if c in df.columns
+            and c != "gate_id"
+            and not (c == "HC_PYART" and not _hzt_available)
+        ]
+
+        # Step 4: build output DataFrame from numpy arrays (no intermediate copy)
+        df_polar = pd.DataFrame(
+            {
+                "gate_id": _gate_ids,
+                **{c: df[c].to_numpy()[_mask] for c in _polar_cols},
+            }
+        )
 
     with (
         timer.time_stage("save_parquet", volume=volume)
@@ -166,11 +298,13 @@ def archive_volume(
 # BATCH ARCHIVING (sequential)
 # ============================================================================
 
-def archive_volumes(
+def archive_multiple_volumes(
     volumes: list[xr.DataTree] | dict[str, xr.DataTree],
     radar: str,
     base_output_path: str,
-    dbzh_threshold: float = 0.0,
+    filter_feature: str = "DBZH",
+    filter_threshold: float = 0.0,
+    filter_logic: str = ">",
     verbose: bool = True,
     timer: StageTimer | None = None,
 ) -> list[dict]:
@@ -185,8 +319,12 @@ def archive_volumes(
         Radar identifier.
     base_output_path : str
         Base output directory.
-    dbzh_threshold : float
-        Clear-sky threshold.
+    filter_feature : str
+        Column to use for gate filtering (default ``"DBZH"``).
+    filter_threshold : float
+        Threshold value (default ``0.0``).
+    filter_logic : str
+        Comparison operator (default ``">"``).
     verbose : bool
         Print progress.
     timer : StageTimer, optional
@@ -208,10 +346,7 @@ def archive_volumes(
     pipeline_t0 = _time.perf_counter()
 
     for i, (label, dt) in enumerate(items, 1):
-        _vprint(
-            f"\n>>  Volume {i}/{len(items)}: {label}",
-            verbose,
-        )
+        _vprint(f"\n>>  Volume {i}/{len(items)}: {label}", verbose)
 
         result = {
             "label": label,
@@ -232,7 +367,9 @@ def archive_volumes(
                     dt,
                     radar=radar,
                     base_output_path=base_output_path,
-                    dbzh_threshold=dbzh_threshold,
+                    filter_feature=filter_feature,
+                    filter_threshold=filter_threshold,
+                    filter_logic=filter_logic,
                     timer=timer,
                     volume=label,
                 )
@@ -273,125 +410,19 @@ def archive_volumes(
 
 
 # ============================================================================
-# BATCH ARCHIVING WITH DASK
-# ============================================================================
-
-def archive_volumes_dask(
-    volumes: list[xr.DataTree] | dict[str, xr.DataTree],
-    radar: str,
-    base_output_path: str,
-    dbzh_threshold: float = 0.0,
-    verbose: bool = True,
-) -> list[dict]:
-    """Archive multiple DataTree volumes in parallel using Dask.
-
-    The user **must** initialize a Dask cluster before calling this
-    function.  Example::
-
-        from dask.distributed import Client
-        client = Client(n_workers=4, threads_per_worker=1)
-        # Monitor at http://localhost:8787/status
-
-        results = raddb.archive_volumes_dask(volumes, radar="A", ...)
-
-    Parameters
-    ----------
-    volumes : list or dict
-        DataTrees to archive.
-    radar : str
-        Radar identifier.
-    base_output_path : str
-        Base output directory.
-    dbzh_threshold : float
-        Clear-sky threshold.
-    verbose : bool
-        Print progress.
-
-    Returns
-    -------
-    list of dict
-        Results for each volume.
-    """
-    import dask
-
-    radar = normalize_radar_name(radar)
-
-    if isinstance(volumes, dict):
-        items = list(volumes.items())
-    else:
-        items = [(f"volume_{i}", dt) for i, dt in enumerate(volumes)]
-
-    @dask.delayed
-    def _try_archive(label, dt_vol):
-        result = {
-            "label": label,
-            "radar": radar,
-            "success": False,
-            "error": None,
-            "n_gates": 0,
-        }
-        try:
-            with dask.config.set(scheduler="synchronous"):
-                polar_path = archive_volume(
-                    dt_vol,
-                    radar=radar,
-                    base_output_path=base_output_path,
-                    dbzh_threshold=dbzh_threshold,
-                )
-            result["success"] = True
-            result["polar_path"] = polar_path
-            df_polar = pd.read_parquet(polar_path)
-            result["n_gates"] = len(df_polar)
-        except Exception as e:
-            result["error"] = (
-                f"Archive of volume {label} failed: {e}"
-            )
-        return result
-
-    tasks = [_try_archive(label, dt) for label, dt in items]
-
-    _vprint(
-        f"Submitting {len(tasks)} volume(s) to Dask...", verbose
-    )
-    _vprint(
-        "Monitor at the Dask dashboard "
-        "(default: http://localhost:8787/status)",
-        verbose,
-    )
-
-    t_i = _time.perf_counter()
-    results = list(dask.compute(*tasks))
-    elapsed = _time.perf_counter() - t_i
-
-    n_ok = sum(1 for r in results if r["success"])
-    n_fail = sum(1 for r in results if not r["success"])
-    _vprint(
-        f"Dask archiving complete: {n_ok} succeeded, {n_fail} failed "
-        f"in {elapsed:.1f}s",
-        verbose,
-    )
-
-    for r in results:
-        if r["error"]:
-            logger.error(r["error"])
-            _vprint(f"  ERROR: {r['error']}", verbose)
-
-    return results
-
-
-# ============================================================================
 # MULTI-RADAR ARCHIVING
 # ============================================================================
 
 def archive_volumes_multi_radar(
     volumes_by_radar: dict[str, list[xr.DataTree] | dict[str, xr.DataTree]],
     base_output_path: str,
-    dbzh_threshold: float = 0.0,
-    use_dask: bool = False,
+    filter_feature: str = "DBZH",
+    filter_threshold: float = 0.0,
+    filter_logic: str = ">",
     verbose: bool = True,
     timer: StageTimer | None = None,
 ) -> dict[str, list[dict]]:
-    """Archive volumes for multiple radars.
+    """Archive volumes for multiple radars sequentially.
 
     Parameters
     ----------
@@ -400,15 +431,16 @@ def archive_volumes_multi_radar(
         Example: ``{"A": [dt1, dt2], "D": [dt3, dt4]}``
     base_output_path : str
         Base output directory.
-    dbzh_threshold : float
-        Clear-sky threshold.
-    use_dask : bool
-        If True, use Dask for parallel archiving.  Requires an active
-        Dask cluster.
+    filter_feature : str
+        Column to use for gate filtering (default ``"DBZH"``).
+    filter_threshold : float
+        Threshold value (default ``0.0``).
+    filter_logic : str
+        Comparison operator (default ``">"``).
     verbose : bool
         Print progress.
     timer : StageTimer, optional
-        Profiling timer (only used with sequential archiving).
+        Profiling timer.
 
     Returns
     -------
@@ -424,23 +456,16 @@ def archive_volumes_multi_radar(
             verbose,
         )
 
-        if use_dask:
-            results = archive_volumes_dask(
-                volumes,
-                radar=radar,
-                base_output_path=base_output_path,
-                dbzh_threshold=dbzh_threshold,
-                verbose=verbose,
-            )
-        else:
-            results = archive_volumes(
-                volumes,
-                radar=radar,
-                base_output_path=base_output_path,
-                dbzh_threshold=dbzh_threshold,
-                verbose=verbose,
-                timer=timer,
-            )
+        results = archive_multiple_volumes(
+            volumes,
+            radar=radar,
+            base_output_path=base_output_path,
+            filter_feature=filter_feature,
+            filter_threshold=filter_threshold,
+            filter_logic=filter_logic,
+            verbose=verbose,
+            timer=timer,
+        )
 
         all_results[radar] = results
 

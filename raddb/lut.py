@@ -25,6 +25,10 @@ from raddb.helper import list_sweep_names
 
 logger = logging.getLogger(__name__)
 
+# Maps single-letter radar identifiers to integer indices for numeric gate_id.
+# A=0, B=1, ..., Z=25  (26 radars supported)
+RADAR_TO_IDX: dict[str, int] = {chr(ord("A") + i): i for i in range(26)}
+
 
 # ============================================================================
 # Coordinate transforms  (pure numpy, no pyart dependency)
@@ -141,13 +145,23 @@ def compute_gate_xyz(
 
 def generate_gate_id(
     radar: str, sweep: int, azimuth: float, range_m: float
-) -> str:
-    """Create a unique gate identifier string.
+) -> int:
+    """Create a unique gate identifier as a 64-bit integer.
 
-    Format: ``{RADAR}_s{SWEEP:02d}_a{AZ:.1f}_r{RANGE:06d}``
+    Encoding: ``radar_idx * 10^12 + sweep * 10^10 + az_int * 10^6 + range_int``
+
+    where ``az_int = round(azimuth * 10)`` (1 decimal place precision) and
+    ``range_int = int(range_m)`` (integer metres).
     """
-    az_str = f"a{round(azimuth, 1):.1f}"
-    return f"{radar.upper()}_s{sweep:02d}_{az_str}_r{int(range_m):06d}"
+    radar_idx = RADAR_TO_IDX[radar.upper()]
+    az_int = int(round(azimuth * 10))
+    range_int = int(range_m)
+    return (
+        radar_idx * 1_000_000_000_000
+        + sweep    *    10_000_000_000
+        + az_int   *         1_000_000
+        + range_int
+    )
 
 
 # ============================================================================
@@ -160,6 +174,8 @@ def generate_lut_from_datatree(
     output_base_path: str,
     ke: float = 1.25,
     network: str = "",
+    projection_epsg: int | None = None,
+    projection_crs=None,
 ) -> str:
     """Generate a LUT from an xarray DataTree.
 
@@ -183,6 +199,12 @@ def generate_lut_from_datatree(
         Effective Earth radius scale factor (default 1.25 for Switzerland).
     network : str, optional
         Network identifier stored in radar info YAML.
+    projection_epsg : int, optional
+        EPSG code for an additional projected coordinate system to include
+        in the LUT (e.g. ``2056`` for CH1903+ / LV95).  Adds
+        ``x_{epsg}`` / ``y_{epsg}`` columns via :func:`add_lut_projection`.
+    projection_crs : pyproj.CRS or CRS-coercible, optional
+        Alternative to ``projection_epsg``.
 
     Returns
     -------
@@ -203,9 +225,10 @@ def generate_lut_from_datatree(
     if not sweep_names:
         raise ValueError("DataTree has no sweep groups (sweep_N).")
 
-    lut_records = []
+    lut_dfs = []
     sweep_meta = {}
     radar_lat, radar_lon, radar_alt = None, None, None
+    _radar_idx = np.int64(RADAR_TO_IDX[radar.upper()])
 
     for sweep_name in sweep_names:
         sweep_idx = int(sweep_name.split("_")[-1])
@@ -239,24 +262,29 @@ def generate_lut_from_datatree(
             x_raw, y_raw, z_raw, radar_lat, radar_lon, radar_alt
         )
 
-        for az_idx in range(n_az):
-            az = float(azimuths[az_idx])
-            for rng_idx in range(n_rng):
-                rng = float(ranges[rng_idx])
-                gate_id = generate_gate_id(radar, sweep_idx, az, rng)
-                lut_records.append({
-                    "gate_id": gate_id,
-                    "sweep": sweep_idx,
-                    "azimuth": az,
-                    "range": rng,
-                    "elevation_angle": elevation_angle,
-                    "latitude": float(gate_lat[az_idx, rng_idx]),
-                    "longitude": float(gate_lon[az_idx, rng_idx]),
-                    "altitude": float(gate_alt[az_idx, rng_idx]),
-                    "x": float(x_raw[az_idx, rng_idx]),
-                    "y": float(y_raw[az_idx, rng_idx]),
-                    "z": float(z_raw[az_idx, rng_idx]),
-                })
+        # Vectorised int64 gate_id generation (zero string allocations)
+        _az_int  = np.round(azimuths * 10).astype(np.int64)   # (n_az,)
+        _rng_int = ranges.astype(np.int64)                      # (n_rng,)
+        _gate_ids = (
+            _radar_idx         * np.int64(1_000_000_000_000)
+            + sweep_idx        * np.int64(   10_000_000_000)
+            + _az_int[:, None] * np.int64(        1_000_000)
+            + _rng_int[None, :]
+        ).ravel()
+
+        lut_dfs.append(pd.DataFrame({
+            "gate_id":         _gate_ids,
+            "sweep":           np.full(n_az * n_rng, sweep_idx, dtype=np.int32),
+            "azimuth":         np.repeat(azimuths, n_rng),
+            "range":           np.tile(ranges, n_az),
+            "elevation_angle": np.full(n_az * n_rng, elevation_angle),
+            "latitude":        gate_lat.ravel(),
+            "longitude":       gate_lon.ravel(),
+            "altitude":        gate_alt.ravel(),
+            "x":               x_raw.ravel(),
+            "y":               y_raw.ravel(),
+            "z":               z_raw.ravel(),
+        }))
 
         sweep_meta[sweep_idx] = {
             "n_azimuths": n_az,
@@ -264,10 +292,16 @@ def generate_lut_from_datatree(
             "elevation": round(elevation_angle, 2),
         }
 
-    df_lut = pd.DataFrame.from_records(lut_records)
+    df_lut = pd.concat(lut_dfs, ignore_index=True)
     logger.info(
         "LUT built: %d total gates, %d sweeps.", len(df_lut), len(sweep_meta)
     )
+
+    # Add projected coordinates if requested
+    if projection_epsg is not None or projection_crs is not None:
+        df_lut = add_lut_projection(
+            df_lut, epsg=projection_epsg, crs=projection_crs
+        )
 
     radar_info = {
         "radar": radar,
@@ -343,3 +377,95 @@ def get_full_sweep_index(
     if sweep_lut.empty:
         raise ValueError(f"No LUT entries found for sweep={sweep}.")
     return sweep_lut.set_index(["azimuth", "range"]).index
+
+
+# ============================================================================
+# Projection utilities
+# ============================================================================
+
+def add_lut_projection(
+    lut_df: pd.DataFrame,
+    epsg: int | None = None,
+    crs=None,
+) -> pd.DataFrame:
+    """Add projected coordinates to a LUT DataFrame.
+
+    Converts the ``latitude`` / ``longitude`` columns to the target CRS and
+    appends ``x_{suffix}`` / ``y_{suffix}`` columns, where ``suffix`` is the
+    EPSG code (if available) or ``"custom"``.
+
+    Requires **pyproj** (``pip install pyproj``).
+
+    Parameters
+    ----------
+    lut_df : pd.DataFrame
+        LUT DataFrame with ``latitude`` and ``longitude`` columns (degrees,
+        WGS-84 / EPSG:4326).
+    epsg : int, optional
+        EPSG code for the target CRS.
+        Example: ``2056`` for CH1903+ / LV95 (Swiss national grid).
+    crs : pyproj.CRS or any CRS-coercible object, optional
+        Alternative to ``epsg``.  Used when ``epsg`` is ``None``.
+        Can be a pyproj ``CRS`` object, a WKT string, or any value accepted
+        by ``pyproj.CRS()``.
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy of ``lut_df`` with two new columns:
+        ``x_{suffix}`` (easting / metres) and ``y_{suffix}`` (northing / metres).
+
+    Raises
+    ------
+    ValueError
+        If neither ``epsg`` nor ``crs`` is provided.
+    ImportError
+        If pyproj is not installed.
+
+    Examples
+    --------
+    Add Swiss LV95 (CH1903+) coordinates to a LUT:
+
+    >>> lut_ch = add_lut_projection(lut_df, epsg=2056)
+    >>> lut_ch[["x_2056", "y_2056"]].head()
+
+    Use a custom pyproj CRS:
+
+    >>> import pyproj
+    >>> my_crs = pyproj.CRS.from_epsg(32632)   # UTM zone 32N
+    >>> lut_utm = add_lut_projection(lut_df, crs=my_crs)
+    """
+    try:
+        import pyproj
+    except ImportError as exc:
+        raise ImportError(
+            "pyproj is required for add_lut_projection. "
+            "Install it with: pip install pyproj"
+        ) from exc
+
+    if epsg is not None:
+        target_crs = pyproj.CRS.from_epsg(epsg)
+        col_suffix = str(epsg)
+    elif crs is not None:
+        target_crs = crs if isinstance(crs, pyproj.CRS) else pyproj.CRS(crs)
+        detected_epsg = target_crs.to_epsg()
+        col_suffix = str(detected_epsg) if detected_epsg is not None else "custom"
+    else:
+        raise ValueError("Provide either 'epsg' or 'crs'.")
+
+    # Use proj4 string for WGS-84 to avoid requiring the PROJ database
+    wgs84 = pyproj.CRS.from_proj4(
+        "+proj=longlat +datum=WGS84 +no_defs"
+    )
+    transformer = pyproj.Transformer.from_crs(
+        wgs84, target_crs, always_xy=True
+    )
+    x_proj, y_proj = transformer.transform(
+        lut_df["longitude"].to_numpy(),
+        lut_df["latitude"].to_numpy(),
+    )
+
+    lut_out = lut_df.copy()
+    lut_out[f"x_{col_suffix}"] = x_proj
+    lut_out[f"y_{col_suffix}"] = y_proj
+    return lut_out

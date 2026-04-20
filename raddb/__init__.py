@@ -19,7 +19,7 @@ from raddb.api import RadDB
 
 # Helper functions
 from raddb.helper import (
-    read_parquet_dataset,
+    read_parquet_files,
     check_dataframe,
     list_sweep_names,
     normalize_radar_name,
@@ -37,10 +37,13 @@ from raddb.io_core import (
     join_labels_with_lut,
     reconstruct_sweep_dataset,
     reconstruct_datatree,
+    add_feature_to_df,
+    add_feature_to_dt,
 )
 
 # LUT functions
 from raddb.lut import (
+    RADAR_TO_IDX,
     antenna_vectors_to_cartesian,
     cartesian_to_geographic,
     compute_gate_xyz,
@@ -49,14 +52,16 @@ from raddb.lut import (
     load_radar_lut,
     load_radar_info,
     get_full_sweep_index,
+    add_lut_projection,
 )
 
 # Pipeline functions
 from raddb.pipeline import (
-    filter_clear_sky,
+    FILTER_LOGICS,
+    filter_df,
+    filter_dt,
     archive_volume,
-    archive_volumes,
-    archive_volumes_dask,
+    archive_multiple_volumes,
     archive_volumes_multi_radar,
 )
 
@@ -82,7 +87,7 @@ __all__ = [
     # High-level API
     "RadDB",
     # Helper functions
-    "read_parquet_dataset",
+    "read_parquet_files",
     "check_dataframe",
     "list_sweep_names",
     "normalize_radar_name",
@@ -97,7 +102,10 @@ __all__ = [
     "join_labels_with_lut",
     "reconstruct_sweep_dataset",
     "reconstruct_datatree",
+    "add_feature_to_df",
+    "add_feature_to_dt",
     # LUT functions
+    "RADAR_TO_IDX",
     "antenna_vectors_to_cartesian",
     "cartesian_to_geographic",
     "compute_gate_xyz",
@@ -106,11 +114,13 @@ __all__ = [
     "load_radar_lut",
     "load_radar_info",
     "get_full_sweep_index",
+    "add_lut_projection",
     # Pipeline functions
-    "filter_clear_sky",
+    "FILTER_LOGICS",
+    "filter_df",
+    "filter_dt",
     "archive_volume",
-    "archive_volumes",
-    "archive_volumes_dask",
+    "archive_multiple_volumes",
     "archive_volumes_multi_radar",
     # Plotting functions
     "plot_ppi",

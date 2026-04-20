@@ -54,9 +54,9 @@ def ensure_utc(dt_input):
     return ts.tz_convert("UTC")
 
 
-def read_parquet_dataset(
+def read_parquet_files(
     base_path: str | Path,
-    pattern: str = "**/*POLAR.parquet",
+    pattern: str = "**/*POL.parquet",
     columns: list[str] | None = None,
     verbose: bool = True,
 ) -> pd.DataFrame:
@@ -84,7 +84,7 @@ def _find_polar_files_in_range(
     end_time: str | pd.Timestamp | None = None,
 ) -> list[Path]:
     """Return POLAR parquet files within the given time range, sorted by timestamp."""
-    polar_files = sorted(radar_path.rglob("*_POLAR.parquet"))
+    polar_files = sorted(radar_path.rglob("*_POL.parquet"))
     if not polar_files:
         return []
 
@@ -93,8 +93,8 @@ def _find_polar_files_in_range(
 
     valid = []
     for f in polar_files:
-        # Filename: {radar}_{YYYYMMDD}_{HHMMSS}_POLAR.parquet
-        stem = f.stem.replace("_POLAR", "")
+        # Filename: {radar}_{YYYYMMDD}_{HHMMSS}_POL.parquet
+        stem = f.stem.replace("_POL", "")
         parts = stem.split("_")
         if len(parts) < 3:
             continue
@@ -189,12 +189,13 @@ class StageTimer:
                 "volume": volume,
                 "sweep": sweep,
                 "stage": stage,
+                "t_start": t0,
                 "duration": _time.perf_counter() - t0,
             })
 
-    def record(self, stage: str, duration: float, volume: str | None = None, sweep: int | None = None):
+    def record(self, stage: str, duration: float, volume: str | None = None, sweep: int | None = None, t_start: float | None = None):
         """Manually append a pre-measured timing entry."""
-        self.records.append({"volume": volume, "sweep": sweep, "stage": stage, "duration": duration})
+        self.records.append({"volume": volume, "sweep": sweep, "stage": stage, "t_start": t_start, "duration": duration})
 
     def to_dataframe(self) -> pd.DataFrame:
         """Return all records as a DataFrame with columns [volume, sweep, stage, duration]."""
@@ -363,6 +364,120 @@ def plot_sweep_timing(
     ax.spines[["top", "right"]].set_visible(False)
     plt.tight_layout()
 
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.show()
+    return fig
+
+
+def plot_task_gantt(
+    timer: "StageTimer",
+    stages: list[str] | None = None,
+    n_workers: int | None = None,
+    title: str = "Task Concurrency (Gantt)",
+    save_path: str | None = None,
+):
+    """Gantt chart showing when each volume-level task ran on the Dask cluster.
+
+    Each row is one volume. Bars represent the wall-clock span of each
+    requested stage (default: ``process_volume`` and ``archive_volume``).
+    Overlapping bars mean true parallel execution; sequential bars indicate
+    GIL contention or insufficient workers.
+
+    Parameters
+    ----------
+    timer : StageTimer
+        Timer populated after ``batch_archive_mch_volumes`` returns.
+    stages : list of str, optional
+        Stage names to plot.  Defaults to ``["process_volume", "archive_volume"]``.
+    n_workers : int, optional
+        If provided, draws a reference line for 100% worker utilization.
+    title : str
+        Chart title.
+    save_path : str, optional
+        If given, saves the figure to this path.
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    import numpy as np
+
+    if stages is None:
+        stages = ["process_volume", "archive_volume"]
+
+    df = timer.to_dataframe()
+    if df.empty or "t_start" not in df.columns:
+        print("[profiling] No t_start data — re-run with the updated StageTimer.")
+        return None
+
+    # Keep only volume-level stages with t_start recorded
+    gdf = df[df["stage"].isin(stages) & df["volume"].notna() & df["t_start"].notna()].copy()
+    if gdf.empty:
+        print(f"[profiling] No records found for stages {stages}.")
+        return None
+
+    # Normalise t_start so the chart starts at 0
+    t_origin = gdf["t_start"].min()
+    gdf["rel_start"] = gdf["t_start"] - t_origin
+    gdf["rel_end"]   = gdf["rel_start"] + gdf["duration"]
+
+    # Sort volumes by their earliest start time
+    vol_order = (
+        gdf.groupby("volume")["rel_start"].min().sort_values().index.tolist()
+    )
+    vol_pos = {v: i for i, v in enumerate(vol_order)}
+
+    stage_colors = plt.cm.tab10.colors
+    color_map = {s: stage_colors[i % len(stage_colors)] for i, s in enumerate(stages)}
+    bar_height = 0.55
+
+    fig, ax = plt.subplots(figsize=(12, max(4, len(vol_order) * 0.6 + 2)))
+
+    for _, row in gdf.iterrows():
+        y = vol_pos[row["volume"]]
+        ax.barh(
+            y, row["duration"], left=row["rel_start"],
+            height=bar_height, color=color_map[row["stage"]],
+            edgecolor="white", linewidth=0.5, alpha=0.85,
+        )
+
+    # Ideal wall-clock line: total CPU time / n_workers
+    if n_workers is not None:
+        total_cpu = gdf["duration"].sum()
+        ideal_wall = total_cpu / n_workers
+        ax.axvline(
+            ideal_wall, color="crimson", linestyle="--", linewidth=1.5,
+            label=f"Ideal wall clock ({n_workers} workers) = {ideal_wall:.0f}s",
+        )
+
+    # Actual wall-clock line (last task end)
+    actual_wall = gdf["rel_end"].max()
+    ax.axvline(
+        actual_wall, color="navy", linestyle=":", linewidth=1.5,
+        label=f"Actual wall clock = {actual_wall:.0f}s",
+    )
+
+    # Efficiency annotation
+    if n_workers is not None:
+        efficiency = (gdf["duration"].sum() / (n_workers * actual_wall)) * 100
+        ax.text(
+            0.99, 0.03,
+            f"Parallelism efficiency: {efficiency:.1f}%\n"
+            f"(= total CPU / (workers × wall clock))",
+            transform=ax.transAxes, ha="right", va="bottom",
+            fontsize=9, color="black",
+            bbox=dict(boxstyle="round,pad=0.3", fc="lightyellow", ec="gray", alpha=0.8),
+        )
+
+    ax.set_yticks(range(len(vol_order)))
+    ax.set_yticklabels([str(v)[-16:] for v in vol_order], fontsize=8)
+    ax.set_xlabel("Wall-clock time (seconds from first task start)", fontsize=10)
+    ax.set_title(title, fontsize=13, pad=10)
+    ax.spines[["top", "right"]].set_visible(False)
+
+    legend_patches = [mpatches.Patch(color=color_map[s], label=s) for s in stages]
+    ax.legend(handles=legend_patches + ax.get_lines(), fontsize=8, loc="upper left")
+
+    plt.tight_layout()
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.show()

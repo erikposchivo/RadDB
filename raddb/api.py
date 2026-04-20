@@ -8,6 +8,10 @@ The ``RadDB`` class provides a user-friendly interface for:
 - Generating and managing Look-Up Tables (LUT)
 - Loading archived data as DataFrames or DataTrees
 - Multi-radar support
+
+Note: network-specific constants such as a list of radar identifiers
+(e.g. Swiss radars A, D, L, P, W) belong in the user script or in the
+network-specific pipeline (e.g. ``mch_pipeline.py``), not here.
 """
 from __future__ import annotations
 
@@ -20,31 +24,31 @@ import xarray as xr
 
 from raddb.pipeline import (
     archive_volume,
-    archive_volumes,
-    archive_volumes_dask,
+    archive_multiple_volumes,
     archive_volumes_multi_radar,
-    filter_clear_sky,
+    filter_dt,
+    filter_df,
 )
 from raddb.io_core import (
     parquet_to_dataframe,
     parquet_to_datatree,
     reconstruct_datatree,
+    add_feature_to_df,
+    add_feature_to_dt,
 )
 from raddb.lut import (
     generate_lut_from_datatree,
     load_radar_lut,
     load_radar_info,
+    add_lut_projection,
 )
 from raddb.helper import (
-    read_parquet_dataset,
     normalize_radar_name,
     _find_polar_files_in_range,
     ensure_utc,
 )
 
 logger = logging.getLogger(__name__)
-
-SWISS_RADARS = ["A", "D", "L", "P", "W"]
 
 
 class RadDB:
@@ -61,7 +65,7 @@ class RadDB:
     >>> # Generate LUT from a sample DataTree
     >>> db.generate_lut(radar="A", sample_datatree=dt_sample)
     >>>
-    >>> # Archive a volume
+    >>> # Archive a volume from a DataTree
     >>> db.archive_volume(dt, radar="A")
     >>>
     >>> # Load data back
@@ -78,7 +82,7 @@ class RadDB:
         Parameters
         ----------
         base_path : str
-            Base directory for RadDB storage.  All LUT and POLAR parquet
+            Base directory for RadDB storage.  All LUT and POL parquet
             files will be stored under ``{base_path}/{radar}/``.
         """
         self.base_path = Path(base_path)
@@ -93,6 +97,8 @@ class RadDB:
         sample_datatree: xr.DataTree,
         ke: float = 1.25,
         network: str = "",
+        projection_epsg: int | None = None,
+        projection_crs=None,
     ) -> str:
         """Generate a Look-Up Table for a radar from a sample DataTree.
 
@@ -110,6 +116,12 @@ class RadDB:
             Scale factor for Earth's effective radius (default 1.25).
         network : str, optional
             Network identifier stored in the metadata YAML.
+        projection_epsg : int, optional
+            EPSG code for an additional projected coordinate system
+            (e.g. ``2056`` for CH1903+ / LV95).  Adds ``x_{epsg}`` /
+            ``y_{epsg}`` columns via :func:`add_lut_projection`.
+        projection_crs : pyproj.CRS or CRS-coercible, optional
+            Alternative to ``projection_epsg``.
 
         Returns
         -------
@@ -123,6 +135,8 @@ class RadDB:
             output_base_path=str(self.base_path),
             ke=ke,
             network=network,
+            projection_epsg=projection_epsg,
+            projection_crs=projection_crs,
         )
 
     def get_lut(self, radar: str) -> pd.DataFrame:
@@ -135,6 +149,42 @@ class RadDB:
         radar = normalize_radar_name(radar)
         return load_radar_info(radar, self.base_path)
 
+    def add_lut_projection(
+        self,
+        radar: str,
+        epsg: int | None = None,
+        crs=None,
+    ) -> pd.DataFrame:
+        """Add projected coordinates to the LUT of a radar.
+
+        Loads the LUT, converts lat/lon to the target CRS, and returns
+        the enriched DataFrame.  The LUT file on disk is **not** modified;
+        save the returned DataFrame yourself if persistence is needed.
+
+        Parameters
+        ----------
+        radar : str
+            Radar identifier.
+        epsg : int, optional
+            EPSG code for the target CRS.
+            Example: ``2056`` for CH1903+ / LV95 (Swiss national grid).
+        crs : pyproj.CRS or any CRS-coercible object, optional
+            Alternative to ``epsg``.
+
+        Returns
+        -------
+        pd.DataFrame
+            LUT with appended ``x_{suffix}`` / ``y_{suffix}`` columns.
+
+        Examples
+        --------
+        >>> lut_ch = db.add_lut_projection(radar="A", epsg=2056)
+        >>> lut_ch[["x_2056", "y_2056"]].head()
+        """
+        radar = normalize_radar_name(radar)
+        lut_df = load_radar_lut(radar, self.base_path)
+        return add_lut_projection(lut_df, epsg=epsg, crs=crs)
+
     # ================================================================
     # Archiving
     # ================================================================
@@ -143,14 +193,17 @@ class RadDB:
         self,
         dt: xr.DataTree,
         radar: str,
-        dbzh_threshold: float = 0.0,
+        filter_feature: str = "DBZH",
+        filter_threshold: float = 0.0,
+        filter_logic: str = ">",
         timer=None,
         volume_label: str | None = None,
     ) -> str:
         """Archive a single DataTree volume to Parquet.
 
-        Clear-sky gates (``DBZH <= dbzh_threshold``) are removed
-        automatically.
+        Gates that do not satisfy
+        ``filter_feature [filter_logic] filter_threshold`` are dropped
+        (row removal — zeros in surviving gates are preserved as zeros).
 
         Parameters
         ----------
@@ -158,8 +211,12 @@ class RadDB:
             Volume DataTree to archive.
         radar : str
             Radar identifier.
-        dbzh_threshold : float
-            Minimum DBZH to keep (default 0.0 removes clear sky).
+        filter_feature : str
+            Column to filter on (default ``"DBZH"``).
+        filter_threshold : float
+            Threshold value (default ``0.0``).
+        filter_logic : str
+            Comparison operator (default ``">"``).
         timer : StageTimer, optional
             Profiling timer.
         volume_label : str, optional
@@ -168,28 +225,31 @@ class RadDB:
         Returns
         -------
         str
-            Path to saved POLAR parquet file.
+            Path to saved POL parquet file.
         """
         radar = normalize_radar_name(radar)
         return archive_volume(
             dt=dt,
             radar=radar,
             base_output_path=str(self.base_path),
-            dbzh_threshold=dbzh_threshold,
+            filter_feature=filter_feature,
+            filter_threshold=filter_threshold,
+            filter_logic=filter_logic,
             timer=timer,
             volume=volume_label,
         )
 
-    def archive_volumes(
+    def archive_multiple_volumes(
         self,
         volumes: list[xr.DataTree] | dict[str, xr.DataTree],
         radar: str,
-        dbzh_threshold: float = 0.0,
-        use_dask: bool = False,
+        filter_feature: str = "DBZH",
+        filter_threshold: float = 0.0,
+        filter_logic: str = ">",
         verbose: bool = True,
         timer=None,
     ) -> list[dict]:
-        """Archive multiple DataTree volumes.
+        """Archive multiple DataTree volumes sequentially.
 
         Parameters
         ----------
@@ -197,14 +257,16 @@ class RadDB:
             Volumes to archive.  If a dict, keys are used as labels.
         radar : str
             Radar identifier.
-        dbzh_threshold : float
-            Clear-sky threshold.
-        use_dask : bool
-            If True, parallelize with Dask.  Requires an active Dask cluster.
+        filter_feature : str
+            Column to filter on (default ``"DBZH"``).
+        filter_threshold : float
+            Threshold value (default ``0.0``).
+        filter_logic : str
+            Comparison operator (default ``">"``).
         verbose : bool
             Print progress messages.
         timer : StageTimer, optional
-            Profiling timer (sequential mode only).
+            Profiling timer.
 
         Returns
         -------
@@ -212,19 +274,13 @@ class RadDB:
             Results for each volume.
         """
         radar = normalize_radar_name(radar)
-        if use_dask:
-            return archive_volumes_dask(
-                volumes=volumes,
-                radar=radar,
-                base_output_path=str(self.base_path),
-                dbzh_threshold=dbzh_threshold,
-                verbose=verbose,
-            )
-        return archive_volumes(
+        return archive_multiple_volumes(
             volumes=volumes,
             radar=radar,
             base_output_path=str(self.base_path),
-            dbzh_threshold=dbzh_threshold,
+            filter_feature=filter_feature,
+            filter_threshold=filter_threshold,
+            filter_logic=filter_logic,
             verbose=verbose,
             timer=timer,
         )
@@ -232,26 +288,29 @@ class RadDB:
     def archive_multi_radar(
         self,
         volumes_by_radar: dict[str, list[xr.DataTree] | dict[str, xr.DataTree]],
-        dbzh_threshold: float = 0.0,
-        use_dask: bool = False,
+        filter_feature: str = "DBZH",
+        filter_threshold: float = 0.0,
+        filter_logic: str = ">",
         verbose: bool = True,
         timer=None,
     ) -> dict[str, list[dict]]:
-        """Archive volumes for multiple radars at once.
+        """Archive volumes for multiple radars sequentially.
 
         Parameters
         ----------
         volumes_by_radar : dict
             Keys are radar names, values are lists/dicts of DataTrees.
             Example: ``{"A": [dt1, dt2], "D": [dt3]}``
-        dbzh_threshold : float
-            Clear-sky threshold.
-        use_dask : bool
-            If True, parallelize with Dask.
+        filter_feature : str
+            Column to filter on (default ``"DBZH"``).
+        filter_threshold : float
+            Threshold value (default ``0.0``).
+        filter_logic : str
+            Comparison operator (default ``">"``).
         verbose : bool
             Print progress.
         timer : StageTimer, optional
-            Profiling timer (sequential mode only).
+            Profiling timer.
 
         Returns
         -------
@@ -261,8 +320,9 @@ class RadDB:
         return archive_volumes_multi_radar(
             volumes_by_radar=volumes_by_radar,
             base_output_path=str(self.base_path),
-            dbzh_threshold=dbzh_threshold,
-            use_dask=use_dask,
+            filter_feature=filter_feature,
+            filter_threshold=filter_threshold,
+            filter_logic=filter_logic,
             verbose=verbose,
             timer=timer,
         )
@@ -346,7 +406,7 @@ class RadDB:
 
     def load_multi_radar_dataframe(
         self,
-        radars: list[str] | str,
+        radars: list[str],
         start_time: str | datetime.datetime | None = None,
         end_time: str | datetime.datetime | None = None,
         columns: list[str] | None = None,
@@ -359,8 +419,8 @@ class RadDB:
 
         Parameters
         ----------
-        radars : list of str, or "all"
-            Radar names.  ``"all"`` loads all Swiss radars (A, D, L, P, W).
+        radars : list of str
+            Radar names to load (e.g. ``["A", "D", "L"]``).
         start_time, end_time : optional
             Time range filter.
         columns : list of str, optional
@@ -373,10 +433,7 @@ class RadDB:
         pd.DataFrame
         """
         if isinstance(radars, str):
-            if radars.upper() == "ALL":
-                radars = SWISS_RADARS
-            else:
-                radars = [radars]
+            radars = [radars]
 
         dfs = []
         for radar in radars:
@@ -401,17 +458,76 @@ class RadDB:
     # ================================================================
 
     @staticmethod
-    def filter_clear_sky(
+    def filter_dt(
         dt: xr.DataTree,
+        feature: str = "DBZH",
         threshold: float = 0.0,
-        variable: str = "DBZH",
+        logic: str = ">",
     ) -> xr.DataTree:
-        """Remove clear-sky gates from a DataTree.
+        """Mask gates in a DataTree that do not satisfy the filter condition.
 
-        Convenience static method wrapping
-        :func:`raddb.pipeline.filter_clear_sky`.
+        Convenience static method wrapping :func:`raddb.pipeline.filter_dt`.
+
+        Gates where ``feature [logic] threshold`` is False are set to NaN
+        across all variables.  Gates where the condition is True keep their
+        original values unchanged (including legitimate zero values).
+
+        Parameters
+        ----------
+        dt : xr.DataTree
+        feature : str
+            Variable to filter on (default ``"DBZH"``).
+        threshold : float
+        logic : str
+            ``'>'``, ``'>='``, ``'<'``, ``'<='``, ``'=='``, ``'!='``.
         """
-        return filter_clear_sky(dt, threshold=threshold, variable=variable)
+        return filter_dt(dt, feature=feature, threshold=threshold, logic=logic)
+
+    @staticmethod
+    def filter_df(
+        df: pd.DataFrame,
+        feature: str = "DBZH",
+        threshold: float = 0.0,
+        logic: str = ">",
+    ) -> pd.DataFrame:
+        """Drop rows from a DataFrame that do not satisfy the filter condition.
+
+        Convenience static method wrapping :func:`raddb.pipeline.filter_df`.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+        feature : str
+            Column to filter on (default ``"DBZH"``).
+        threshold : float
+        logic : str
+            ``'>'``, ``'>='``, ``'<'``, ``'<='``, ``'=='``, ``'!='``.
+        """
+        return filter_df(df, feature=feature, threshold=threshold, logic=logic)
+
+    @staticmethod
+    def add_feature_to_df(
+        df: pd.DataFrame,
+        feature_name: str,
+        compute_fn: callable,
+    ) -> pd.DataFrame:
+        """Add a new column to a DataFrame computed from existing columns.
+
+        Convenience static method wrapping :func:`raddb.io_core.add_feature_to_df`.
+        """
+        return add_feature_to_df(df, feature_name=feature_name, compute_fn=compute_fn)
+
+    @staticmethod
+    def add_feature_to_dt(
+        dt: xr.DataTree,
+        feature_name: str,
+        compute_fn: callable,
+    ) -> xr.DataTree:
+        """Add a new variable to every sweep in a DataTree.
+
+        Convenience static method wrapping :func:`raddb.io_core.add_feature_to_dt`.
+        """
+        return add_feature_to_dt(dt, feature_name=feature_name, compute_fn=compute_fn)
 
     def list_available_radars(self) -> list[str]:
         """List radar identifiers that have data in the archive."""

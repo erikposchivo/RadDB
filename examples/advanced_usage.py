@@ -2,16 +2,24 @@
 Advanced Usage Example for RadDB
 =================================
 
-This example demonstrates advanced features:
-1. Multi-radar archiving
-2. Dask parallelization for batch processing
-3. Clear-sky filtering at the DataTree level
-4. Loading data from multiple radars
-5. Parquet -> DataTree reconstruction
-6. Using the MCH batch pipeline with dask
+This example demonstrates the two-step workflow:
 
-Author: RadDB Package
-Date: 2026-03-25
+  **Step 1 (MCH-specific):**  Raw METRANET files  ->  xarray DataTrees
+      via ``mch_pipeline`` (Swiss-specific processing: visibility,
+      KDP, attenuation, HZT, hydrometeor classification).
+
+  **Step 2 (generic RadDB):**  DataTrees  ->  archived Parquet files
+      via ``raddb.RadDB`` (works with any DataTree from any source).
+
+Features demonstrated:
+1. Sequential MCH processing + RadDB archiving (single radar)
+2. Multi-radar sequential processing
+3. Loading data from the archive (DataFrame, DataTree, multi-radar)
+4. Clear-sky filtering at the DataTree level
+5. Visualizations (PPI, RHI, Volume Panel, Classified)
+
+For end-to-end processing of a long time range on a server, use
+``main.py`` at the package root (resumable, volume-by-volume archive).
 """
 #%%
 import sys
@@ -27,11 +35,7 @@ from raddb.helper import StageTimer, plot_profiling_dashboard
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from mch_pipeline import (
     process_mch_volume,
-    process_and_archive_mch,
-    batch_archive_mch_volumes,
-    find_files_with_fallback,
-    _group_files_by_volume,
-    _parse_volume_time,
+    process_mch_volumes,
     generate_mch_lut,
 )
 
@@ -46,8 +50,16 @@ STATIC_VIS_DIR = "/home/erik_poschivo/Desktop/LTE_project/ltenas8/data/Rad4Alp_L
 QPEGRID_TO_RAD_DIR = "/home/erik_poschivo/Desktop/LTE_project/ltenas8/data/Rad4Alp_LUTs/qpegrid_to_rad"
 
 NETWORK = "MCH_LTE"
-START_TIME = "2024-08-01 12:00"
-END_TIME = "2024-08-15 12:00"
+START_TIME = "2024-08-18 00:00"
+END_TIME = "2024-08-18 10:00"
+
+# Swiss MeteoSwiss radar identifiers — network-specific constant kept here,
+# outside the generic raddb library.
+SWISS_RADARS = ["A", "D", "L", "P", "W"]
+
+# RadDB instance — used for all archiving and loading operations
+db = raddb.RadDB(base_path=BASE_PATH)
+
 
 #%%
 # =============================================================================
@@ -55,37 +67,54 @@ END_TIME = "2024-08-15 12:00"
 # =============================================================================
 
 print("=" * 70)
-print("PART 1: MCH Batch Processing (Sequential)")
+print("PART 1: MCH Processing (Sequential) + RadDB Archiving")
 print("=" * 70)
 
 timer = StageTimer()
 
-# process_and_archive_mch does everything: find files, process, archive
-results = process_and_archive_mch(
+# ---------------------------------------------------------------------------
+# Step 1 (MCH-specific): process raw METRANET files -> DataTrees
+# ---------------------------------------------------------------------------
+results = process_mch_volumes(
     network=NETWORK,
     radar="A",                        # single radar
     start_time=START_TIME,
     end_time=END_TIME,
-    base_output_path=BASE_PATH,
     raw_data_dir=RAW_DATA_DIR,
     static_vis_dir=STATIC_VIS_DIR,
     qpegrid_to_rad_dir=QPEGRID_TO_RAD_DIR,
     hzt_enabled=True,
     hym_enabled=True,
     compute_pyart_hc=True,
-    dbzh_threshold=0.0,              # remove clear sky
     verbose=True,
     timer=timer,
 )
 
-# Analyze results
 successful = [r for r in results if r["success"]]
 failed = [r for r in results if not r["success"]]
-print(f"\nResults: {len(successful)} OK, {len(failed)} failed")
+print(f"\nProcessing: {len(successful)} OK, {len(failed)} failed")
 if failed:
     print("Failed volumes:")
     for r in failed:
         print(f"  - {r['stem']}: {r['error']}")
+
+# ---------------------------------------------------------------------------
+# Step 2 (generic RadDB): archive DataTrees -> Parquet
+# ---------------------------------------------------------------------------
+if successful:
+    # Collect DataTrees as a dict for batch archiving
+    volumes_to_archive = {r["stem"]: r["datatree"] for r in successful}
+    archive_results = db.archive_multiple_volumes(
+        volumes=volumes_to_archive,
+        radar="A",
+        filter_feature="DBZH",
+        filter_threshold=0.0,           # remove clear sky
+        filter_logic=">",
+        verbose=True,
+        timer=timer,
+    )
+    n_archived = sum(1 for r in archive_results if r["success"])
+    print(f"Archived: {n_archived}/{len(archive_results)} volumes")
 
 timer.print_summary()
 plot_profiling_dashboard(timer, title_prefix="Radar A - Full Features")
@@ -113,20 +142,22 @@ print("\n" + "=" * 70)
 print("PART 2: Multi-Radar Processing")
 print("=" * 70)
 
-# Process multiple radars sequentially
-# Pass "all" for all five Swiss radars (A, D, L, P, W)
-results_multi = process_and_archive_mch(
+RAD = ["A", "D", "P"]
+
+# ---------------------------------------------------------------------------
+# Step 1 (MCH-specific): process multiple radars sequentially
+# ---------------------------------------------------------------------------
+results_multi = process_mch_volumes(
     network=NETWORK,
-    radar=["A", "D"],                 # or "all" for all radars
+    radar=RAD,                 # or "all" for all radars
     start_time=START_TIME,
     end_time=END_TIME,
-    base_output_path=BASE_PATH,
     raw_data_dir=RAW_DATA_DIR,
     static_vis_dir=STATIC_VIS_DIR,
     qpegrid_to_rad_dir=QPEGRID_TO_RAD_DIR,
-    hzt_enabled=False,
-    hym_enabled=False,
-    compute_pyart_hc=False,
+    hzt_enabled=True,
+    hym_enabled=True,
+    compute_pyart_hc=True,
     verbose=True,
 )
 
@@ -134,8 +165,22 @@ for r in results_multi:
     status = "OK" if r["success"] else f"FAIL: {r['error']}"
     print(f"  Radar {r['radar']} | {r['stem']} | {status}")
 
+# ---------------------------------------------------------------------------
+# Step 2 (generic RadDB): archive per radar
+# ---------------------------------------------------------------------------
+for radar_letter in RAD:
+    radar_ok = [r for r in results_multi if r["success"] and r["radar"] == radar_letter]
+    if radar_ok:
+        volumes_dict = {r["stem"]: r["datatree"] for r in radar_ok}
+        db.archive_multiple_volumes(
+            volumes=volumes_dict,
+            radar=radar_letter,
+            verbose=True,
+        )
+        print(f"  Radar {radar_letter}: archived {len(radar_ok)} volume(s)")
+
 # Generate LUT for each radar (uses first successful volume per radar)
-for radar_letter in ["A", "D"]:
+for radar_letter in RAD:
     first_ok = next(
         (r for r in results_multi if r["success"] and r["radar"] == radar_letter and r.get("sweep_filepaths")),
         None,
@@ -154,78 +199,15 @@ for radar_letter in ["A", "D"]:
 
 #%%
 # =============================================================================
-# PART 3: DASK PARALLEL PROCESSING
+# PART 3: LOADING ARCHIVED DATA
 # =============================================================================
 
 print("\n" + "=" * 70)
-print("PART 3: Dask Parallel Processing")
+print("PART 3: Loading Archived Data")
 print("=" * 70)
 
-# Initialize Dask cluster BEFORE calling batch functions
-from dask.distributed import Client
-
-# Local cluster — adjust resources as needed:
-#   n_workers:          number of parallel workers
-#   threads_per_worker: threads per worker (1 for CPU-bound tasks)
-#   memory_limit:       RAM per worker
-client = Client(n_workers=10, threads_per_worker=1, memory_limit="16GB")
-print(f"Dask dashboard: {client.dashboard_link}")
-
-# For remote cluster (e.g., on LTESRV1):
-#   client = Client("tcp://scheduler-address:8786")
-#   SSH tunnel: ssh -L 8787:localhost:8787 user@ltesrv1.epfl.ch
-
-# Batch archive with Dask parallelization
-results_dask = batch_archive_mch_volumes(
-    network=NETWORK,
-    radar="A",
-    start_time=START_TIME,
-    end_time=END_TIME,
-    base_output_path=BASE_PATH,
-    raw_data_dir=RAW_DATA_DIR,
-    static_vis_dir=STATIC_VIS_DIR,
-    qpegrid_to_rad_dir=QPEGRID_TO_RAD_DIR,
-    hzt_enabled=True,
-    hym_enabled=True,
-    compute_pyart_hc=True,
-    verbose=True,
-)
-
-n_ok = sum(1 for r in results_dask if r["success"])
-print(f"\nDask results: {n_ok}/{len(results_dask)} volumes succeeded")
-
-# Generate LUT from first successful Dask volume
-first_ok_dask = next(
-    (r for r in results_dask if r["success"] and r.get("sweep_filepaths")),
-    None,
-)
-if first_ok_dask:
-    lut_path = generate_mch_lut(
-        radar="A",
-        network=NETWORK,
-        sample_volume_filepaths=first_ok_dask["sweep_filepaths"],
-        output_base_path=BASE_PATH,
-        ke=1.25,
-    )
-    print(f"LUT saved to: {lut_path}")
-else:
-    print("No successful Dask volumes — cannot generate LUT")
-
-client.close()
-
-#%%
-# =============================================================================
-# PART 4: LOADING ARCHIVED DATA
-# =============================================================================
-
-print("\n" + "=" * 70)
-print("PART 4: Loading Archived Data")
-print("=" * 70)
-
-db = raddb.RadDB(base_path=BASE_PATH)
-
-# 4a. Load as DataFrame
-print("\n4a. Loading as DataFrame...")
+# 3a. Load as DataFrame
+print("\n3a. Loading as DataFrame...")
 df = db.load_dataframe(
     radar="A",
     start_time=START_TIME,
@@ -233,8 +215,8 @@ df = db.load_dataframe(
 )
 print(f"  {len(df):,} rows, columns: {list(df.columns)}")
 
-# 4b. Load with spatial coordinates
-print("\n4b. Loading with LUT merge...")
+# 3b. Load with spatial coordinates
+print("\n3b. Loading with LUT merge...")
 df_full = db.load_dataframe(
     radar="A",
     start_time=START_TIME,
@@ -244,8 +226,8 @@ df_full = db.load_dataframe(
 print(f"  {len(df_full):,} rows, columns: {list(df_full.columns)}")
 
 #%%
-# 4c. Load as DataTree (for visualization)
-print("\n4c. Reconstructing DataTree...")
+# 3c. Load as DataTree (for visualization)
+print("\n3c. Reconstructing DataTree...")
 dt = db.load_datatree(
     radar="A",
     start_time=START_TIME,
@@ -255,8 +237,8 @@ sweeps = raddb.list_sweep_names(dt)
 print(f"  {len(sweeps)} sweeps: {sweeps}")
 
 #%%
-# 4d. Multi-radar DataFrame
-print("\n4d. Multi-radar loading...")
+# 3d. Multi-radar DataFrame
+print("\n3d. Multi-radar loading...")
 df_multi = db.load_multi_radar_dataframe(
     radars=["A", "D"],  # or "all"
     start_time=START_TIME,
@@ -266,17 +248,17 @@ df_multi = db.load_multi_radar_dataframe(
 if not df_multi.empty:
     print(f"  {len(df_multi):,} rows from radars: {df_multi['radar'].unique().tolist()}")
 
-# 4e. List available radars
+# 3e. List available radars
 available = db.list_available_radars()
-print(f"\n4e. Available radars in archive: {available}")
+print(f"\n3e. Available radars in archive: {available}")
 
 #%%
 # =============================================================================
-# PART 5: CLEAR-SKY FILTERING
+# PART 4: CLEAR-SKY FILTERING
 # =============================================================================
 
 print("\n" + "=" * 70)
-print("PART 5: Clear-Sky Filtering at DataTree Level")
+print("PART 4: Clear-Sky Filtering at DataTree Level")
 print("=" * 70)
 
 # You can filter clear sky at the DataTree level before archiving
@@ -285,7 +267,7 @@ ds_before = dt["sweep_1"].to_dataset()
 n_valid_before = int((~ds_before["DBZH"].isnull()).sum())
 print(f"  sweep_1 valid DBZH gates: {n_valid_before:,}")
 
-dt_filtered = raddb.filter_clear_sky(dt, threshold=0.0)
+dt_filtered = raddb.filter_dt(dt, feature="DBZH", threshold=0.0, logic=">")
 
 print("After filter (DBZH <= 0 removed):")
 ds_after = dt_filtered["sweep_1"].to_dataset()
@@ -295,11 +277,11 @@ print(f"  Reduction: {(1 - n_valid_after / max(n_valid_before, 1)) * 100:.1f}%")
 
 #%%
 # =============================================================================
-# PART 6: VISUALIZATIONS
+# PART 5: VISUALIZATIONS
 # =============================================================================
 
 print("\n" + "=" * 70)
-print("PART 6: Visualizations")
+print("PART 5: Visualizations")
 print("=" * 70)
 
 # PPI
@@ -319,7 +301,8 @@ if "HC_PYART" in ds_1:
 print("\nAdvanced workflow complete!")
 print("=" * 70)
 print("Key features demonstrated:")
-print("  - MCH batch processing (sequential & Dask parallel)")
+print("  - MCH processing (sequential) -> DataTrees")
+print("  - RadDB archiving (DataTrees -> Parquet)")
 print("  - Multi-radar support")
 print("  - Parquet -> DataFrame / DataTree reconstruction")
 print("  - Clear-sky filtering")

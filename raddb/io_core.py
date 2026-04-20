@@ -18,7 +18,7 @@ import pandas as pd
 import xarray as xr
 import yaml
 
-from raddb.lut import generate_gate_id, get_full_sweep_index
+from raddb.lut import RADAR_TO_IDX, get_full_sweep_index
 from raddb.helper import list_sweep_names, _find_polar_files_in_range, ensure_utc
 
 logger = logging.getLogger(__name__)
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # --- Constants --- #
 POL_FEATURES = ["DBZH", "ZDR", "RHOHV", "PHIDP"]
 POLAR_COLUMNS = [
-    "gate_id", "sweep", "time",
+    "gate_id", "time",
     "DBZH", "ZDR", "RHOHV", "PHIDP",
     "HC_MCH", "HC_PYART", "HZT",
 ]
@@ -85,7 +85,7 @@ def _save_polar_parquet(
     )
     save_dir.mkdir(parents=True, exist_ok=True)
     ts = vol_time.strftime("%Y%m%d_%H%M%S")
-    pp = save_dir / f"{radar}_{ts}_POLAR.parquet"
+    pp = save_dir / f"{radar}_{ts}_POL.parquet"
     df_polar.to_parquet(pp, index=False, engine="pyarrow")
     return str(pp)
 
@@ -94,26 +94,57 @@ def datatree_to_parquet(
     dt: xr.DataTree,
     radar: str,
     base_output_path: str,
-    dbzh_threshold: float = 0.0,
+    filter_feature: str = "DBZH",
+    filter_threshold: float = 0.0,
+    filter_logic: str = ">",
     max_workers: int = 1,
 ) -> str:
-    """Convert a DataTree to a filtered POLAR parquet file.
+    """Convert a DataTree to a filtered POL parquet file.
 
-    Gates with ``DBZH <= dbzh_threshold`` (clear-sky) are removed before
-    saving.
+    Gates that do not satisfy ``filter_feature [filter_logic] filter_threshold``
+    are dropped (row removal) before saving.  Zero values in surviving gates
+    are preserved as-is.
+
+    If ``"HZT"`` is absent from the DataTree, ``"HC_PYART"`` is also skipped
+    because it requires HZT to be meaningful.
     """
+    from raddb.pipeline import FILTER_LOGICS
+
+    fn = FILTER_LOGICS.get(filter_logic)
+    if fn is None:
+        raise ValueError(
+            f"Unknown filter_logic '{filter_logic}'. "
+            f"Choose from: {list(FILTER_LOGICS)}"
+        )
+
     df = datatree_to_dataframe(dt, max_workers)
-    df["gate_id"] = df.apply(
-        lambda row: generate_gate_id(
-            radar, int(row["sweep"]), float(row["azimuth"]), float(row["range"])
-        ),
-        axis=1,
+
+    if filter_feature in df.columns:
+        _mask = fn(df[filter_feature].to_numpy(), filter_threshold)
+    else:
+        _mask = np.ones(len(df), dtype=bool)
+
+    _radar_idx = np.int64(RADAR_TO_IDX[radar.upper()])
+    _sweep_v   = df["sweep"].to_numpy(dtype=np.int64)[_mask]
+    _az_int    = np.round(df["azimuth"].to_numpy(dtype=np.float64)[_mask] * 10).astype(np.int64)
+    _rng_int   = df["range"].to_numpy(dtype=np.int64)[_mask]
+    _gate_ids  = (
+        _radar_idx * np.int64(1_000_000_000_000)
+        + _sweep_v  * np.int64(   10_000_000_000)
+        + _az_int   * np.int64(        1_000_000)
+        + _rng_int
     )
 
-    df_polar_full = df[df["DBZH"] > dbzh_threshold].copy()
-    df_polar = df_polar_full[
-        [c for c in POLAR_COLUMNS if c in df_polar_full.columns]
-    ].copy()
+    _hzt_available = "HZT" in df.columns
+    _polar_cols = [
+        c for c in POLAR_COLUMNS
+        if c in df.columns
+        and c != "gate_id"
+        and not (c == "HC_PYART" and not _hzt_available)
+    ]
+    df_polar = pd.DataFrame(
+        {"gate_id": _gate_ids, **{c: df[c].to_numpy()[_mask] for c in _polar_cols}},
+    )
 
     return _save_polar_parquet(df_polar, radar, base_output_path)
 
@@ -184,6 +215,7 @@ def parquet_to_dataframe(
             lut_df = pd.read_parquet(lut_path, engine="pyarrow")
             lut_cols = [
                 "gate_id",
+                "sweep",
                 "azimuth",
                 "range",
                 "elevation_angle",
@@ -276,14 +308,23 @@ def parquet_to_datatree(
 
     df_polar = pd.concat(dfs, ignore_index=True)
 
-    # Join with LUT
+    # Join with LUT — include "sweep" since it is no longer stored in the
+    # POL parquet (removed from POLAR_COLUMNS to avoid redundancy with gate_id).
     lut_df = pd.read_parquet(lut_path, engine="pyarrow")
     df_joined = df_polar.merge(
-        lut_df[["gate_id", "azimuth", "range"]],
+        lut_df[["gate_id", "sweep", "azimuth", "range"]],
         on="gate_id",
         how="left",
     )
     df_joined = df_joined.dropna(subset=["azimuth", "range"])
+
+    # When multiple volumes are loaded, keep only the latest observation
+    # per gate to avoid duplicate (azimuth, range) entries in reconstruction.
+    if "time" in df_joined.columns:
+        df_joined = df_joined.sort_values("time")
+    df_joined = df_joined.drop_duplicates(
+        subset=["sweep", "azimuth", "range"], keep="last"
+    )
 
     if df_joined.empty:
         raise ValueError(
@@ -412,4 +453,75 @@ def reconstruct_datatree(
 
     if not dict_ds:
         raise ValueError("No sweeps could be reconstructed.")
+    return xr.DataTree.from_dict(dict_ds)
+
+
+# ============================================================================
+# Feature addition utilities
+# ============================================================================
+
+def add_feature_to_df(
+    df: pd.DataFrame,
+    feature_name: str,
+    compute_fn: callable,
+) -> pd.DataFrame:
+    """Add a new column to a DataFrame computed from existing columns.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input DataFrame (e.g. from :func:`parquet_to_dataframe`).
+    feature_name : str
+        Name of the new column to add.
+    compute_fn : callable
+        Function that takes ``df`` and returns a Series or array of the
+        same length.  Example::
+
+            def my_feature(df):
+                return df["ZDR"] + df["DBZH"] * 0.1
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy of ``df`` with the new column appended.
+    """
+    df = df.copy()
+    df[feature_name] = compute_fn(df)
+    return df
+
+
+def add_feature_to_dt(
+    dt: xr.DataTree,
+    feature_name: str,
+    compute_fn: callable,
+) -> xr.DataTree:
+    """Add a new variable to every sweep in a DataTree.
+
+    Parameters
+    ----------
+    dt : xr.DataTree
+        Input DataTree with ``sweep_N`` groups.
+    feature_name : str
+        Name of the new variable to add to each sweep Dataset.
+    compute_fn : callable
+        Function that takes an ``xr.Dataset`` (one sweep) and returns an
+        ``xr.DataArray`` with matching dimensions.  Example::
+
+            def kdp_proxy(ds):
+                return (ds["PHIDP"].diff("range") / 0.250).clip(0)
+
+    Returns
+    -------
+    xr.DataTree
+        New DataTree with the computed variable added to every sweep.
+    """
+    from raddb.helper import list_sweep_names
+
+    sweep_names = list_sweep_names(dt)
+    dict_ds = {}
+    for sweep_name in sweep_names:
+        ds = dt[sweep_name].to_dataset()
+        new_var = compute_fn(ds)
+        ds = ds.assign({feature_name: new_var})
+        dict_ds[sweep_name] = ds
     return xr.DataTree.from_dict(dict_ds)
