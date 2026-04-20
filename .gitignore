@@ -1,7 +1,5 @@
 # Don't track these files
 
-# MCH-specific pipeline (not part of the generic RadDB package)
-mch_pipeline.py
 
 *~
 .DS_Store
