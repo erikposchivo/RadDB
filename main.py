@@ -18,8 +18,8 @@ Design notes:
 Typical usage on the server:
 
     python main.py \
-        --start "2024-01-01 00:00" \
-        --end   "2024-12-31 23:59" \
+        --start "2023-08-01 00:00" \
+        --end   "2023-08-31 23:59" \
         --radar all \
         --base-path         /ltenas8/users/giacobbi/raddb \
         --raw-data-dir      /ltenas8/data/RADAR \
@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import sys
+import time
 import traceback
 from pathlib import Path
 
@@ -90,6 +91,19 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--verbose", action="store_true",
                    help="Verbose per-volume logging.")
     return p.parse_args()
+
+
+def _format_elapsed_time(seconds: float) -> str:
+    """Format elapsed time in a human-readable format."""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    if hours > 0:
+        return f"{hours}h {minutes}m {secs}s"
+    elif minutes > 0:
+        return f"{minutes}m {secs}s"
+    else:
+        return f"{secs}s"
 
 
 def _resolve_radars(arg: str) -> list[str]:
@@ -252,6 +266,7 @@ def main() -> int:
     print(f"  resuming  : {len(checkpoint_seen)} volume(s) already archived")
     print("=" * 70)
 
+    pipeline_start_time = time.time()
     totals = {r: [0, 0] for r in radars}
 
     days = list(_iter_days(start, end))
@@ -276,6 +291,8 @@ def main() -> int:
     for radar, (n_ok, n_fail) in totals.items():
         print(f"  {radar}: {n_ok} archived, {n_fail} failed")
     print(f"  checkpoint: {checkpoint_path}")
+    elapsed_time = time.time() - pipeline_start_time
+    print(f"  elapsed time: {_format_elapsed_time(elapsed_time)}")
     print("=" * 70)
     return 0
 

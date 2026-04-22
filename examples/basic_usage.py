@@ -16,6 +16,10 @@ Date: 2026-03-25
 """
 #%%
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+print(f"Added to PYTHONPATH: {sys.path[0]}")
 import raddb
 
 # =============================================================================
@@ -23,7 +27,7 @@ import raddb
 # =============================================================================
 
 # Base directory for RadDB storage (LUT + POLAR parquet files)
-BASE_PATH = "/home/erik_poschivo/Desktop/LTE_project/ltenas8/users/giacobbi/raddb"
+BASE_PATH = "/ltenas8/users/giacobbi/raddb"
 
 # Radar identifier (single letter)
 RADAR_NAME = "L"
@@ -36,6 +40,7 @@ print("Initializing RadDB...")
 db = raddb.RadDB(base_path=BASE_PATH)
 
 
+#%%
 # =============================================================================
 # STEP 2: Get a DataTree (from MCH pipeline or any other source)
 # =============================================================================
@@ -46,8 +51,6 @@ db = raddb.RadDB(base_path=BASE_PATH)
 print("\nLoading DataTree via MCH pipeline...")
 
 # Import the MCH pipeline (not part of the RadDB package)
-import sys
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from mch_pipeline import process_mch_volume, find_files_with_fallback, _group_files_by_volume, _parse_volume_time
 
 RAW_DATA_DIR = "/home/erik_poschivo/Desktop/LTE_project/ltenas8/data/RADAR"
@@ -151,11 +154,15 @@ timer.print_summary()
 
 print(f"\nLoading processed data for radar {RADAR_NAME}...")
 
+START_TIME = "2022-08-01 12:00"
+END_TIME = "2022-08-10 12:00"
+
 # Load as DataFrame (for ML / analysis)
 df = db.load_dataframe(
     radar=RADAR_NAME,
     start_time=START_TIME,
     end_time=END_TIME,
+    merge_lut=True
 )
 print(f"  DataFrame: {len(df):,} rows, columns: {list(df.columns)}")
 print(df.head())
