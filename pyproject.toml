@@ -61,6 +61,7 @@ include = ["raddb*"]
 write_to = "raddb/_version.py"
 
 [project.optional-dependencies]
+viz = ["cartopy>=0.22", "pyproj>=3.0", "shapely>=2.0"]
 dev = ["pre-commit", "loghub",
        "black[jupyter]", "blackdoc", "codespell", "ruff",
        "pytest", "pytest-cov", "pytest-mock", "pytest-check", "pytest-sugar",

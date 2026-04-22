@@ -1457,6 +1457,7 @@ def generate_mch_lut(
     output_base_path: str,
     qpegrid_to_rad_dir: str | None = None,
     ke: float = 1.25,
+    projection_epsg: int | None = None,
 ) -> str:
     """
     Generate a RadDB LUT from METRANET sample files.
@@ -1562,6 +1563,11 @@ def generate_mch_lut(
     logger.info(
         "LUT built: %d total gates, %d sweeps.", len(df_lut), len(sweep_meta)
     )
+
+    if projection_epsg is not None:
+        from raddb.lut import add_lut_projection
+        df_lut = add_lut_projection(df_lut, epsg=projection_epsg)
+        logger.info("Added projected coordinates (EPSG:%d) to LUT.", projection_epsg)
 
     radar_info = {
         "radar": radar,

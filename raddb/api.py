@@ -404,6 +404,54 @@ class RadDB:
             max_workers=max_workers,
         )
 
+    def parquet_to_dt(
+        self,
+        parquet_file: str,
+        radar: str | None = None,
+        label_column: str = "DBZH",
+        max_workers: int = 1,
+    ) -> xr.DataTree:
+        """Load a single POL parquet file and reconstruct a DataTree.
+
+        Convenience method for loading from a direct file path rather than
+        a time range.  The LUT is looked up automatically under ``base_path``.
+
+        Parameters
+        ----------
+        parquet_file : str or Path
+            Path to a ``*_POL.parquet`` file.
+        radar : str, optional
+            Radar identifier (e.g. ``"A"``).  Inferred from the filename if
+            omitted.
+        label_column : str
+            Feature column used for reconstruction (default ``"DBZH"``).
+        max_workers : int
+            Parallel workers for sweep reconstruction.
+
+        Returns
+        -------
+        xr.DataTree
+        """
+        parquet_file = Path(parquet_file)
+        if radar is None:
+            radar = parquet_file.name.split("_")[0]
+        radar = normalize_radar_name(radar)
+
+        # Parse the volume timestamp from the filename:
+        # {radar}_{YYYYMMDD}_{HHMMSS}_POL.parquet
+        stem = parquet_file.stem.replace("_POL", "")
+        parts = stem.split("_")
+        ts = pd.to_datetime(parts[-2] + "_" + parts[-1], format="%Y%m%d_%H%M%S")
+
+        return parquet_to_datatree(
+            radar=radar,
+            base_path=self.base_path,
+            start_time=ts,
+            end_time=ts,
+            label_column=label_column,
+            max_workers=max_workers,
+        )
+
     def load_multi_radar_dataframe(
         self,
         radars: list[str],
@@ -538,6 +586,72 @@ class RadDB:
             for p in self.base_path.iterdir()
             if p.is_dir() and len(p.name) == 1 and p.name.isalpha()
         )
+
+    # ================================================================
+    # Plotting
+    # ================================================================
+
+    def plot_ppi(
+        self,
+        radar: str,
+        timestep: str | datetime.datetime | pd.Timestamp,
+        sweep: int | str,
+        variable: str,
+        **kwargs,
+    ):
+        """Plot a PPI for one volume loaded from the archive.
+
+        Parameters
+        ----------
+        radar : str
+            Radar identifier (e.g. ``"D"``).
+        timestep : str or datetime
+            Volume timestamp. A single volume at this time is loaded.
+        sweep : int or str
+            Sweep index (``3``) or group name (``"sweep_3"``).
+        variable : str
+            Variable to plot (``"DBZH"``, ``"ZDR"``, ``"HC_MCH"``, ...).
+        **kwargs
+            Forwarded to :func:`raddb.plot.plot_ppi` (``ax``, ``coords``,
+            ``use_cartopy``, ``vmin``, ``vmax``, ``cmap``, ...).
+        """
+        from raddb.plot import plot_ppi as _plot_ppi
+        ts = pd.to_datetime(timestep)
+        dt = self.load_datatree(
+            radar=radar, start_time=ts, end_time=ts, label_column=variable,
+        )
+        return _plot_ppi(dt, sweep=sweep, variable=variable, **kwargs)
+
+    def plot_rhi(
+        self,
+        radar: str,
+        timestep: str | datetime.datetime | pd.Timestamp,
+        azimuth: float,
+        variable: str,
+        **kwargs,
+    ):
+        """Plot a RHI (vertical cross-section) for one volume.
+
+        Parameters
+        ----------
+        radar : str
+            Radar identifier (e.g. ``"D"``).
+        timestep : str or datetime
+            Volume timestamp.
+        azimuth : float
+            Cross-section azimuth in degrees (0..360, 0 = North, clockwise).
+        variable : str
+            Variable to plot.
+        **kwargs
+            Forwarded to :func:`raddb.plot.plot_rhi` (``az_tol``,
+            ``max_range_km``, ``ax``, ``vmin``, ``vmax``, ``cmap``, ...).
+        """
+        from raddb.plot import plot_rhi as _plot_rhi
+        ts = pd.to_datetime(timestep)
+        dt = self.load_datatree(
+            radar=radar, start_time=ts, end_time=ts, label_column=variable,
+        )
+        return _plot_rhi(dt, azimuth=azimuth, variable=variable, **kwargs)
 
     # ================================================================
     # Backwards compatibility aliases

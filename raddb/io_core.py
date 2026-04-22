@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+import re
 from pathlib import Path
 
 import numpy as np
@@ -28,13 +29,17 @@ POL_FEATURES = ["DBZH", "ZDR", "RHOHV", "PHIDP"]
 POLAR_COLUMNS = [
     "gate_id", "time",
     "DBZH", "ZDR", "RHOHV", "PHIDP",
-    "HC_MCH", "HC_PYART", "HZT",
+    "HC_MCH", "HC_PYART", "HZT", "TEMP",
 ]
 LUT_COLUMNS = [
     "gate_id", "sweep", "azimuth", "range", "elevation_angle",
     "latitude", "longitude", "altitude",
     "x", "y", "z",
 ]
+
+# float32 gives 7 significant digits — sufficient for all radar variables.
+_POLAR_FLOAT32_COLS: frozenset = frozenset({"DBZH", "ZDR", "RHOHV", "PHIDP", "HZT", "HC_MCH", "HC_PYART", "TEMP"})
+_LAPSE_RATE: float = -0.0065  # °C/m (standard environmental lapse rate, -6.5 °C/km)
 
 
 # ============================================================================
@@ -88,6 +93,44 @@ def _save_polar_parquet(
     pp = save_dir / f"{radar}_{ts}_POL.parquet"
     df_polar.to_parquet(pp, index=False, engine="pyarrow")
     return str(pp)
+
+
+def _cast_hc_column(arr, shift: int = 0) -> np.ndarray:
+    """Cast an HC column to float32, optionally shifting values first.
+
+    HC_MCH stores classes 0–8 (0-based) while HC_PYART uses 1–9 (1-based).
+    Pass ``shift=1`` for HC_MCH to remap 0→1, 1→2, …, 8→9 so both variables
+    share the same 1–9 range.  Values outside 1–9 after shifting become NaN.
+    """
+    arr_f = pd.to_numeric(pd.Series(arr), errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+    if shift:
+        arr_f = np.where(np.isnan(arr_f), np.nan, arr_f + shift)
+    arr_f[(arr_f < 1) | (arr_f > 9)] = np.nan
+    return arr_f.astype(np.float32)
+
+
+def _compute_gate_temperature(df: pd.DataFrame, mask: np.ndarray) -> np.ndarray | None:
+    """Compute temperature (°C) at surviving gates using standard lapse rate.
+
+    TEMP = _LAPSE_RATE × (gate_altitude − HZT)
+    gate_altitude = radar site altitude + z-height above radar (4/3 Earth radius model).
+    Returns NaN array if HZT is absent; returns None only if geometry columns
+    (range, elevation, altitude) are missing so no array can be sized.
+    """
+    geom_required = {"range", "elevation", "altitude"}
+    if not geom_required.issubset(df.columns):
+        return None
+    n        = int(mask.sum())
+    r        = df["range"].to_numpy()[mask]
+    el_rad   = np.deg2rad(df["elevation"].to_numpy()[mask])
+    site_alt = df["altitude"].to_numpy()[mask]
+    ke, Re   = 4.0 / 3.0, 6_371_000.0
+    z_gate   = np.sqrt(r**2 + (ke * Re)**2 + 2 * r * ke * Re * np.sin(el_rad)) - ke * Re
+    gate_alt = site_alt + z_gate
+    if "HZT" not in df.columns:
+        return np.full(n, np.nan, dtype=np.float32)
+    hzt = df["HZT"].to_numpy()[mask]
+    return (_LAPSE_RATE * (gate_alt - hzt)).astype(np.float32)
 
 
 def datatree_to_parquet(
@@ -145,6 +188,20 @@ def datatree_to_parquet(
     df_polar = pd.DataFrame(
         {"gate_id": _gate_ids, **{c: df[c].to_numpy()[_mask] for c in _polar_cols}},
     )
+
+    # Apply dtype optimizations: float32 for all polar variables.
+    # HC_MCH is shifted +1 (0-based → 1-based) to align with HC_PYART.
+    for col in list(df_polar.columns):
+        if col == "HC_MCH":
+            df_polar[col] = _cast_hc_column(df_polar[col], shift=1)
+        elif col == "HC_PYART":
+            df_polar[col] = _cast_hc_column(df_polar[col], shift=0)
+        elif col in _POLAR_FLOAT32_COLS:
+            df_polar[col] = df_polar[col].astype(np.float32)
+
+    _temp = _compute_gate_temperature(df, _mask)
+    if _temp is not None:
+        df_polar["TEMP"] = _temp
 
     return _save_polar_parquet(df_polar, radar, base_output_path)
 
@@ -226,6 +283,10 @@ def parquet_to_dataframe(
                 "y",
                 "z",
             ]
+            # Include any projected coordinate columns added by add_lut_projection
+            # (e.g. x_2056, y_2056 for Swiss LV95 / EPSG:2056)
+            import re as _re
+            lut_cols += [c for c in lut_df.columns if _re.match(r"^[xy]_\w+$", c)]
             lut_cols = [c for c in lut_cols if c in lut_df.columns]
             df_all = df_all.merge(lut_df[lut_cols], on="gate_id", how="left")
         else:
@@ -309,10 +370,17 @@ def parquet_to_datatree(
     df_polar = pd.concat(dfs, ignore_index=True)
 
     # Join with LUT — include "sweep" since it is no longer stored in the
-    # POL parquet (removed from POLAR_COLUMNS to avoid redundancy with gate_id).
+    # POL parquet (removed from POLAR_COLUMNS to avoid redundancy with gate_id),
+    # plus per-gate spatial coords (latitude, longitude, altitude, x, y, z and
+    # any x_<epsg> / y_<epsg> projection columns) so the reconstructed DataTree
+    # is plot-ready.
     lut_df = pd.read_parquet(lut_path, engine="pyarrow")
+    _spatial_cols = ["latitude", "longitude", "altitude", "x", "y", "z"]
+    _proj_cols = [c for c in lut_df.columns if re.match(r"^[xy]_\w+$", c)]
+    _join_cols = ["gate_id", "sweep", "azimuth", "range"] + _spatial_cols + _proj_cols
+    _join_cols = [c for c in _join_cols if c in lut_df.columns]
     df_joined = df_polar.merge(
-        lut_df[["gate_id", "sweep", "azimuth", "range"]],
+        lut_df[_join_cols],
         on="gate_id",
         how="left",
     )
@@ -369,12 +437,15 @@ def join_labels_with_lut(
     )
 
 
+_PER_GATE_COORDS = ("latitude", "longitude", "altitude", "x", "y", "z")
+
+
 def _get_sweep_coords(sweep, radar_info):
     coords = {
-        "latitude": radar_info["latitude"],
-        "longitude": radar_info["longitude"],
-        "altitude": radar_info["altitude"],
-        "sweep_number": sweep,
+        "site_latitude":  radar_info["latitude"],
+        "site_longitude": radar_info["longitude"],
+        "site_altitude":  radar_info["altitude"],
+        "sweep_number":   sweep,
     }
     meta = radar_info.get("sweeps", {}).get(sweep, {})
     if "elevation" in meta:
@@ -389,20 +460,43 @@ def reconstruct_sweep_dataset(
     radar_info: dict,
     label_column: str = "hydrometeor_class",
 ) -> xr.Dataset:
-    """Reconstruct a single sweep Dataset from joined data."""
+    """Reconstruct a single sweep Dataset from joined data.
+
+    Data variables come from the filtered POL parquet (NaN where gates were
+    dropped). Per-gate spatial coords (lat/lon/alt/x/y/z and any x_<epsg>/
+    y_<epsg>) come from the LUT directly so every gate has a valid geometry
+    regardless of filtering.
+    """
     df_sweep = df_joined[df_joined["sweep"] == sweep].copy()
-    keep_cols = [
-        c
-        for c in df_sweep.columns
-        if c not in ("gate_id", "sweep", "azimuth", "range")
+
+    # Identify spatial columns that should come from the LUT (always populated)
+    # and non-spatial columns that should come from the polar data (may be NaN).
+    spatial_cols = [c for c in _PER_GATE_COORDS if c in lut_df.columns]
+    spatial_cols += [c for c in lut_df.columns if re.match(r"^[xy]_\w+$", c)]
+
+    non_spatial = [
+        c for c in df_sweep.columns
+        if c not in ("gate_id", "sweep", "azimuth", "range") and c not in spatial_cols
     ]
 
     idx = get_full_sweep_index(lut_df, sweep)
-    df_reidx = df_sweep.set_index(["azimuth", "range"])[keep_cols].reindex(idx)
 
-    ds = df_reidx.to_xarray().assign_coords(
+    # Data variables (may have NaN for filtered-out gates)
+    df_reidx = df_sweep.set_index(["azimuth", "range"])[non_spatial].reindex(idx)
+
+    # Spatial coords from the LUT, aligned to the same (azimuth, range) index
+    lut_sweep = lut_df[lut_df["sweep"] == sweep].set_index(["azimuth", "range"])
+    lut_spatial = lut_sweep[spatial_cols].reindex(idx)
+    df_full = pd.concat([df_reidx, lut_spatial], axis=1)
+
+    ds = df_full.to_xarray().assign_coords(
         _get_sweep_coords(sweep, radar_info)
     )
+
+    # Promote per-gate spatial vars to coords so the Dataset is plot-ready.
+    promote = [c for c in spatial_cols if c in ds.data_vars]
+    if promote:
+        ds = ds.set_coords(promote)
     return ds
 
 

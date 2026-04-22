@@ -27,10 +27,10 @@ import raddb
 # =============================================================================
 
 # Base directory for RadDB storage (LUT + POLAR parquet files)
-BASE_PATH = "/ltenas8/users/giacobbi/raddb"
+BASE_PATH = "/home/erik_poschivo/Desktop/LTE_project/ltenas8/users/giacobbi/raddb"
 
 # Radar identifier (single letter)
-RADAR_NAME = "L"
+RADAR_NAME = "A"
 
 # =============================================================================
 # STEP 1: Initialize RadDB
@@ -154,8 +154,8 @@ timer.print_summary()
 
 print(f"\nLoading processed data for radar {RADAR_NAME}...")
 
-START_TIME = "2022-08-01 12:00"
-END_TIME = "2022-08-10 12:00"
+START_TIME = "2024-07-15 23:00"
+END_TIME = "2024-07-15 23:59"
 
 # Load as DataFrame (for ML / analysis)
 df = db.load_dataframe(
@@ -165,7 +165,87 @@ df = db.load_dataframe(
     merge_lut=True
 )
 print(f"  DataFrame: {len(df):,} rows, columns: {list(df.columns)}")
-print(df.head())
+
+#%%
+# =============================================================================
+# STEP 5b: Test the new plotting functions (PPI + RHI)
+# =============================================================================
+# Two ways to call the plotting:
+#   1. High-level on the RadDB instance: db.plot_ppi(radar, timestep, sweep, variable)
+#   2. Low-level on a DataTree: raddb.plot_ppi(dt, sweep, variable)
+import matplotlib.pyplot as plt
+
+PLOT_TIMESTEP = "2024-07-15 23:00:11"   # single volume timestamp
+PLOT_SWEEP    = 3
+PLOT_AZIMUTH  = 90.0
+
+# --- PPI: continuous variable (DBZH), cartesian view (no cartopy required) ---
+db.plot_ppi(
+    radar=RADAR_NAME,
+    timestep=PLOT_TIMESTEP,
+    sweep=PLOT_SWEEP,
+    variable="DBZH",
+    coords="cartesian",
+)
+plt.show()
+
+# --- PPI: continuous variable (DBZH), geographic view (uses cartopy if installed) ---
+db.plot_ppi(
+    radar=RADAR_NAME,
+    timestep=PLOT_TIMESTEP,
+    sweep=PLOT_SWEEP,
+    variable="DBZH",
+    coords="geo",
+)
+plt.show()
+
+# --- PPI: classified variable (HC_MCH) → discrete colorbar with class labels ---
+db.plot_ppi(
+    radar=RADAR_NAME,
+    timestep=PLOT_TIMESTEP,
+    sweep=PLOT_SWEEP,
+    variable="HC_MCH",
+    coords="cartesian",
+)
+plt.show()
+
+# --- PPI: temperature (TEMP) — new feature ---
+db.plot_ppi(
+    radar=RADAR_NAME,
+    timestep=PLOT_TIMESTEP,
+    sweep=PLOT_SWEEP,
+    variable="TEMP",
+    coords="cartesian",
+)
+plt.show()
+
+# --- RHI: vertical cross-section at the given azimuth ---
+db.plot_rhi(
+    radar=RADAR_NAME,
+    timestep=PLOT_TIMESTEP,
+    azimuth=PLOT_AZIMUTH,
+    variable="DBZH",
+    max_range_km=150,
+)
+plt.show()
+
+# --- RHI: classified variable ---
+db.plot_rhi(
+    radar=RADAR_NAME,
+    timestep=PLOT_TIMESTEP,
+    azimuth=PLOT_AZIMUTH,
+    variable="HC_PYART",
+    max_range_km=150,
+)
+plt.show()
+
+#%%
+#check the A_LUT.paruqet file
+import pandas as pd
+
+radar_path = Path(BASE_PATH) / RADAR_NAME
+lut_path = radar_path / "LUT" / f"{RADAR_NAME}_LUT.parquet"
+lut_df = pd.read_parquet(lut_path, engine="pyarrow")
 
 #%%
 # Load as DataTree (for visualization)
@@ -195,17 +275,3 @@ radar_info = db.get_radar_info(RADAR_NAME)
 print(f"\nRadar location: {radar_info['latitude']}, {radar_info['longitude']}")
 
 print("\nBasic workflow complete!")
-
-#%%
-# =============================================================================
-# ADDITIONAL: Load with spatial coordinates (merge with LUT)
-# =============================================================================
-
-df_with_coords = db.load_dataframe(
-    radar=RADAR_NAME,
-    start_time=START_TIME,
-    end_time=END_TIME,
-    merge_lut=True,  # adds azimuth, range, x, y, z, lat, lon, alt
-)
-print(f"\nDataFrame with LUT: {len(df_with_coords):,} rows")
-print(f"Columns: {list(df_with_coords.columns)}")

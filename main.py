@@ -222,6 +222,7 @@ def _process_day_for_radar(
                         sample_volume_filepaths=sweep_paths,
                         output_base_path=str(base_path),
                         qpegrid_to_rad_dir=args.qpegrid_to_rad_dir,
+                        projection_epsg=2056,
                     )
                 except Exception as e:
                     print(f"  [{radar}] LUT generation failed: {e}")

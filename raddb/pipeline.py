@@ -30,6 +30,9 @@ from raddb.io_core import (
     POLAR_COLUMNS,
     _save_polar_parquet,
     datatree_to_dataframe,
+    _cast_hc_column,
+    _POLAR_FLOAT32_COLS,
+    _compute_gate_temperature,
 )
 from raddb.lut import RADAR_TO_IDX
 from raddb.helper import (
@@ -291,6 +294,16 @@ def archive_volume(
         if timer
         else _nullctx()
     ):
+        for col in list(df_polar.columns):
+            if col == "HC_MCH":
+                df_polar[col] = _cast_hc_column(df_polar[col], shift=1)
+            elif col == "HC_PYART":
+                df_polar[col] = _cast_hc_column(df_polar[col], shift=0)
+            elif col in _POLAR_FLOAT32_COLS:
+                df_polar[col] = df_polar[col].astype(np.float32)
+        _temp = _compute_gate_temperature(df, _mask)
+        if _temp is not None:
+            df_polar["TEMP"] = _temp
         return _save_polar_parquet(df_polar, radar, base_output_path)
 
 

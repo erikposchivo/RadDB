@@ -69,10 +69,6 @@ from raddb.pipeline import (
 from raddb.plot import (
     plot_ppi,
     plot_rhi,
-    plot_cappi,
-    plot_volume_panel,
-    plot_classified_ppi,
-    plot_classified_rhi,
 )
 
 # Profiling helpers
@@ -125,10 +121,6 @@ __all__ = [
     # Plotting functions
     "plot_ppi",
     "plot_rhi",
-    "plot_cappi",
-    "plot_volume_panel",
-    "plot_classified_ppi",
-    "plot_classified_rhi",
     # Profiling helpers
     "plot_stage_totals",
     "plot_volume_timing",
