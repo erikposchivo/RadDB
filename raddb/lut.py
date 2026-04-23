@@ -34,11 +34,58 @@ RADAR_TO_IDX: dict[str, int] = {chr(ord("A") + i): i for i in range(26)}
 # Coordinate transforms  (pure numpy, no pyart dependency)
 # ============================================================================
 
+def _interpolate_range_edges(ranges: np.ndarray) -> np.ndarray:
+    """Interpolate the edges of range gates (PyART's formula).
+
+    Returns an array of size ``ranges.size + 1``: the midpoints between
+    consecutive gates, with first and last edges extrapolated by half a
+    step and clipped to non-negative values.
+    """
+    r = np.asarray(ranges, dtype=np.float64)
+    edges = np.empty(r.size + 1, dtype=np.float64)
+    edges[1:-1] = 0.5 * (r[:-1] + r[1:])
+    edges[0]    = r[0]  - 0.5 * (r[1]  - r[0])
+    edges[-1]   = r[-1] + 0.5 * (r[-1] - r[-2])
+    edges[edges < 0] = 0.0
+    return edges
+
+
+def _interpolate_elevation_edges(elevations: np.ndarray) -> np.ndarray:
+    """Interpolate elevation-angle edges (linear, clipped to [-90, 90])."""
+    el = np.asarray(elevations, dtype=np.float64)
+    edges = np.empty(el.size + 1, dtype=np.float64)
+    edges[1:-1] = 0.5 * (el[:-1] + el[1:])
+    edges[0]    = el[0]  - 0.5 * (el[1]  - el[0])
+    edges[-1]   = el[-1] + 0.5 * (el[-1] - el[-2])
+    return np.clip(edges, -90.0, 90.0)
+
+
+def _interpolate_azimuth_edges(azimuths: np.ndarray) -> np.ndarray:
+    """Interpolate azimuth-angle edges using complex-plane midpoints.
+
+    Complex-number interpolation handles the 360°→0° wrap-around correctly:
+    the midpoint between 359° and 1° is 0°, not 180°.
+
+    Returns
+    -------
+    edges : np.ndarray
+        Shape ``(azimuths.size + 1,)``, values in [0, 360).
+    """
+    az = np.asarray(azimuths, dtype=np.float64)
+    z = np.exp(1j * np.deg2rad(az))
+    midpoints = 0.5 * (z[:-1] + z[1:])
+    first = z[0]  - (midpoints[0]  - z[0])
+    last  = z[-1] + (z[-1] - midpoints[-1])
+    edges = np.concatenate(([first], midpoints, [last]))
+    return np.rad2deg(np.angle(edges)) % 360.0
+
+
 def antenna_vectors_to_cartesian(
     ranges: np.ndarray,
     azimuths: np.ndarray,
     elevations: np.ndarray,
     ke: float = 4.0 / 3.0,
+    edges: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Convert radar antenna coordinates to Cartesian (x, y, z).
 
@@ -56,12 +103,21 @@ def antenna_vectors_to_cartesian(
         Elevation angle of each ray in degrees.
     ke : float
         Effective Earth radius scale factor (default 4/3).
+    edges : bool
+        If True, interpolate ranges/azimuths/elevations to gate edges
+        (size N+1) before computing Cartesian coords. Used for
+        ``pcolormesh(shading="flat")`` rendering.
 
     Returns
     -------
-    x, y, z : arrays, shape (n_rays, n_gates)
+    x, y, z : arrays, shape (n_rays, n_gates) — or (n_rays+1, n_gates+1) if ``edges``.
         Cartesian coordinates in meters relative to the radar.
     """
+    if edges:
+        ranges     = _interpolate_range_edges(ranges)
+        azimuths   = _interpolate_azimuth_edges(azimuths)
+        elevations = _interpolate_elevation_edges(elevations)
+
     r = np.atleast_1d(np.asarray(ranges, dtype=np.float64))
     theta_e = np.deg2rad(np.atleast_1d(np.asarray(elevations, dtype=np.float64)))
     theta_a = np.deg2rad(np.atleast_1d(np.asarray(azimuths, dtype=np.float64)))
@@ -345,6 +401,132 @@ def _save_lut_outputs(lut_dir, radar, df_lut, radar_info):
 # ============================================================================
 # Loaders
 # ============================================================================
+
+def compute_sweep_corners(
+    ranges: np.ndarray,
+    azimuths: np.ndarray,
+    elevations: np.ndarray,
+    radar_lat: float,
+    radar_lon: float,
+    radar_alt: float,
+    ke: float = 4.0 / 3.0,
+) -> dict:
+    """Compute per-sweep gate corner arrays for pcolormesh rendering.
+
+    Uses PyART's edge-interpolation (complex-plane for azimuth wrap-around)
+    plus the standard 4/3 Earth beam propagation.
+
+    Returns
+    -------
+    dict with keys ``x_edges``, ``y_edges``, ``z_edges``, ``lon_edges``,
+    ``lat_edges``, each shape ``(n_az+1, n_range+1)``.
+    """
+    x_e, y_e, z_e = antenna_vectors_to_cartesian(
+        ranges, azimuths, elevations, ke=ke, edges=True,
+    )
+    lat_e, lon_e, _ = cartesian_to_geographic(
+        x_e, y_e, z_e, radar_lat=radar_lat, radar_lon=radar_lon, radar_alt=radar_alt,
+    )
+    return {
+        "x_edges":   x_e.astype(np.float32),
+        "y_edges":   y_e.astype(np.float32),
+        "z_edges":   z_e.astype(np.float32),
+        "lon_edges": lon_e.astype(np.float32),
+        "lat_edges": lat_e.astype(np.float32),
+    }
+
+
+def save_sweep_corners(
+    corners_by_sweep: dict[int, dict], corners_path: str | Path
+) -> str:
+    """Save per-sweep corner arrays to a single ``.npz`` file.
+
+    Parameters
+    ----------
+    corners_by_sweep : dict {sweep_number: {"x_edges", "y_edges", ...}}
+    corners_path : str or Path
+        Target ``.npz`` file path.
+    """
+    flat = {}
+    for sw, d in corners_by_sweep.items():
+        for k, v in d.items():
+            flat[f"sweep_{int(sw)}_{k}"] = v
+    corners_path = Path(corners_path)
+    corners_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(corners_path, **flat)
+    logger.info("Sweep corners saved -> %s", corners_path)
+    return str(corners_path)
+
+
+def compute_corners_from_lut(
+    radar: str,
+    lut_base_path: str | Path,
+    ke: float = 4.0 / 3.0,
+) -> str:
+    """Rebuild ``{radar}_corners.npz`` from an existing LUT parquet + info YAML.
+
+    Useful when the corners file is missing (e.g. for LUTs generated before
+    corners were introduced). Reads the per-sweep unique (azimuth, range,
+    elevation) triples from the LUT, computes corner arrays via
+    :func:`compute_sweep_corners`, and saves them.
+
+    Returns
+    -------
+    str : path to the written ``.npz`` file.
+    """
+    lut_df = load_radar_lut(radar, lut_base_path)
+    info = load_radar_info(radar, lut_base_path)
+    corners_by_sweep: dict[int, dict] = {}
+    for sweep_num in sorted(lut_df["sweep"].unique()):
+        sub = lut_df[lut_df["sweep"] == sweep_num]
+        azimuths = np.sort(sub["azimuth"].unique())
+        ranges   = np.sort(sub["range"].unique())
+        n_az, n_rng = len(azimuths), len(ranges)
+        # Rebuild per-ray elevation from the LUT (stored as constant per sweep
+        # in elevation_angle). If the per-ray elevation varies within a sweep,
+        # we'd need the raw antenna data; for Swiss radars the fixed-angle
+        # approximation is accurate to < 0.1°.
+        el_mean = float(sub["elevation_angle"].iloc[0])
+        elevations = np.full(n_az, el_mean, dtype=np.float64)
+        corners_by_sweep[int(sweep_num)] = compute_sweep_corners(
+            ranges=ranges, azimuths=azimuths, elevations=elevations,
+            radar_lat=info["latitude"],
+            radar_lon=info["longitude"],
+            radar_alt=info["altitude"],
+            ke=ke,
+        )
+    corners_path = Path(lut_base_path) / radar / "LUT" / f"{radar}_corners.npz"
+    save_sweep_corners(corners_by_sweep, corners_path)
+    return str(corners_path)
+
+
+def load_sweep_corners(
+    radar: str, lut_base_path: str | Path
+) -> dict[int, dict]:
+    """Load per-sweep corner arrays from ``{radar}_corners.npz``.
+
+    Returns
+    -------
+    dict {sweep_number: {"x_edges", "y_edges", ...}}  — empty dict if the
+    corners file does not exist (backwards-compatible).
+    """
+    corners_path = Path(lut_base_path) / radar / "LUT" / f"{radar}_corners.npz"
+    if not corners_path.exists():
+        return {}
+    data = np.load(corners_path)
+    out: dict[int, dict] = {}
+    for key in data.files:
+        # key format: "sweep_{N}_{array_name}"
+        parts = key.split("_", 2)
+        if len(parts) != 3 or parts[0] != "sweep":
+            continue
+        try:
+            sw = int(parts[1])
+        except ValueError:
+            continue
+        out.setdefault(sw, {})[parts[2]] = data[key]
+    return out
+
 
 def load_radar_lut(
     radar: str, lut_base_path: str | Path

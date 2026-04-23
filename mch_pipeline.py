@@ -1484,6 +1484,7 @@ def generate_mch_lut(
 
     sorted_paths = sorted([str(p) for p in sample_volume_filepaths])
     lut_dfs, sweep_meta = [], {}
+    sweep_geom: dict[int, dict] = {}  # for corner computation
     radar_lat, radar_lon, radar_alt = None, None, None
 
     for sweep_idx, sweep_filepath in enumerate(sorted_paths, start=1):
@@ -1559,6 +1560,13 @@ def generate_mch_lut(
             "elevation": round(elevation, 2),
         }
 
+        # Keep raw 1-D geometry arrays for later corner computation.
+        sweep_geom[sweep_idx] = {
+            "ranges":     np.asarray(ranges,    dtype=np.float64),
+            "azimuths":   np.asarray(azimuths,  dtype=np.float64),
+            "elevations": np.asarray(rad_obj.elevation["data"], dtype=np.float64),
+        }
+
     df_lut = pd.concat(lut_dfs, ignore_index=True)
     logger.info(
         "LUT built: %d total gates, %d sweeps.", len(df_lut), len(sweep_meta)
@@ -1585,5 +1593,23 @@ def generate_mch_lut(
     with open(info_path, "w") as f:
         yaml.dump(radar_info, f, default_flow_style=False, sort_keys=False)
     logger.info("Radar info saved -> %s", info_path)
+
+    # Compute per-sweep gate corner arrays (N_az+1, N_range+1) for accurate
+    # pcolormesh rendering. Uses PyART-style edge interpolation, including
+    # complex-plane handling of the 360°/0° azimuth wrap.
+    from raddb.lut import compute_sweep_corners, save_sweep_corners
+    corners_by_sweep: dict[int, dict] = {}
+    for sw, geom in sweep_geom.items():
+        corners_by_sweep[sw] = compute_sweep_corners(
+            ranges=geom["ranges"],
+            azimuths=geom["azimuths"],
+            elevations=geom["elevations"],
+            radar_lat=radar_lat,
+            radar_lon=radar_lon,
+            radar_alt=radar_alt,
+            ke=ke,
+        )
+    corners_path = lut_dir / f"{radar}_corners.npz"
+    save_sweep_corners(corners_by_sweep, corners_path)
 
     return str(lut_path)

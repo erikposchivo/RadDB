@@ -630,28 +630,43 @@ class RadDB:
         variable: str,
         **kwargs,
     ):
-        """Plot a RHI (vertical cross-section) for one volume.
+        """Alias for :meth:`plot_cross_section_ppi` (pseudo-RHI from volume)."""
+        return self.plot_cross_section_ppi(
+            radar=radar, timestep=timestep, azimuth=azimuth,
+            variable=variable, **kwargs,
+        )
+
+    def plot_cross_section_ppi(
+        self,
+        radar: str,
+        timestep: str | datetime.datetime | pd.Timestamp,
+        azimuth: float,
+        variable: str,
+        **kwargs,
+    ):
+        """Plot a pseudo-RHI cross-section through a volume PPI scan.
+
+        Replicates ``pyart.util.cross_section_ppi`` + ``plot_rhi``: picks the
+        nearest ray per sweep to ``azimuth``, regrids to a common range axis,
+        and renders gate edges (4/3 Earth) with ``shading="flat"``.
 
         Parameters
         ----------
         radar : str
-            Radar identifier (e.g. ``"D"``).
         timestep : str or datetime
             Volume timestamp.
         azimuth : float
-            Cross-section azimuth in degrees (0..360, 0 = North, clockwise).
+            Cross-section azimuth (degrees, 0 = North, clockwise).
         variable : str
-            Variable to plot.
         **kwargs
-            Forwarded to :func:`raddb.plot.plot_rhi` (``az_tol``,
-            ``max_range_km``, ``ax``, ``vmin``, ``vmax``, ``cmap``, ...).
+            Forwarded to :func:`raddb.plot.plot_cross_section_ppi`.
         """
-        from raddb.plot import plot_rhi as _plot_rhi
+        from raddb.plot import plot_cross_section_ppi as _plot_xs
         ts = pd.to_datetime(timestep)
         dt = self.load_datatree(
             radar=radar, start_time=ts, end_time=ts, label_column=variable,
         )
-        return _plot_rhi(dt, azimuth=azimuth, variable=variable, **kwargs)
+        return _plot_xs(dt, azimuth=azimuth, variable=variable, **kwargs)
 
     # ================================================================
     # Backwards compatibility aliases

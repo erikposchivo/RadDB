@@ -459,6 +459,7 @@ def reconstruct_sweep_dataset(
     lut_df: pd.DataFrame,
     radar_info: dict,
     label_column: str = "hydrometeor_class",
+    sweep_corners: dict | None = None,
 ) -> xr.Dataset:
     """Reconstruct a single sweep Dataset from joined data.
 
@@ -466,6 +467,11 @@ def reconstruct_sweep_dataset(
     dropped). Per-gate spatial coords (lat/lon/alt/x/y/z and any x_<epsg>/
     y_<epsg>) come from the LUT directly so every gate has a valid geometry
     regardless of filtering.
+
+    If ``sweep_corners`` is provided, per-gate edge arrays
+    (``x_edges``, ``y_edges``, ``z_edges``, ``lon_edges``, ``lat_edges``) of
+    shape ``(n_az+1, n_range+1)`` are attached as data_vars for pcolormesh
+    rendering with ``shading="flat"``.
     """
     df_sweep = df_joined[df_joined["sweep"] == sweep].copy()
 
@@ -497,6 +503,15 @@ def reconstruct_sweep_dataset(
     promote = [c for c in spatial_cols if c in ds.data_vars]
     if promote:
         ds = ds.set_coords(promote)
+
+    # Attach per-sweep gate edge arrays (N_az+1, N_range+1) for accurate
+    # pcolormesh(shading="flat") rendering. These use their own dims
+    # (azimuth_edge, range_edge) so they coexist with the primary grid.
+    if sweep_corners:
+        for key in ("x_edges", "y_edges", "z_edges", "lon_edges", "lat_edges"):
+            if key in sweep_corners:
+                arr = np.asarray(sweep_corners[key])
+                ds[key] = (("azimuth_edge", "range_edge"), arr)
     return ds
 
 
@@ -512,6 +527,28 @@ def reconstruct_datatree(
     with open(str(radar_info_path)) as f:
         radar_info = yaml.safe_load(f)
 
+    # Optional: load per-sweep gate corners from <radar>_corners.npz.
+    # These enable pcolormesh(shading="flat") rendering in plot_ppi. Missing
+    # file → plots fall back to centroid-based rendering (less accurate).
+    lut_dir = Path(lut_path).parent
+    corners_path = lut_dir / lut_dir.name  # placeholder for possible split
+    radar_name = Path(lut_path).name.split("_")[0]
+    corners_file = lut_dir / f"{radar_name}_corners.npz"
+    sweep_corners_all: dict[int, dict] = {}
+    if corners_file.exists():
+        try:
+            npz = np.load(corners_file)
+            for key in npz.files:
+                parts = key.split("_", 2)
+                if len(parts) == 3 and parts[0] == "sweep":
+                    try:
+                        sw = int(parts[1])
+                    except ValueError:
+                        continue
+                    sweep_corners_all.setdefault(sw, {})[parts[2]] = npz[key]
+        except Exception as exc:
+            logger.warning(f"Failed to load sweep corners from {corners_file}: {exc}")
+
     s_serie = pd.to_numeric(df_joined["sweep"], errors="coerce").dropna().unique()
     sweeps = [int(s) for s in s_serie]
     if not sweeps:
@@ -525,6 +562,7 @@ def reconstruct_datatree(
                 lut_df=lut_df,
                 radar_info=radar_info,
                 label_column=label_column,
+                sweep_corners=sweep_corners_all.get(sw),
             )
         except Exception as exc:
             logger.warning(f"Failed to reconstruct sweep {sw}: {exc}")

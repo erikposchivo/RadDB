@@ -63,7 +63,9 @@ _PLOT_DEFAULTS: dict[str, dict] = {
 def _resolve_plot_kwargs(variable: str, user_kwargs: dict):
     """Merge per-variable defaults with user overrides.
 
-    Returns (plot_kwargs, is_discrete, class_labels, cbar_label).
+    Returns (plot_kwargs, is_discrete, class_labels, cbar_label). Always sets
+    ``cmap.set_bad("none")`` so NaN (filtered) gates render transparent
+    instead of picking up a colormap endpoint.
     """
     defaults = _PLOT_DEFAULTS.get(variable, {})
     is_discrete = bool(defaults.get("discrete", False))
@@ -83,6 +85,14 @@ def _resolve_plot_kwargs(variable: str, user_kwargs: dict):
         for k in ("cmap", "vmin", "vmax"):
             if k in defaults:
                 plot_kwargs.setdefault(k, defaults[k])
+
+    # Make NaN gates transparent (not bottom-of-colormap colored).
+    cmap_val = plot_kwargs.get("cmap")
+    if cmap_val is not None:
+        cmap_obj = plt.get_cmap(cmap_val).copy() if isinstance(cmap_val, str) else cmap_val.copy()
+        cmap_obj.set_bad("none")
+        plot_kwargs["cmap"] = cmap_obj
+
     return plot_kwargs, is_discrete, class_labels, cbar_label
 
 
@@ -213,6 +223,18 @@ def plot_ppi(
             "Run: pip install 'raddb[viz]' or: pip install cartopy"
         )
 
+    # If the user passed a plain (non-GeoAxes) axis, silently disable cartopy
+    # — the transform machinery requires a GeoAxes.
+    if use_cartopy and ax is not None:
+        try:
+            from cartopy.mpl.geoaxes import GeoAxes
+            if not isinstance(ax, GeoAxes):
+                use_cartopy = False
+        except ImportError:
+            use_cartopy = False
+
+    has_edges = all(k in ds.variables for k in ("x_edges", "y_edges"))
+
     # -- Case 1: geographic with cartopy --------------------------------
     if use_cartopy and coords == "geo":
         site_lon = float(ds["site_longitude"])
@@ -222,10 +244,21 @@ def plot_ppi(
         )
         if ax is None:
             fig, ax = plt.subplots(subplot_kw={"projection": proj}, figsize=figsize)
-        p = ax.pcolormesh(
-            ds["longitude"].values, ds["latitude"].values, da.values,
-            transform=ccrs.PlateCarree(), shading="auto", **plot_kwargs,
-        )
+        if has_edges:
+            # PyART-style: pass metre edges + AEQD transform, shading="flat".
+            # This is the correct rendering — corners come from the
+            # 4/3-Earth antenna_vectors_to_cartesian with complex-plane
+            # azimuth interpolation (handles 360°/0° wrap-around).
+            p = ax.pcolormesh(
+                ds["x_edges"].values, ds["y_edges"].values, da.values,
+                transform=proj, shading="flat", **plot_kwargs,
+            )
+        else:
+            # Fallback: lon/lat centroids (less accurate; azimuth seam artifacts).
+            p = ax.pcolormesh(
+                ds["longitude"].values, ds["latitude"].values, da.values,
+                transform=ccrs.PlateCarree(), shading="auto", **plot_kwargs,
+            )
         ax.add_feature(cfeature.COASTLINE, linewidth=0.5)
         ax.add_feature(cfeature.BORDERS, linewidth=0.3, linestyle=":")
         ax.gridlines(draw_labels=True, linewidth=0.3, alpha=0.5)
@@ -236,10 +269,16 @@ def plot_ppi(
     elif coords == "geo":
         if ax is None:
             fig, ax = plt.subplots(figsize=figsize)
-        p = ax.pcolormesh(
-            ds["longitude"].values, ds["latitude"].values, da.values,
-            shading="auto", **plot_kwargs,
-        )
+        if has_edges:
+            p = ax.pcolormesh(
+                ds["lon_edges"].values, ds["lat_edges"].values, da.values,
+                shading="flat", **plot_kwargs,
+            )
+        else:
+            p = ax.pcolormesh(
+                ds["longitude"].values, ds["latitude"].values, da.values,
+                shading="auto", **plot_kwargs,
+            )
         ax.set_xlabel("Longitude [°]")
         ax.set_ylabel("Latitude [°]")
         ax.set_aspect("equal")
@@ -250,10 +289,16 @@ def plot_ppi(
     elif coords == "cartesian":
         if ax is None:
             fig, ax = plt.subplots(figsize=figsize)
-        p = ax.pcolormesh(
-            ds["x"].values / 1000.0, ds["y"].values / 1000.0, da.values,
-            shading="auto", **plot_kwargs,
-        )
+        if has_edges:
+            p = ax.pcolormesh(
+                ds["x_edges"].values / 1000.0, ds["y_edges"].values / 1000.0,
+                da.values, shading="flat", **plot_kwargs,
+            )
+        else:
+            p = ax.pcolormesh(
+                ds["x"].values / 1000.0, ds["y"].values / 1000.0, da.values,
+                shading="auto", **plot_kwargs,
+            )
         ax.set_xlabel("East from radar [km]")
         ax.set_ylabel("North from radar [km]")
         ax.set_aspect("equal")
@@ -278,25 +323,31 @@ def plot_ppi(
 # RHI
 # ============================================================================
 
-def plot_rhi(
+def plot_cross_section_ppi(
     dt,
     azimuth: float,
     variable: str,
     az_tol: float = 1.0,
     max_range_km: float | None = None,
+    max_height_km: float | None = 20.0,
+    ke: float = 4.0 / 3.0,
     ax=None,
     add_colorbar: bool = True,
     title: str | None = None,
     figsize: tuple[float, float] = (10, 4),
     **plot_kwargs,
 ):
-    """Range-Height Indicator — vertical cross-section at a given azimuth.
+    """Pseudo-RHI from a volume PPI scan — PyART's ``cross_section_ppi``.
 
     For every sweep in the DataTree, selects the ray whose azimuth is closest
-    to ``azimuth`` (within ``az_tol`` degrees, wrap-around safe) and stacks
-    them into a 2-D ``(ground_range, height_ASL)`` pcolormesh. Earth curvature
-    is already baked into the per-gate ``z`` coord (computed with the 4/3 Earth
-    radius model at LUT generation), so no geometry code is needed here.
+    to ``azimuth`` (within ``az_tol``, wrap-around safe), regrids all rays to
+    a common range axis, and renders a 2-D
+    ``(ground_range, height_ASL)`` pcolormesh using **gate edges** computed
+    with the 4/3 Earth-radius model — so curved-trapezoid gates and Earth
+    curvature are both physically correct.
+
+    Replicates the pipeline used by ``pyart.util.cross_section_ppi`` followed
+    by ``pyart.graph.RadarDisplay.plot_rhi``.
 
     Parameters
     ----------
@@ -306,17 +357,25 @@ def plot_rhi(
         Target azimuth in degrees (0..360; 0 = North, clockwise).
     variable : str
     az_tol : float
-        Maximum allowed angular distance between the requested azimuth and the
-        nearest available ray, in degrees.
+        Maximum allowed angular distance between the requested azimuth and
+        the nearest available ray.
     max_range_km : float, optional
         Clip the ground-range axis.
-    ax, add_colorbar, title, figsize, **plot_kwargs
-        As in ``plot_ppi``.
+    ke : float
+        Effective Earth radius factor (default 4/3, pyart standard).
+    ax, add_colorbar, title, figsize, **plot_kwargs : see ``plot_ppi``.
 
     Returns
     -------
     matplotlib.collections.QuadMesh
     """
+    # Lazy import to avoid a top-level cycle.
+    from raddb.lut import (
+        antenna_vectors_to_cartesian,
+        _interpolate_range_edges,
+        _interpolate_elevation_edges,
+    )
+
     sweep_names = sorted(
         [g.lstrip("/") for g in dt.groups
          if g.lstrip("/").startswith("sweep_")],
@@ -325,23 +384,29 @@ def plot_rhi(
     if not sweep_names:
         raise ValueError("No sweep_* groups found in DataTree.")
 
-    rays = []  # list of (ground_range_1d, z_1d, values_1d, el_deg)
+    # 1. Pick the nearest ray per sweep.
+    rays = []  # list of dicts {range, elevation, actual_az, values}
+    site_alt = 0.0
     for name in sweep_names:
         ds = dt[name].to_dataset()
         if variable not in ds.variables:
             continue
-        az = ds["azimuth"].values
-        diff = np.abs(((az - azimuth + 180.0) % 360.0) - 180.0)
+        az_arr = ds["azimuth"].values
+        diff = np.abs(((az_arr - azimuth + 180.0) % 360.0) - 180.0)
         j = int(np.argmin(diff))
         if diff[j] > az_tol:
             continue
-        ray = ds.isel(azimuth=j)
-        gr = np.sqrt(ray["x"].values ** 2 + ray["y"].values ** 2)
+        site_alt = float(ds["site_altitude"])
         try:
-            el = float(ray["elevation_angle"])
+            el = float(ds["elevation_angle"])
         except Exception:
             el = np.nan
-        rays.append((gr, ray["z"].values, ray[variable].values, el))
+        rays.append({
+            "range":     np.asarray(ds["range"].values,    dtype=np.float64),
+            "values":    np.asarray(ds[variable].isel(azimuth=j).values, dtype=np.float64),
+            "elevation": el,
+            "actual_az": float(az_arr[j]),
+        })
 
     if not rays:
         raise ValueError(
@@ -349,29 +414,55 @@ def plot_rhi(
             f"for variable '{variable}'."
         )
 
-    # Sort by elevation (ascending) so low sweeps are drawn at the bottom.
-    rays.sort(key=lambda r: r[3] if np.isfinite(r[3]) else 0.0)
+    # 2. Sort by elevation so low sweeps sit at the bottom of the RHI.
+    rays.sort(key=lambda r: r["elevation"] if np.isfinite(r["elevation"]) else 0.0)
 
-    # Sweeps have different gate counts — trim to the shortest common axis.
-    n_rng = min(len(r[0]) for r in rays)
-    gr2d = np.stack([r[0][:n_rng] for r in rays])
-    z2d  = np.stack([r[1][:n_rng] for r in rays])
-    v2d  = np.stack([r[2][:n_rng] for r in rays])
+    # 3. Build a common range axis (the widest one, densest-sampled).
+    widest = max(rays, key=lambda r: r["range"].max() if r["range"].size else 0.0)
+    common_range = widest["range"]
 
+    # Regrid every ray to the common axis via linear interpolation.
+    # Regions outside a sweep's native range are masked with NaN.
+    v2d = np.stack([
+        np.interp(common_range, r["range"], r["values"],
+                  left=np.nan, right=np.nan)
+        for r in rays
+    ])  # shape: (n_sweeps, n_range)
+
+    # 4. Build gate-edge arrays of shape (n_sweeps+1, n_range+1) via the same
+    # 4/3-Earth formula that pyart uses inside `plot_rhi`.
+    range_edges = _interpolate_range_edges(common_range)
+    elevations  = np.array([r["elevation"] for r in rays], dtype=np.float64)
+    el_edges    = _interpolate_elevation_edges(elevations)
+    mean_az     = float(np.mean([r["actual_az"] for r in rays]))
+    az_edges    = np.full(el_edges.size, mean_az)
+
+    x_e, y_e, z_e = antenna_vectors_to_cartesian(
+        ranges=range_edges, azimuths=az_edges, elevations=el_edges, ke=ke,
+    )  # shape: (n_sweeps+1, n_range+1)
+    ground_range_edges = np.sqrt(x_e ** 2 + y_e ** 2)
+    height_edges_asl   = z_e + site_alt
+
+    # 5. Render.
     plot_kwargs, is_discrete, class_labels, cbar_label = _resolve_plot_kwargs(
         variable, plot_kwargs
     )
-
     if ax is None:
         fig, ax = plt.subplots(figsize=figsize)
     p = ax.pcolormesh(
-        gr2d / 1000.0, z2d / 1000.0, v2d, shading="auto", **plot_kwargs,
+        ground_range_edges / 1000.0,
+        height_edges_asl   / 1000.0,
+        v2d,
+        shading="flat", **plot_kwargs,
     )
     ax.set_xlabel("Ground range [km]")
     ax.set_ylabel("Height ASL [km]")
     if max_range_km is not None:
         ax.set_xlim(0, max_range_km)
-    ax.set_ylim(bottom=0)
+    if max_height_km is not None:
+        ax.set_ylim(site_alt / 1000.0, max_height_km)
+    else:
+        ax.set_ylim(bottom=site_alt / 1000.0)
 
     if add_colorbar:
         _add_colorbar(p, ax, is_discrete, class_labels, cbar_label)
@@ -383,6 +474,17 @@ def plot_rhi(
             tstr = _volume_time_str(ds)
             break
     ax.set_title(
-        title or f"{variable} — RHI @ azimuth {azimuth:.1f}° — {tstr}".rstrip(" —")
+        title or f"{variable} — cross-section @ azimuth {azimuth:.1f}° — {tstr}".rstrip(" —")
     )
     return p
+
+
+def plot_rhi(dt, azimuth: float, variable: str, **kwargs):
+    """Alias for :func:`plot_cross_section_ppi`.
+
+    Kept for a more familiar name. Use ``plot_cross_section_ppi`` directly
+    to emphasise that this is a pseudo-RHI built from a volume PPI scan
+    (PyART's ``cross_section_ppi`` approach), not a true single-azimuth RHI
+    scan.
+    """
+    return plot_cross_section_ppi(dt, azimuth=azimuth, variable=variable, **kwargs)

@@ -154,7 +154,7 @@ timer.print_summary()
 
 print(f"\nLoading processed data for radar {RADAR_NAME}...")
 
-START_TIME = "2024-07-15 23:00"
+START_TIME = "2024-07-01 00:00"
 END_TIME = "2024-07-15 23:59"
 
 # Load as DataFrame (for ML / analysis)
@@ -168,75 +168,115 @@ print(f"  DataFrame: {len(df):,} rows, columns: {list(df.columns)}")
 
 #%%
 # =============================================================================
-# STEP 5b: Test the new plotting functions (PPI + RHI)
+# STEP 5b: Corner arrays for correct gate rendering
+# =============================================================================
+# Plotting uses a PyART-style approach: 2-D gate CORNERS (N_az+1, N_range+1)
+# computed with the 4/3 Earth-radius model and complex-plane azimuth
+# interpolation (handles the 360°/0° seam). Corners live in a separate file
+# `{radar}_corners.npz` alongside the LUT parquet.
+#
+# For LUTs generated before this feature existed, rebuild the corners from
+# the existing LUT parquet + info yaml:
+from raddb.lut import compute_corners_from_lut
+
+corners_path = Path(BASE_PATH) / RADAR_NAME / "LUT" / f"{RADAR_NAME}_corners.npz"
+if not corners_path.exists():
+    print(f"Generating corners for radar {RADAR_NAME} ...")
+    compute_corners_from_lut(RADAR_NAME, BASE_PATH, ke=1.25)
+else:
+    print(f"Corners already present at {corners_path}")
+
+#%%
+# =============================================================================
+# STEP 5c: Test the corrected plotting functions (PPI + cross-section)
 # =============================================================================
 # Two ways to call the plotting:
-#   1. High-level on the RadDB instance: db.plot_ppi(radar, timestep, sweep, variable)
-#   2. Low-level on a DataTree: raddb.plot_ppi(dt, sweep, variable)
+#   1. High-level on the RadDB instance:
+#        db.plot_ppi(radar, timestep, sweep, variable)
+#        db.plot_cross_section_ppi(radar, timestep, azimuth, variable)
+#   2. Low-level on a DataTree:
+#        raddb.plot_ppi(dt, sweep, variable)
+#        raddb.plot_cross_section_ppi(dt, azimuth, variable)
 import matplotlib.pyplot as plt
 
 PLOT_TIMESTEP = "2024-07-15 23:00:11"   # single volume timestamp
 PLOT_SWEEP    = 3
 PLOT_AZIMUTH  = 90.0
 
-# --- PPI: continuous variable (DBZH), cartesian view (no cartopy required) ---
-db.plot_ppi(
+# Load the DataTree once for the low-level sanity check
+dt_plot = db.load_datatree(
     radar=RADAR_NAME,
-    timestep=PLOT_TIMESTEP,
-    sweep=PLOT_SWEEP,
-    variable="DBZH",
-    coords="cartesian",
+    start_time=PLOT_TIMESTEP,
+    end_time=PLOT_TIMESTEP,
+)
+# Verify corner arrays are attached (size should be N_az+1, N_range+1).
+ds_sw = dt_plot[f"sweep_{PLOT_SWEEP}"].to_dataset()
+assert "x_edges" in ds_sw.data_vars, "corner arrays missing — rebuild with compute_corners_from_lut"
+print(f"x_edges shape: {ds_sw['x_edges'].shape}  (N_az+1, N_range+1)")
+print(f"lon_edges shape: {ds_sw['lon_edges'].shape}")
+
+# --- PPI: DBZH, cartesian view (uses x/y edges, no cartopy required) ---
+db.plot_ppi(
+    radar=RADAR_NAME, timestep=PLOT_TIMESTEP,
+    sweep=PLOT_SWEEP, variable="DBZH", coords="cartesian",
 )
 plt.show()
 
-# --- PPI: continuous variable (DBZH), geographic view (uses cartopy if installed) ---
+# --- PPI: DBZH, geographic view (uses metre edges + AEQD transform, PyART-style) ---
 db.plot_ppi(
-    radar=RADAR_NAME,
-    timestep=PLOT_TIMESTEP,
-    sweep=PLOT_SWEEP,
-    variable="DBZH",
-    coords="geo",
+    radar=RADAR_NAME, timestep=PLOT_TIMESTEP,
+    sweep=PLOT_SWEEP, variable="DBZH", coords="geo",
 )
 plt.show()
 
-# --- PPI: classified variable (HC_MCH) → discrete colorbar with class labels ---
+# --- PPI: classified variable (HC_PYART) → discrete colorbar with class labels ---
 db.plot_ppi(
-    radar=RADAR_NAME,
-    timestep=PLOT_TIMESTEP,
-    sweep=PLOT_SWEEP,
-    variable="HC_MCH",
-    coords="cartesian",
+    radar=RADAR_NAME, timestep=PLOT_TIMESTEP,
+    sweep=PLOT_SWEEP, variable="HC_PYART", coords="cartesian",
 )
 plt.show()
 
-# --- PPI: temperature (TEMP) — new feature ---
+# --- PPI: temperature (TEMP) — derived feature ---
 db.plot_ppi(
-    radar=RADAR_NAME,
-    timestep=PLOT_TIMESTEP,
-    sweep=PLOT_SWEEP,
-    variable="TEMP",
-    coords="cartesian",
+    radar=RADAR_NAME, timestep=PLOT_TIMESTEP,
+    sweep=PLOT_SWEEP, variable="TEMP", coords="cartesian",
 )
 plt.show()
 
-# --- RHI: vertical cross-section at the given azimuth ---
+# --- Cross-section PPI: vertical slice at a given azimuth ---
+# PyART's cross_section_ppi + plot_rhi pipeline: nearest ray per sweep,
+# regrid to common range, render 4/3-Earth corners with shading="flat".
+db.plot_cross_section_ppi(
+    radar=RADAR_NAME, timestep=PLOT_TIMESTEP,
+    azimuth=PLOT_AZIMUTH, variable="DBZH",
+    max_range_km=150, max_height_km=15,
+)
+plt.show()
+
+# --- Cross-section PPI: classified variable ---
+db.plot_cross_section_ppi(
+    radar=RADAR_NAME, timestep=PLOT_TIMESTEP,
+    azimuth=PLOT_AZIMUTH, variable="HC_PYART",
+    max_range_km=150, max_height_km=15,
+)
+plt.show()
+
+#%%
+# --- plot_rhi is a backwards-compat alias for plot_cross_section_ppi ---
 db.plot_rhi(
-    radar=RADAR_NAME,
-    timestep=PLOT_TIMESTEP,
-    azimuth=PLOT_AZIMUTH,
-    variable="DBZH",
-    max_range_km=150,
+    radar=RADAR_NAME, timestep=PLOT_TIMESTEP,
+    azimuth=PLOT_AZIMUTH, variable="TEMP",
+    max_range_km=150, max_height_km=15,
 )
 plt.show()
 
-# --- RHI: classified variable ---
-db.plot_rhi(
-    radar=RADAR_NAME,
-    timestep=PLOT_TIMESTEP,
-    azimuth=PLOT_AZIMUTH,
-    variable="HC_PYART",
-    max_range_km=150,
-)
+# --- Low-level call: pass the DataTree directly ---
+fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+raddb.plot_ppi(dt_plot, sweep=PLOT_SWEEP, variable="DBZH",
+               coords="cartesian", ax=axes[0])
+raddb.plot_cross_section_ppi(dt_plot, azimuth=PLOT_AZIMUTH, variable="DBZH",
+                             max_range_km=150, max_height_km=15, ax=axes[1])
+plt.tight_layout()
 plt.show()
 
 #%%
@@ -257,21 +297,5 @@ dt = db.load_datatree(
 sweeps = raddb.list_sweep_names(dt)
 print(f"  DataTree: {len(sweeps)} sweeps: {sweeps}")
 
-#%%
-# =============================================================================
-# STEP 6: Visualize
-# =============================================================================
 
-print("\nGenerating PPI plot...")
-raddb.plot_ppi(
-    dt,
-    sweep=1,
-    variable="DBZH",
-    title=f"Radar {RADAR_NAME} - Reflectivity (Sweep 1)",
-)
 
-# Get radar metadata
-radar_info = db.get_radar_info(RADAR_NAME)
-print(f"\nRadar location: {radar_info['latitude']}, {radar_info['longitude']}")
-
-print("\nBasic workflow complete!")
