@@ -30,7 +30,7 @@ import raddb
 BASE_PATH = "/home/erik_poschivo/Desktop/LTE_project/ltenas8/users/giacobbi/raddb"
 
 # Radar identifier (single letter)
-RADAR_NAME = "A"
+RADAR_NAME = "D"
 
 # =============================================================================
 # STEP 1: Initialize RadDB
@@ -55,8 +55,8 @@ from mch_pipeline import process_mch_volume, find_files_with_fallback, _group_fi
 
 RAW_DATA_DIR = "/home/erik_poschivo/Desktop/LTE_project/ltenas8/data/RADAR"
 NETWORK = "MCH_LTE"
-START_TIME = "2024-08-01 12:00"
-END_TIME = "2024-08-15 12:00"
+START_TIME = "2024-07-01 12:00"
+END_TIME = "2024-07-15 12:00"
 
 # Find METRANET files
 fps = find_files_with_fallback(
@@ -154,8 +154,8 @@ timer.print_summary()
 
 print(f"\nLoading processed data for radar {RADAR_NAME}...")
 
-START_TIME = "2024-07-01 00:00"
-END_TIME = "2024-07-15 23:59"
+START_TIME = "2024-07-01 03:00"
+END_TIME = "2024-07-03 03:59"
 
 # Load as DataFrame (for ML / analysis)
 df = db.load_dataframe(
@@ -199,9 +199,9 @@ else:
 #        raddb.plot_cross_section_ppi(dt, azimuth, variable)
 import matplotlib.pyplot as plt
 
-PLOT_TIMESTEP = "2024-07-15 23:00:11"   # single volume timestamp
+PLOT_TIMESTEP = "2024-07-15 14:55:03"   # single volume timestamp
 PLOT_SWEEP    = 3
-PLOT_AZIMUTH  = 90.0
+PLOT_AZIMUTH  = 0
 
 # Load the DataTree once for the low-level sanity check
 dt_plot = db.load_datatree(
@@ -225,7 +225,7 @@ plt.show()
 # --- PPI: DBZH, geographic view (uses metre edges + AEQD transform, PyART-style) ---
 db.plot_ppi(
     radar=RADAR_NAME, timestep=PLOT_TIMESTEP,
-    sweep=PLOT_SWEEP, variable="DBZH", coords="geo",
+    sweep=PLOT_SWEEP, variable="DBZH_raw", coords="geo",
 )
 plt.show()
 
@@ -261,11 +261,98 @@ db.plot_cross_section_ppi(
 )
 plt.show()
 
+
+#%%
+# 3×3 panel: corrected vs raw + difference/mismatch maps
+# Row 1: DBZH           | ZDR           | HC_PYART
+# Row 2: DBZH_raw       | ZDR_raw       | HC_MCH
+# Row 3: DBZH_raw−DBZH  | ZDR_raw−ZDR  | HC_MCH==HC_PYART
+
+import numpy as np
+from matplotlib.colors import BoundaryNorm, ListedColormap
+
+features = ["DBZH", "ZDR", "HC_PYART", "DBZH_raw", "ZDR_raw", "HC_MCH"]
+
+# Paired kwargs: each column shares the same colormap and value range.
+_dbzh_kw = dict(cmap="turbo",  vmin=-10, vmax=60)
+_zdr_kw  = dict(cmap="RdBu_r", vmin=-2,  vmax=5)
+_PAIR_KWARGS = {
+    "DBZH":     _dbzh_kw,
+    "DBZH_raw": _dbzh_kw,
+    "ZDR":      _zdr_kw,
+    "ZDR_raw":  _zdr_kw,
+    "HC_PYART": {},
+    "HC_MCH":   {},
+}
+
+# Discrete BoundaryNorm colormaps for difference plots (row 3, cols 0-1).
+_dbzh_bounds = [-10, -5, -2, -1, 0, 1, 2, 5, 10]
+_zdr_bounds  = [-3, -2, -1, -0.5, 0, 0.5, 1, 2, 3]
+_dbzh_diff_cmap = plt.get_cmap("seismic", len(_dbzh_bounds) - 1)
+_zdr_diff_cmap  = plt.get_cmap("seismic", len(_zdr_bounds)  - 1)
+_dbzh_diff_kw = dict(cmap=_dbzh_diff_cmap,
+                     norm=BoundaryNorm(_dbzh_bounds, _dbzh_diff_cmap.N))
+_zdr_diff_kw  = dict(cmap=_zdr_diff_cmap,
+                     norm=BoundaryNorm(_zdr_bounds,  _zdr_diff_cmap.N))
+
+RADAR_NAME = "A"
+PLOT_TIMESTEP = "2024-07-01 03:15:03"   # single volume timestamp
+PLOT_SWEEP    = 3
+PLOT_AZIMUTH  = 0
+
+dt_panel = db.load_datatree(
+    radar=RADAR_NAME,
+    start_time=PLOT_TIMESTEP,
+    end_time=PLOT_TIMESTEP,
+)
+ds_sw = dt_panel[f"sweep_{PLOT_SWEEP}"].to_dataset()
+
+fig, axes = plt.subplots(3, 3, figsize=(18, 15))
+
+# Rows 1 & 2: standard features
+for ax, feature in zip(axes[:2].ravel(), features):
+    raddb.plot_ppi(dt_panel, sweep=PLOT_SWEEP, variable=feature,
+                   coords="cartesian", ax=ax, **_PAIR_KWARGS[feature])
+    ax.set_title(feature)
+
+# Row 3, col 0: DBZH_raw − DBZH (discrete bins)
+ds_diff = ds_sw.assign({"diff": ds_sw["DBZH_raw"] - ds_sw["DBZH"]})
+raddb.plot_ppi(ds_diff, sweep=PLOT_SWEEP, variable="diff",
+               coords="cartesian", ax=axes[2, 0], **_dbzh_diff_kw)
+axes[2, 0].set_title("DBZH_raw - DBZH [dBZ]")
+
+# Row 3, col 1: ZDR_raw − ZDR (discrete bins)
+ds_diff = ds_sw.assign({"diff": ds_sw["ZDR_raw"] - ds_sw["ZDR"]})
+raddb.plot_ppi(ds_diff, sweep=PLOT_SWEEP, variable="diff",
+               coords="cartesian", ax=axes[2, 1], **_zdr_diff_kw)
+axes[2, 1].set_title("ZDR_raw - ZDR [dB]")
+
+# Row 3, col 2: HC_MCH vs HC_PYART gate-level agreement (green=match, red=mismatch)
+_hc_mch   = ds_sw["HC_MCH"].values.astype(float)
+_hc_pyart = ds_sw["HC_PYART"].values.astype(float)
+_valid    = ~(np.isnan(_hc_mch) | np.isnan(_hc_pyart))
+_match    = np.where(_valid, (_hc_mch == _hc_pyart).astype(float), np.nan)
+ds_match  = ds_sw.assign({"hc_match": (ds_sw["HC_MCH"].dims, _match)})
+_cmap_match = ListedColormap(["red", "green"])
+_norm_match = BoundaryNorm([-0.5, 0.5, 1.5], _cmap_match.N)
+p_match = raddb.plot_ppi(ds_match, sweep=PLOT_SWEEP, variable="hc_match",
+                         coords="cartesian", ax=axes[2, 2],
+                         cmap=_cmap_match, norm=_norm_match, add_colorbar=False)
+cbar = plt.colorbar(p_match, ax=axes[2, 2], ticks=[0, 1],
+                    fraction=0.046, pad=0.04)
+cbar.ax.set_yticklabels(["Mismatch", "Match"])
+axes[2, 2].set_title("HC_MCH == HC_PYART")
+
+fig.suptitle(f"{RADAR_NAME}  |  sweep {PLOT_SWEEP}  |  {PLOT_TIMESTEP}", y=1.01)
+plt.tight_layout()
+plt.show()
+
+
 #%%
 # --- plot_rhi is a backwards-compat alias for plot_cross_section_ppi ---
 db.plot_rhi(
     radar=RADAR_NAME, timestep=PLOT_TIMESTEP,
-    azimuth=PLOT_AZIMUTH, variable="TEMP",
+    azimuth=PLOT_AZIMUTH, variable="DBZH",
     max_range_km=150, max_height_km=15,
 )
 plt.show()

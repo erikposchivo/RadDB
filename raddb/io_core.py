@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 POL_FEATURES = ["DBZH", "ZDR", "RHOHV", "PHIDP"]
 POLAR_COLUMNS = [
     "gate_id", "time",
-    "DBZH", "ZDR", "RHOHV", "PHIDP",
+    "DBZH", "DBZH_raw", "ZDR", "ZDR_raw", "KDP", "RHOHV", "PHIDP",
     "HC_MCH", "HC_PYART", "HZT", "TEMP",
 ]
 LUT_COLUMNS = [
@@ -38,7 +38,7 @@ LUT_COLUMNS = [
 ]
 
 # float32 gives 7 significant digits — sufficient for all radar variables.
-_POLAR_FLOAT32_COLS: frozenset = frozenset({"DBZH", "ZDR", "RHOHV", "PHIDP", "HZT", "HC_MCH", "HC_PYART", "TEMP"})
+_POLAR_FLOAT32_COLS: frozenset = frozenset({"DBZH", "DBZH_raw", "ZDR", "ZDR_raw", "KDP", "RHOHV", "PHIDP", "HZT", "HC_MCH", "HC_PYART", "TEMP"})
 _LAPSE_RATE: float = -0.0065  # °C/m (standard environmental lapse rate, -6.5 °C/km)
 
 

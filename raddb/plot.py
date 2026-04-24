@@ -46,7 +46,10 @@ _HC_CLASSES = [
 
 _PLOT_DEFAULTS: dict[str, dict] = {
     "DBZH":     dict(cmap="turbo",    vmin=-10,  vmax=60,   label="Reflectivity [dBZ]"),
+    "DBZH_raw": dict(cmap="turbo",    vmin=-10,  vmax=60,   label="Raw reflectivity [dBZ]"),
     "ZDR":      dict(cmap="RdBu_r",   vmin=-2,   vmax=5,    label="Differential reflectivity [dB]"),
+    "ZDR_raw":  dict(cmap="RdBu_r",   vmin=-2,   vmax=5,    label="Raw differential reflectivity [dB]"),
+    "KDP":      dict(cmap="RdBu_r",   vmin=-1,   vmax=3,    label="Specific differential phase [°/km]"),
     "RHOHV":    dict(cmap="viridis",  vmin=0.5,  vmax=1.0,  label="Co-polar correlation"),
     "PHIDP":    dict(cmap="twilight", vmin=-180, vmax=180,  label="Differential phase [deg]"),
     "HZT":      dict(cmap="viridis",  vmin=0,    vmax=5000, label="Freezing level height [m]"),

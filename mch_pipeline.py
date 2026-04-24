@@ -70,13 +70,13 @@ RADAR_LETTERS = ["A", "D", "L", "P", "W"]
 
 # Field name mapping from PyART to xradar naming convention
 FIELD_MAPPING = {
-    "reflectivity": "DBZH",
+    "reflectivity": "DBZH_raw",
     "reflectivity_visibilitycorr": "DBZH",
     "reflectivity_vv": "DBZV",
     "corrected_reflectivity": "DBZH_corrected",
     "corrected_reflectivity_vv": "DBZV_corrected",
-    "differential_reflectivity": "ZDR",
-    "corrected_differential_reflectivity": "ZDR_corrected",
+    "differential_reflectivity": "ZDR_raw",
+    "corrected_differential_reflectivity": "ZDR",
     "uncorrected_cross_correlation_ratio": "RHOHV",
     "cross_correlation_ratio": "RHOHV",
     "uncorrected_differential_phase": "PHIDP",
@@ -805,6 +805,13 @@ def pyart_to_xradar_dataset(
                 "units": rad_obj.fields[field_name].get("units", ""),
             },
         )
+
+    # Ensure DBZH and ZDR are always present: fall back to raw if no corrected
+    # version was produced (e.g. visibility or attenuation correction skipped).
+    if "DBZH" not in data_vars and "DBZH_raw" in data_vars:
+        data_vars["DBZH"] = data_vars["DBZH_raw"]
+    if "ZDR" not in data_vars and "ZDR_raw" in data_vars:
+        data_vars["ZDR"] = data_vars["ZDR_raw"]
 
     ds = xr.Dataset(data_vars, coords=coords)
     ds.attrs["sweep_number"] = sweep_idx + 1
