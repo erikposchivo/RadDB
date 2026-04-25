@@ -69,7 +69,7 @@ from raddb.pipeline import (
 from raddb.plot import (
     plot_ppi,
     plot_rhi,
-    plot_cross_section_ppi,
+    plot_latent_scatter,
 )
 
 # Profiling helpers
@@ -122,7 +122,7 @@ __all__ = [
     # Plotting functions
     "plot_ppi",
     "plot_rhi",
-    "plot_cross_section_ppi",
+    "plot_latent_scatter",
     # Profiling helpers
     "plot_stage_totals",
     "plot_volume_timing",

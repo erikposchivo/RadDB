@@ -30,7 +30,7 @@ import raddb
 BASE_PATH = "/home/erik_poschivo/Desktop/LTE_project/ltenas8/users/giacobbi/raddb"
 
 # Radar identifier (single letter)
-RADAR_NAME = "D"
+RADAR_NAME = "P"
 
 # =============================================================================
 # STEP 1: Initialize RadDB
@@ -166,6 +166,41 @@ df = db.load_dataframe(
 )
 print(f"  DataFrame: {len(df):,} rows, columns: {list(df.columns)}")
 
+
+#%%
+# --- 1. Peak Event Section ---
+print("="*40)
+print("SECTION 1: MAXIMUM INTENSITY EVENT")
+print("="*40)
+
+max_idx = df['DBZH'].idxmax()
+max_event = df.loc[max_idx]
+
+print(f"The highest recorded DBZH is: {max_event['DBZH']} dBZ")
+print(f"Occurred on: {max_event['time']}")
+print("\n")
+
+# --- 2. Combined Filter (Dual Feature Criteria) ---
+print("="*40)
+print("SECTION 2: VALIDATED METEOROLOGICAL EVENTS")
+print(f"{'Criteria: HC_MCH exists AND DBZH > 20':^40}")
+print("="*40)
+
+combined_filter = (df['HC_MCH'].notna()) & (df['DBZH'] > 20)
+# Use .unique() to remove duplicates if the time resolution is very fine
+event_times = df.loc[combined_filter, 'time'].dt.strftime('%Y-%m-%d %H:%M:%S').unique()
+
+if len(event_times) > 0:
+    print(f"Found {len(event_times)} specific timestamps meeting criteria:\n")
+    # Print in a single column
+    print("\n".join(event_times))
+else:
+    print("No timestamps met both the validation (HC_MCH) and intensity (DBZH) requirements.")
+
+print("\n" + "="*40)
+print("PROCESS COMPLETE")
+
+
 #%%
 # =============================================================================
 # STEP 5b: Corner arrays for correct gate rendering
@@ -193,10 +228,10 @@ else:
 # Two ways to call the plotting:
 #   1. High-level on the RadDB instance:
 #        db.plot_ppi(radar, timestep, sweep, variable)
-#        db.plot_cross_section_ppi(radar, timestep, azimuth, variable)
+#        db.plot_rhi(radar, timestep, azimuth, variable)
 #   2. Low-level on a DataTree:
 #        raddb.plot_ppi(dt, sweep, variable)
-#        raddb.plot_cross_section_ppi(dt, azimuth, variable)
+#        raddb.plot_rhi(dt, azimuth, variable)
 import matplotlib.pyplot as plt
 
 PLOT_TIMESTEP = "2024-07-15 14:55:03"   # single volume timestamp
@@ -268,10 +303,15 @@ plt.show()
 # Row 2: DBZH_raw       | ZDR_raw       | HC_MCH
 # Row 3: DBZH_raw−DBZH  | ZDR_raw−ZDR  | HC_MCH==HC_PYART
 
+import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import BoundaryNorm, ListedColormap
 
 features = ["DBZH", "ZDR", "HC_PYART", "DBZH_raw", "ZDR_raw", "HC_MCH"]
+
+#PLOT_TIMESTEP = "2022-10-21 15:10:03"
+#PLOT_TIMESTEP = "2022-11-14 08:15:10"
+PLOT_TIMESTEP = "2022-11-14 08:15:10"
 
 # Paired kwargs: each column shares the same colormap and value range.
 _dbzh_kw = dict(cmap="turbo",  vmin=-10, vmax=60)
@@ -295,9 +335,10 @@ _dbzh_diff_kw = dict(cmap=_dbzh_diff_cmap,
 _zdr_diff_kw  = dict(cmap=_zdr_diff_cmap,
                      norm=BoundaryNorm(_zdr_bounds,  _zdr_diff_cmap.N))
 
-RADAR_NAME = "A"
-PLOT_TIMESTEP = "2024-07-01 03:15:03"   # single volume timestamp
-PLOT_SWEEP    = 3
+RADAR_NAME = "P"
+#PLOT_TIMESTEP = "2022-07-22 18:00:09"   # single volume timestamp
+#PLOT_TIMESTEP = "2022-05-23 11:25:05"   # single volume timestamp
+PLOT_SWEEP    = 4
 PLOT_AZIMUTH  = 0
 
 dt_panel = db.load_datatree(
@@ -361,10 +402,200 @@ plt.show()
 fig, axes = plt.subplots(1, 2, figsize=(14, 6))
 raddb.plot_ppi(dt_plot, sweep=PLOT_SWEEP, variable="DBZH",
                coords="cartesian", ax=axes[0])
-raddb.plot_cross_section_ppi(dt_plot, azimuth=PLOT_AZIMUTH, variable="DBZH",
-                             max_range_km=150, max_height_km=15, ax=axes[1])
+raddb.plot_rhi(dt_plot, azimuth=PLOT_AZIMUTH, variable="DBZH",
+               max_range_km=150, max_height_km=15, ax=axes[1])
 plt.tight_layout()
 plt.show()
+
+#%%
+# =============================================================================
+# STEP 6: Multi-feature panel (2×3 grid, PPI or RHI)
+# =============================================================================
+
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.colors import BoundaryNorm, ListedColormap
+import xarray as xr
+
+PANEL_TIMESTEP = "2024-07-01 03:15:03"
+PANEL_SWEEP    = 3
+PANEL_AZIMUTH  = 225
+
+kw_dbzh     = dict(cmap="viridis",   vmin=-10, vmax=60, xlim=(-150, 150), ylim=(-150, 150), subtitle="DBZH [dBz]",  fontsize=14)
+kw_zdr      = dict(cmap="inferno_r", vmin=-2,  vmax=5,  xlim=(-150, 150), ylim=(-150, 150), subtitle="ZDR [dB]",    fontsize=14)
+kw_rhohv    = dict(cmap="cividis",   vmin=0,   vmax=1,  xlim=(-150, 150), ylim=(-150, 150), subtitle="RHOHV",       fontsize=14)
+kw_kdp      = dict(cmap="magma",     vmin=0,   vmax=5,  xlim=(-150, 150), ylim=(-150, 150), subtitle="KDP [°/km]",  fontsize=14)
+kw_hc_mch   = dict(                                     xlim=(-150, 150), ylim=(-150, 150), subtitle="HC_MCH",      fontsize=14)
+kw_hc_pyart = dict(                                     xlim=(-150, 150), ylim=(-150, 150), subtitle="HC_PYART",    fontsize=14)
+
+# Keys consumed locally; everything else is forwarded to plot_ppi / plot_rhi.
+_LOCAL_KEYS = {"xlim", "ylim", "subtitle", "fontsize"}
+
+PANEL_FEATURES_PPI = ["DBZH", "ZDR", "RHOHV", "KDP", "HC_MCH", "HC_PYART"]
+PANEL_KWARGS_PPI   = [kw_dbzh, kw_zdr, kw_rhohv, kw_kdp, kw_hc_mch, kw_hc_pyart]
+
+PANEL_FEATURES_RHI = ["DBZH", "ZDR", "RHOHV", "KDP"]
+PANEL_KWARGS_RHI   = [kw_dbzh, kw_zdr, kw_rhohv, kw_kdp]
+
+# --- PPI panel ---
+fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+
+for idx, (ax, feature, kw_feat) in enumerate(zip(axes.ravel(), PANEL_FEATURES_PPI, PANEL_KWARGS_PPI)):
+    plot_kw = {k: v for k, v in kw_feat.items() if k not in _LOCAL_KEYS and v is not None}
+    db.plot_ppi(
+        radar=RADAR_NAME, timestep=PANEL_TIMESTEP,
+        sweep=PANEL_SWEEP, variable=feature,
+        ax=ax, coords="cartesian", **plot_kw,
+    )
+    ax.set_title(kw_feat.get("subtitle", feature), fontsize=kw_feat.get("fontsize", 14))
+    xlim = kw_feat.get("xlim")
+    ylim = kw_feat.get("ylim")
+    if xlim is not None:
+        ax.set_xlim(xlim)
+    if ylim is not None:
+        ax.set_ylim(ylim)
+    row, col = divmod(idx, 3)
+    if row == 0:
+        ax.set_xlabel("")
+        ax.tick_params(labelbottom=False)
+    if col != 0:
+        ax.set_ylabel("")
+        ax.tick_params(labelleft=False)
+
+fig.suptitle(f"radar: {RADAR_NAME}  |  {PANEL_TIMESTEP}  |  sweep: {PANEL_SWEEP}", fontsize=18)
+plt.tight_layout()
+plt.show()
+
+# --- RHI panel ---
+fig, axes = plt.subplots(2, 2, figsize=(18, 10))
+
+for idx, (ax, feature, kw_feat) in enumerate(zip(axes.ravel(), PANEL_FEATURES_RHI, PANEL_KWARGS_RHI)):
+    plot_kw = {k: v for k, v in kw_feat.items() if k not in _LOCAL_KEYS and v is not None}
+    db.plot_rhi(
+        radar=RADAR_NAME, timestep=PANEL_TIMESTEP,
+        azimuth=PANEL_AZIMUTH, variable=feature,
+        max_range_km=150, max_height_km=15,
+        ax=ax, **plot_kw,
+    )
+    ax.set_title(kw_feat.get("subtitle", feature), fontsize=kw_feat.get("fontsize", 14))
+    row, col = divmod(idx, 2)
+    if row == 0:
+        ax.set_xlabel("")
+        ax.tick_params(labelbottom=False)
+    if col != 0:
+        ax.set_ylabel("")
+        ax.tick_params(labelleft=False)
+
+fig.suptitle(f"radar: {RADAR_NAME}  |  {PANEL_TIMESTEP}  |  azimuth: {PANEL_AZIMUTH:.1f}°", fontsize=18)
+plt.tight_layout()
+plt.show()
+
+
+#%%
+# =============================================================================
+# STEP 7: HC classification comparison panel
+# =============================================================================
+# Figure 1 — PPI (1×3): HC_MCH | HC_PYART | match map
+#   · x labels on all subplots; y label only on col 0
+#   · match subplot inherits xlim/ylim from HC_MCH
+# Figure 2 — RHI (3×1): HC_MCH / HC_PYART / match map stacked
+#   · x label only on bottom row; all y labels kept
+
+RADAR_NAME = "A"
+PANEL_TIMESTEP = "2024-07-01 03:15:03"
+PANEL_SWEEP    = 3
+PANEL_AZIMUTH  = 225
+
+_cmap_match = ListedColormap(["red", "green"])
+_norm_match = BoundaryNorm([-0.5, 0.5, 1.5], _cmap_match.N)
+
+kw_hc_match = dict(
+    cmap=_cmap_match, norm=_norm_match, add_colorbar=False,
+    xlim=(-150, 150), ylim=(-150, 150),
+    subtitle="HC_MCH == HC_PYART", fontsize=14,
+)
+
+HC7_FEATURES  = ["HC_MCH",  "HC_PYART",  "hc_match"]
+HC7_KWARGS    = [kw_hc_mch, kw_hc_pyart, kw_hc_match]
+HC7_USE_MATCH = [False,      False,        True]
+
+dt_hc = db.load_datatree(radar=RADAR_NAME, start_time=PANEL_TIMESTEP, end_time=PANEL_TIMESTEP)
+
+sweep_names = sorted(
+    [g.lstrip("/") for g in dt_hc.groups if g.lstrip("/").startswith("sweep_")],
+    key=lambda s: int(s.split("_")[-1]),
+)
+dict_ds = {}
+for sname in sweep_names:
+    ds = dt_hc[sname].to_dataset()
+    if "HC_MCH" in ds.variables and "HC_PYART" in ds.variables:
+        hc_mch   = ds["HC_MCH"].values.astype(float)
+        hc_pyart = ds["HC_PYART"].values.astype(float)
+        valid    = ~(np.isnan(hc_mch) | np.isnan(hc_pyart))
+        match    = np.where(valid, (hc_mch == hc_pyart).astype(float), np.nan)
+        dict_ds[sname] = ds.assign({"hc_match": (ds["HC_MCH"].dims, match)})
+    else:
+        dict_ds[sname] = ds
+dt_match = xr.DataTree.from_dict(dict_ds)
+
+# ------------------------------------------------------------------ PPI figure
+fig_ppi, axes_ppi = plt.subplots(1, 3, figsize=(18, 6))
+
+for col, (ax, feature, kw_feat, use_match) in enumerate(
+    zip(axes_ppi, HC7_FEATURES, HC7_KWARGS, HC7_USE_MATCH)
+):
+    src = dt_match if use_match else dt_hc
+    plot_kw = {k: v for k, v in kw_feat.items() if k not in _LOCAL_KEYS and v is not None}
+    p = raddb.plot_ppi(src, sweep=PANEL_SWEEP, variable=feature,
+                       ax=ax, coords="cartesian", **plot_kw)
+    ax.set_title(kw_feat.get("subtitle", feature), fontsize=kw_feat.get("fontsize", 14))
+    xlim = kw_feat.get("xlim")
+    ylim = kw_feat.get("ylim")
+    if xlim is not None:
+        ax.set_xlim(xlim)
+    if ylim is not None:
+        ax.set_ylim(ylim)
+    if use_match:
+        cb = plt.colorbar(p, ax=ax, ticks=[0, 1], fraction=0.046, pad=0.04)
+        cb.ax.set_yticklabels(["Mismatch", "Match"])
+    if col != 0:
+        ax.set_ylabel("")
+        ax.tick_params(labelleft=False)
+
+# match subplot inherits limits from HC_MCH (col 0)
+axes_ppi[2].set_xlim(axes_ppi[0].get_xlim())
+axes_ppi[2].set_ylim(axes_ppi[0].get_ylim())
+
+fig_ppi.suptitle(
+    f"radar: {RADAR_NAME}  |  {PANEL_TIMESTEP}  |  sweep: {PANEL_SWEEP}", fontsize=18,
+)
+plt.tight_layout()
+plt.show()
+
+# ------------------------------------------------------------------ RHI figure
+fig_rhi, axes_rhi = plt.subplots(3, 1, figsize=(12, 12))
+
+for row, (ax, feature, kw_feat, use_match) in enumerate(
+    zip(axes_rhi, HC7_FEATURES, HC7_KWARGS, HC7_USE_MATCH)
+):
+    src = dt_match if use_match else dt_hc
+    plot_kw = {k: v for k, v in kw_feat.items() if k not in _LOCAL_KEYS and v is not None}
+    p = raddb.plot_rhi(src, azimuth=PANEL_AZIMUTH, variable=feature, radar=RADAR_NAME,
+                       max_range_km=150, max_height_km=15, ax=ax, **plot_kw)
+    ax.set_title(kw_feat.get("subtitle", feature), fontsize=kw_feat.get("fontsize", 14))
+    if use_match:
+        cb = plt.colorbar(p, ax=ax, ticks=[0, 1], fraction=0.046, pad=0.04)
+        cb.ax.set_yticklabels(["Mismatch", "Match"])
+    if row != 2:
+        ax.set_xlabel("")
+        ax.tick_params(labelbottom=False)
+
+fig_rhi.suptitle(
+    f"radar: {RADAR_NAME}  |  {PANEL_TIMESTEP}  |  azimuth: {PANEL_AZIMUTH:.1f}°", fontsize=18,
+)
+plt.tight_layout()
+plt.show()
+
 
 #%%
 #check the A_LUT.paruqet file
