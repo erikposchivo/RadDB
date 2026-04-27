@@ -98,9 +98,9 @@ def _save_polar_parquet(
 def _cast_hc_column(arr, shift: int = 0) -> np.ndarray:
     """Cast an HC column to float32, optionally shifting values first.
 
-    HC_MCH stores classes 0–8 (0-based) while HC_PYART uses 1–9 (1-based).
-    Pass ``shift=1`` for HC_MCH to remap 0→1, 1→2, …, 8→9 so both variables
-    share the same 1–9 range.  Values outside 1–9 after shifting become NaN.
+    HC_MCH raw = 0–8; shift=1 → parquet 1–9.
+    HC_PYART after PYART_TO_OPE remapping = 1–8; shift=1 → parquet 2–9.
+    Both land on the same 1–9 scale.  Values outside [1, 9] after shifting → NaN.
     """
     arr_f = pd.to_numeric(pd.Series(arr), errors="coerce").to_numpy(dtype=float, na_value=np.nan)
     if shift:
@@ -190,12 +190,13 @@ def datatree_to_parquet(
     )
 
     # Apply dtype optimizations: float32 for all polar variables.
-    # HC_MCH is shifted +1 (0-based → 1-based) to align with HC_PYART.
+    # Both HC columns shifted +1: HC_MCH 0-based raw → 1-based parquet;
+    # HC_PYART already remapped to operational ints (1-based) in mch_pipeline.
     for col in list(df_polar.columns):
         if col == "HC_MCH":
             df_polar[col] = _cast_hc_column(df_polar[col], shift=1)
         elif col == "HC_PYART":
-            df_polar[col] = _cast_hc_column(df_polar[col], shift=0)
+            df_polar[col] = _cast_hc_column(df_polar[col], shift=1)
         elif col in _POLAR_FLOAT32_COLS:
             df_polar[col] = df_polar[col].astype(np.float32)
 

@@ -28,23 +28,12 @@ import matplotlib.ticker as mticker
 from matplotlib.colors import BoundaryNorm, ListedColormap, Normalize
 import xarray as xr
 
+from raddb.hc_mapping import HC_CLASSES as _HC_CLASSES, HC_COLORS as _HC_COLORS
+
 
 # ============================================================================
 # Per-variable plotting defaults
 # ============================================================================
-
-# Hydrometeor class labels for HC_MCH and HC_PYART (already shifted to 1..9).
-_HC_CLASSES = [
-    "NC",   # 1 no classification / no echo
-    "AG",   # 2 aggregates
-    "CR",   # 3 ice crystals
-    "LR",   # 4 light rain
-    "RP",   # 5 rimed particles
-    "RN",   # 6 rain
-    "VI",   # 7 vertically-aligned ice
-    "WS",   # 8 wet snow
-    "MH",   # 9 melting hail / heavy precipitation
-]
 
 _PLOT_DEFAULTS: dict[str, dict] = {
     "DBZH":     dict(cmap="turbo",    vmin=-10,  vmax=60,   label="Reflectivity [dBz]"),
@@ -56,8 +45,8 @@ _PLOT_DEFAULTS: dict[str, dict] = {
     "PHIDP":    dict(cmap="twilight", vmin=-180, vmax=180,  label="Differential phase [deg]"),
     "HZT":      dict(cmap="viridis",  vmin=0,    vmax=5000, label="Freezing level height [m]"),
     "TEMP":     dict(cmap="RdBu_r",   vmin=-30,  vmax=15,   label="Temperature [°C]"),
-    "HC_MCH":   dict(discrete=True,   classes=_HC_CLASSES,  label="MCH hydrometeor class"),
-    "HC_PYART": dict(discrete=True,   classes=_HC_CLASSES,  label="PyART hydrometeor class"),
+    "HC_MCH":   dict(discrete=True,   classes=_HC_CLASSES,  colors=_HC_COLORS, label="MCH hydrometeor class"),
+    "HC_PYART": dict(discrete=True,   classes=_HC_CLASSES,  colors=_HC_COLORS, label="PyART hydrometeor class"),
 }
 
 
@@ -80,8 +69,12 @@ def _resolve_plot_kwargs(variable: str, user_kwargs: dict):
     plot_kwargs = dict(user_kwargs)
     if is_discrete:
         n = len(class_labels)
-        base_cmap = plt.get_cmap(plot_kwargs.pop("cmap", "tab10"), n)
-        cmap = ListedColormap([base_cmap(i) for i in range(n)])
+        class_colors = defaults.get("colors")
+        if class_colors is not None:
+            cmap = ListedColormap(class_colors[:n])
+        else:
+            base_cmap = plt.get_cmap(plot_kwargs.pop("cmap", "tab10"), n)
+            cmap = ListedColormap([base_cmap(i) for i in range(n)])
         bounds = np.arange(0.5, n + 1.5)
         norm = BoundaryNorm(bounds, cmap.N)
         plot_kwargs.setdefault("cmap", cmap)

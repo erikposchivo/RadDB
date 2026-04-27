@@ -298,7 +298,7 @@ def archive_volume(
             if col == "HC_MCH":
                 df_polar[col] = _cast_hc_column(df_polar[col], shift=1)
             elif col == "HC_PYART":
-                df_polar[col] = _cast_hc_column(df_polar[col], shift=0)
+                df_polar[col] = _cast_hc_column(df_polar[col], shift=1)
             elif col in _POLAR_FLOAT32_COLS:
                 df_polar[col] = df_polar[col].astype(np.float32)
         _temp = _compute_gate_temperature(df, _mask)

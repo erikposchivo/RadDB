@@ -27,10 +27,10 @@ import raddb
 # =============================================================================
 
 # Base directory for RadDB storage (LUT + POLAR parquet files)
-BASE_PATH = "/ltenas8/users/giacobbi/raddb"
+BASE_PATH = "/home/erik_poschivo/Desktop/LTE_project/ltenas8/users/giacobbi/raddb"
 
 # Radar identifier (single letter)
-RADAR_NAME = "P"
+RADAR_NAME = "A"
 
 # =============================================================================
 # STEP 1: Initialize RadDB
@@ -154,8 +154,10 @@ timer.print_summary()
 
 print(f"\nLoading processed data for radar {RADAR_NAME}...")
 
-START_TIME = "2022-11-01 00:00:00"
-END_TIME = "2022-12-31 23:59"
+#START_TIME = "2022-11-01 00:00:00"
+#END_TIME = "2022-12-31 23:59"
+START_TIME = "2024-07-15 00:00:00"
+END_TIME = "2024-07-15 23:59"
 
 # Load as DataFrame (for ML / analysis)
 df = db.load_dataframe(
@@ -421,17 +423,18 @@ import xarray as xr
 #PANEL_TIMESTEP = "2022-07-22 18:00:09"   # single volume timestamp
 #PANEL_TIMESTEP = "2022-05-23 11:25:05" 
 #PANEL_TIMESTEP = "2022-10-21 15:10:03"
-PANEL_TIMESTEP = "2022-11-14 08:15:10"
+#PANEL_TIMESTEP = "2022-11-14 08:15:10"
+PANEL_TIMESTEP = "2024-07-15 23:05:05"
 PANEL_SWEEP    = 4
-PANEL_SWEEP_RANGE = range(1, 7)  # all sweeps for the PPI panel
+PANEL_SWEEP_RANGE = range(4, 5)  # all sweeps for the PPI panel
 PANEL_AZIMUTH  = 225
 
-kw_dbzh     = dict(cmap="HomeyerRainbow",   vmin=0, vmax=40, xlim=(-100, 100), ylim=(-100, 100), subtitle="DBZH [dBz]",  fontsize=14)
-kw_zdr      = dict(cmap="RefDiff", vmin=-2,  vmax=4,  xlim=(-100, 100), ylim=(-100, 100), subtitle="ZDR [dB]",    fontsize=14)
-kw_rhohv    = dict(cmap="cividis",   vmin=0.5,   vmax=1,  xlim=(-100, 100), ylim=(-100, 100), subtitle="RHOHV",       fontsize=14)
-kw_kdp      = dict(cmap="Theodore16",     vmin=-2,   vmax=3,  xlim=(-100, 100), ylim=(-100, 100), subtitle="KDP [°/km]",  fontsize=14)
-kw_hc_mch   = dict(                                     xlim=(-100, 100), ylim=(-100, 100), subtitle="HC_MCH",      fontsize=14)
-kw_hc_pyart = dict(                                     xlim=(-100, 100), ylim=(-100, 100), subtitle="HC_PYART",    fontsize=14)
+kw_dbzh     = dict(cmap="HomeyerRainbow",   vmin=0, vmax=40, xlim=(-150, 150), ylim=(-150, 150), subtitle="DBZH [dBz]",  fontsize=14)
+kw_zdr      = dict(cmap="RefDiff", vmin=-2,  vmax=4,  xlim=(-150, 150), ylim=(-150, 150), subtitle="ZDR [dB]",    fontsize=14)
+kw_rhohv    = dict(cmap="cividis",   vmin=0.5,   vmax=1,  xlim=(-150, 150), ylim=(-150, 150), subtitle="RHOHV",       fontsize=14)
+kw_kdp      = dict(cmap="Theodore16",     vmin=-2,   vmax=3,  xlim=(-150, 150), ylim=(-150, 150), subtitle="KDP [°/km]",  fontsize=14)
+kw_hc_mch   = dict(                                     xlim=(-150, 150), ylim=(-150, 150), subtitle="HC_MCH",      fontsize=14)
+kw_hc_pyart = dict(                                     xlim=(-150, 150), ylim=(-150, 150), subtitle="HC_PYART",    fontsize=14)
 
 # Keys consumed locally; everything else is forwarded to plot_ppi / plot_rhi.
 _LOCAL_KEYS = {"xlim", "ylim", "subtitle", "fontsize"}
@@ -480,7 +483,7 @@ for idx, (ax, feature, kw_feat) in enumerate(zip(axes.ravel(), PANEL_FEATURES_RH
     db.plot_rhi(
         radar=RADAR_NAME, timestep=PANEL_TIMESTEP,
         azimuth=PANEL_AZIMUTH, variable=feature,
-        max_range_km=100, max_height_km=10,
+        max_range_km=110, max_height_km=11,
         ax=ax, **plot_kw,
     )
     ax.set_title(kw_feat.get("subtitle", feature), fontsize=kw_feat.get("fontsize", 14))
@@ -507,11 +510,12 @@ plt.show()
 # Figure 2 — RHI (3×1): HC_MCH / HC_PYART / match map stacked
 #   · x label only on bottom row; all y labels kept
 
-RADAR_NAME = "P"
+RADAR_NAME = "A"
 #PANEL_TIMESTEP = "2022-07-22 18:00:09"   # single volume timestamp
 #PANEL_TIMESTEP = "2022-05-23 11:25:05" 
 #PANEL_TIMESTEP = "2022-10-21 15:10:03"
-PANEL_TIMESTEP = "2022-11-14 08:15:10"
+#PANEL_TIMESTEP = "2022-11-14 08:15:10"
+PANEL_TIMESTEP = "2024-07-15 23:05:05"
 PANEL_SWEEP    = 4
 PANEL_AZIMUTH  = 225
 
@@ -520,7 +524,7 @@ _norm_match = BoundaryNorm([-0.5, 0.5, 1.5], _cmap_match.N)
 
 kw_hc_match = dict(
     cmap=_cmap_match, norm=_norm_match, add_colorbar=False,
-    xlim=(-100, 100), ylim=(-100, 100),
+    xlim=(-150, 150), ylim=(-150, 150),
     subtitle="HC_MCH == HC_PYART", fontsize=14,
 )
 
@@ -590,7 +594,7 @@ for row, (ax, feature, kw_feat, use_match) in enumerate(
     src = dt_match if use_match else dt_hc
     plot_kw = {k: v for k, v in kw_feat.items() if k not in _LOCAL_KEYS and v is not None}
     p = raddb.plot_rhi(src, azimuth=PANEL_AZIMUTH, variable=feature, radar=RADAR_NAME,
-                       max_range_km=100, max_height_km=10, ax=ax, **plot_kw)
+                       max_range_km=110, max_height_km=11, ax=ax, **plot_kw)
     ax.set_title(kw_feat.get("subtitle", feature), fontsize=kw_feat.get("fontsize", 14))
     if use_match:
         cb = plt.colorbar(p, ax=ax, ticks=[0, 1], fraction=0.046, pad=0.04)

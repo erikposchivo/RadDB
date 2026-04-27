@@ -477,7 +477,14 @@ def add_hydroclass_from_file(rad_obj, hydroclassif_fpath: str) -> None:
 
 
 def compute_hydroclass_semisupervised(rad_obj) -> None:
-    """Compute hydrometeor classification using PyART semi-supervised method."""
+    """Compute hydrometeor classification using PyART semi-supervised method.
+
+    After computing the native PyART integers (1–9), remaps them to the MCH
+    operational encoding via PYART_TO_OPE so the field is directly comparable
+    with HC_MCH once the +1 parquet shift is applied during archiving.
+    """
+    from raddb.hc_mapping import PYART_TO_OPE
+
     if "height_over_iso0" not in rad_obj.fields:
         logger.warning(
             "Cannot compute PyART hydroclass: height_over_iso0 field missing"
@@ -501,6 +508,28 @@ def compute_hydroclass_semisupervised(rad_obj) -> None:
             rhv_field="uncorrected_cross_correlation_ratio",
             iso0_field="height_over_iso0",
         )["hydro"]
+
+        # Remap PyART native integers → MCH operational integers (1–8).
+        # Use plain numpy arrays (not masked-array fancy indexing) to avoid
+        # the scalar-mask bug where np.ma.masked_all + bool-index assignment
+        # fails to unmask positions, leaving all values masked.
+        _data = hydro["data"]
+        _data_arr = np.ma.getdata(_data).astype(int)          # plain int array
+        _mask_arr = np.ma.getmaskarray(_data)                  # bool array, never scalar
+
+        # Build a lookup table: index 0..10 → operational int (0 = unmapped)
+        _lut = np.zeros(11, dtype=np.int8)
+        for _src, _dst in PYART_TO_OPE.items():
+            _lut[int(_src)] = int(_dst)
+
+        # Clip to valid index range before applying LUT
+        _safe = np.clip(_data_arr, 0, 10)
+        _remapped = _lut[_safe]
+
+        # Mask: originally masked OR result is 0 (value not in PYART_TO_OPE)
+        _new_mask = np.logical_or(_mask_arr, _remapped == 0)
+        hydro["data"] = np.ma.array(_remapped, mask=_new_mask, dtype=np.int8)
+
         rad_obj.add_field("radar_echo_classification", hydro)
     except Exception as e:
         logger.warning(f"Error computing PyART hydroclass: {e}")
