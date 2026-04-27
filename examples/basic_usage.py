@@ -423,6 +423,7 @@ import xarray as xr
 #PANEL_TIMESTEP = "2022-10-21 15:10:03"
 PANEL_TIMESTEP = "2022-11-14 08:15:10"
 PANEL_SWEEP    = 4
+PANEL_SWEEP_RANGE = range(1, 7)  # all sweeps for the PPI panel
 PANEL_AZIMUTH  = 225
 
 kw_dbzh     = dict(cmap="HomeyerRainbow",   vmin=0, vmax=40, xlim=(-100, 100), ylim=(-100, 100), subtitle="DBZH [dBz]",  fontsize=14)
@@ -444,31 +445,32 @@ PANEL_KWARGS_RHI   = [kw_dbzh, kw_zdr, kw_rhohv, kw_kdp]
 # --- PPI panel ---
 fig, axes = plt.subplots(2, 3, figsize=(18, 10))
 
-for idx, (ax, feature, kw_feat) in enumerate(zip(axes.ravel(), PANEL_FEATURES_PPI, PANEL_KWARGS_PPI)):
-    plot_kw = {k: v for k, v in kw_feat.items() if k not in _LOCAL_KEYS and v is not None}
-    db.plot_ppi(
-        radar=RADAR_NAME, timestep=PANEL_TIMESTEP,
-        sweep=PANEL_SWEEP, variable=feature,
-        ax=ax, coords="cartesian", **plot_kw,
-    )
-    ax.set_title(kw_feat.get("subtitle", feature), fontsize=kw_feat.get("fontsize", 14))
-    xlim = kw_feat.get("xlim")
-    ylim = kw_feat.get("ylim")
-    if xlim is not None:
-        ax.set_xlim(xlim)
-    if ylim is not None:
-        ax.set_ylim(ylim)
-    row, col = divmod(idx, 3)
-    if row == 0:
-        ax.set_xlabel("")
-        ax.tick_params(labelbottom=False)
-    if col != 0:
-        ax.set_ylabel("")
-        ax.tick_params(labelleft=False)
+for sw in PANEL_SWEEP_RANGE:
+    for idx, (ax, feature, kw_feat) in enumerate(zip(axes.ravel(), PANEL_FEATURES_PPI, PANEL_KWARGS_PPI)):
+        plot_kw = {k: v for k, v in kw_feat.items() if k not in _LOCAL_KEYS and v is not None}
+        db.plot_ppi(
+            radar=RADAR_NAME, timestep=PANEL_TIMESTEP,
+            sweep=sw, variable=feature,
+            ax=ax, coords="cartesian", **plot_kw,
+        )
+        ax.set_title(kw_feat.get("subtitle", feature), fontsize=kw_feat.get("fontsize", 14))
+        xlim = kw_feat.get("xlim")
+        ylim = kw_feat.get("ylim")
+        if xlim is not None:
+            ax.set_xlim(xlim)
+        if ylim is not None:
+            ax.set_ylim(ylim)
+        row, col = divmod(idx, 3)
+        if row == 0:
+            ax.set_xlabel("")
+            ax.tick_params(labelbottom=False)
+        if col != 0:
+            ax.set_ylabel("")
+            ax.tick_params(labelleft=False)
 
-fig.suptitle(f"radar: {RADAR_NAME}  |  {PANEL_TIMESTEP}  |  sweep: {PANEL_SWEEP}", fontsize=18)
-plt.tight_layout()
-plt.show()
+    fig.suptitle(f"radar: {RADAR_NAME}  |  {PANEL_TIMESTEP}  |  sweep: {PANEL_SWEEP}", fontsize=18)
+    plt.tight_layout()
+    plt.show()
 
 # --- RHI panel ---
 fig, axes = plt.subplots(2, 2, figsize=(18, 10))
