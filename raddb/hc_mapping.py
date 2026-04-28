@@ -6,8 +6,8 @@ Canonical hydrometeor class constants for the MCH operational encoding.
 Both HC_MCH and HC_PYART are stored in parquet on the same 1-based scale:
   parquet integer k  →  HC_MAP_DICT[k - 1]
 
-HC_MCH raw (HYM file, after ÷25) is already 0-based (0–8).
-HC_PYART (PyART native 1–9) is remapped to 0-based operational via
+HC_MCH raw (HYM file, after ÷25) is already 0-based (0-8).
+HC_PYART (PyART native 1-9) is remapped to 0-based operational via
 PYART_TO_OPE before archiving, then shifted +1 to match HC_MCH.
 
 Import these constants wherever HC label/color information is needed.

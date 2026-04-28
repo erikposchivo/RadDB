@@ -419,14 +419,15 @@ import numpy as np
 import pyart
 from matplotlib.colors import BoundaryNorm, ListedColormap
 import xarray as xr
+import imageio.v2 as imageio
 
 #PANEL_TIMESTEP = "2022-07-22 18:00:09"   # single volume timestamp
-#PANEL_TIMESTEP = "2022-05-23 11:25:05" 
+#PANEL_TIMESTEP = "2022-05-23 11:25:05"
 #PANEL_TIMESTEP = "2022-10-21 15:10:03"
 #PANEL_TIMESTEP = "2022-11-14 08:15:10"
 PANEL_TIMESTEP = "2024-07-15 23:05:05"
 PANEL_SWEEP    = 4
-PANEL_SWEEP_RANGE = range(4, 5)  # all sweeps for the PPI panel
+PANEL_SWEEP_RANGE = range(1, 21)  # all sweeps for the PPI panel
 PANEL_AZIMUTH  = 225
 
 kw_dbzh     = dict(cmap="HomeyerRainbow",   vmin=0, vmax=40, xlim=(-150, 150), ylim=(-150, 150), subtitle="DBZH [dBz]",  fontsize=14)
@@ -445,10 +446,23 @@ PANEL_KWARGS_PPI   = [kw_dbzh, kw_zdr, kw_kdp, kw_rhohv, kw_hc_mch, kw_hc_pyart]
 PANEL_FEATURES_RHI = ["DBZH", "ZDR", "RHOHV", "KDP"]
 PANEL_KWARGS_RHI   = [kw_dbzh, kw_zdr, kw_rhohv, kw_kdp]
 
-# --- PPI panel ---
-fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+# --- Output directories ---
+_STEP6_FIGS = Path(__file__).resolve().parent / "figures"
+_PPI_DIR    = _STEP6_FIGS / "ppi"
+_RHI_DIR    = _STEP6_FIGS / "rhi"
+_PPI_DIR.mkdir(parents=True, exist_ok=True)
+_RHI_DIR.mkdir(parents=True, exist_ok=True)
+print(f"PPI figures → {_PPI_DIR}")
+print(f"RHI figures → {_RHI_DIR}")
 
+# Figure sizes for GIF frames — tuned to fit a widescreen PPT slide (13.33 × 7.5 in)
+GIF_FIG_PPI = (13, 7)   # 2×3 grid
+GIF_FIG_RHI = (12, 7)   # 2×2 grid
+
+# --- PPI panel loop: one fresh figure per sweep, saved to _PPI_DIR ---
 for sw in PANEL_SWEEP_RANGE:
+    fig, axes = plt.subplots(2, 3, figsize=GIF_FIG_PPI)
+
     for idx, (ax, feature, kw_feat) in enumerate(zip(axes.ravel(), PANEL_FEATURES_PPI, PANEL_KWARGS_PPI)):
         plot_kw = {k: v for k, v in kw_feat.items() if k not in _LOCAL_KEYS and v is not None}
         db.plot_ppi(
@@ -471,33 +485,71 @@ for sw in PANEL_SWEEP_RANGE:
             ax.set_ylabel("")
             ax.tick_params(labelleft=False)
 
-    fig.suptitle(f"radar: {RADAR_NAME}  |  {PANEL_TIMESTEP}  |  sweep: {PANEL_SWEEP}", fontsize=18)
+    fig.suptitle(f"radar: {RADAR_NAME}  |  {PANEL_TIMESTEP}  |  sweep: {sw}", fontsize=18)
     plt.tight_layout()
+    _ppi_path = _PPI_DIR / f"ppi_sweep_{sw:02d}.png"
+    fig.savefig(_ppi_path, dpi=150, bbox_inches="tight")
+    print(f"  Saved sweep {sw:>2d} → {_ppi_path.name}")
     plt.show()
+    plt.close(fig)
 
-# --- RHI panel ---
-fig, axes = plt.subplots(2, 2, figsize=(18, 10))
-
-for idx, (ax, feature, kw_feat) in enumerate(zip(axes.ravel(), PANEL_FEATURES_RHI, PANEL_KWARGS_RHI)):
-    plot_kw = {k: v for k, v in kw_feat.items() if k not in _LOCAL_KEYS and v is not None}
-    db.plot_rhi(
-        radar=RADAR_NAME, timestep=PANEL_TIMESTEP,
-        azimuth=PANEL_AZIMUTH, variable=feature,
-        max_range_km=110, max_height_km=11,
-        ax=ax, **plot_kw,
+#%%
+# Build PPI animated GIF (sweeps 1–20 in order)
+_ppi_frames = sorted(_PPI_DIR.glob("ppi_sweep_*.png"))
+if _ppi_frames:
+    _ppi_gif = _PPI_DIR / "ppi_sweep_animation.gif"
+    imageio.mimsave(
+        str(_ppi_gif),
+        [imageio.imread(str(f)) for f in _ppi_frames],
+        fps=3,
+        loop=0,
     )
-    ax.set_title(kw_feat.get("subtitle", feature), fontsize=kw_feat.get("fontsize", 14))
-    row, col = divmod(idx, 2)
-    if row == 0:
-        ax.set_xlabel("")
-        ax.tick_params(labelbottom=False)
-    if col != 0:
-        ax.set_ylabel("")
-        ax.tick_params(labelleft=False)
+    print(f"PPI GIF ({len(_ppi_frames)} frames) → {_ppi_gif}")
 
-fig.suptitle(f"radar: {RADAR_NAME}  |  {PANEL_TIMESTEP}  |  azimuth: {PANEL_AZIMUTH:.1f}°", fontsize=18)
-plt.tight_layout()
-plt.show()
+#%%
+# --- RHI panel loop: 12 azimuths every 30° (0, 30, …, 330), saved to _RHI_DIR ---
+RHI_AZIMUTHS = range(0, 360, 30)   # 12 azimuths
+
+for az in RHI_AZIMUTHS:
+    fig_rhi, axes_rhi = plt.subplots(2, 2, figsize=GIF_FIG_RHI)
+
+    for idx, (ax, feature, kw_feat) in enumerate(zip(axes_rhi.ravel(), PANEL_FEATURES_RHI, PANEL_KWARGS_RHI)):
+        plot_kw = {k: v for k, v in kw_feat.items() if k not in _LOCAL_KEYS and v is not None}
+        db.plot_rhi(
+            radar=RADAR_NAME, timestep=PANEL_TIMESTEP,
+            azimuth=az, variable=feature,
+            max_range_km=110, max_height_km=11,
+            ax=ax, **plot_kw,
+        )
+        ax.set_title(kw_feat.get("subtitle", feature), fontsize=kw_feat.get("fontsize", 14))
+        row, col = divmod(idx, 2)
+        if row == 0:
+            ax.set_xlabel("")
+            ax.tick_params(labelbottom=False)
+        if col != 0:
+            ax.set_ylabel("")
+            ax.tick_params(labelleft=False)
+
+    fig_rhi.suptitle(f"radar: {RADAR_NAME}  |  {PANEL_TIMESTEP}  |  azimuth: {az}°", fontsize=18)
+    plt.tight_layout()
+    _rhi_path = _RHI_DIR / f"rhi_az_{az:03d}.png"
+    fig_rhi.savefig(_rhi_path, dpi=150, bbox_inches="tight")
+    print(f"  Saved azimuth {az:>3d}° → {_rhi_path.name}")
+    plt.show()
+    plt.close(fig_rhi)
+
+#%%
+# Build RHI animated GIF (azimuths 0–330 in order)
+_rhi_frames = sorted(_RHI_DIR.glob("rhi_az_*.png"))
+if _rhi_frames:
+    _rhi_gif = _RHI_DIR / "rhi_azimuth_animation.gif"
+    imageio.mimsave(
+        str(_rhi_gif),
+        [imageio.imread(str(f)) for f in _rhi_frames],
+        fps=3,
+        loop=0,
+    )
+    print(f"RHI GIF ({len(_rhi_frames)} frames) → {_rhi_gif}")
 
 
 #%%
