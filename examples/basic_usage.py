@@ -156,8 +156,8 @@ print(f"\nLoading processed data for radar {RADAR_NAME}...")
 
 #START_TIME = "2022-11-01 00:00:00"
 #END_TIME = "2022-12-31 23:59"
-START_TIME = "2024-07-15 00:00:00"
-END_TIME = "2024-07-15 23:59"
+START_TIME = "2024-01-01 00:00:00"
+END_TIME = "2024-01-31 23:59"
 
 # Load as DataFrame (for ML / analysis)
 df = db.load_dataframe(

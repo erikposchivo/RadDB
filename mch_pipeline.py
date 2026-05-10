@@ -479,7 +479,7 @@ def add_hydroclass_from_file(rad_obj, hydroclassif_fpath: str) -> None:
 def compute_hydroclass_semisupervised(rad_obj) -> None:
     """Compute hydrometeor classification using PyART semi-supervised method.
 
-    After computing the native PyART integers (1–9), remaps them to the MCH
+    After computing the native PyART integers (1-9), remaps them to the MCH
     operational encoding via PYART_TO_OPE so the field is directly comparable
     with HC_MCH once the +1 parquet shift is applied during archiving.
     """

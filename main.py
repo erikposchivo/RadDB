@@ -17,14 +17,7 @@ Design notes:
 
 Typical usage on the server:
 
-    python main.py \
-        --start "2023-08-01 00:00" \
-        --end   "2023-08-31 23:59" \
-        --radar all \
-        --base-path         /ltenas8/users/giacobbi/raddb \
-        --raw-data-dir      /ltenas8/data/RADAR \
-        --static-vis-dir    /ltenas8/data/Rad4Alp_LUTs/static_vis \
-        --qpegrid-to-rad-dir /ltenas8/data/Rad4Alp_LUTs/qpegrid_to_rad
+    python main.py
 """
 from __future__ import annotations
 
@@ -52,45 +45,50 @@ from mch_pipeline import (
 )
 
 SWISS_RADARS = ["A", "D", "L", "P", "W"]
-CHECKPOINT_NAME = "_archive_checkpoint.txt"
+
+# ====================================================================
+#  CONFIG  — edit these values before running
+# ====================================================================
+START               = "2024-02-01 00:00"
+END                 = "2024-03-31 23:59"
+RADAR               = "A,D,L,P,W"            # "A", "A,D", or "all"
+NETWORK             = "MCH_LTE"
+BASE_PATH           = "/home/erik_poschivo/Desktop/LTE_project/ltenas8/users/giacobbi/raddb"
+#BASE_PATH           = "/ltenas8/users/giacobbi/raddb"
+RAW_DATA_DIR        = "/home/erik_poschivo/Desktop/LTE_project/ltenas8/data/RADAR"
+#RAW_DATA_DIR        = "/ltenas8/data/RADAR"
+STATIC_VIS_DIR      = "/home/erik_poschivo/Desktop/LTE_project/ltenas8/data/Rad4Alp_LUTs/static_vis"
+#STATIC_VIS_DIR      = "/ltenas8/data/Rad4Alp_LUTs/static_vis"
+QPEGRID_TO_RAD_DIR  = "/home/erik_poschivo/Desktop/LTE_project/ltenas8/data/Rad4Alp_LUTs/qpegrid_to_rad"
+#QPEGRID_TO_RAD_DIR  = "/ltenas8/data/Rad4Alp_LUTs/qpegrid_to_rad"
+FILTER_FEATURE      = "DBZH"
+FILTER_THRESHOLD    = 0.0
+FILTER_LOGIC        = ">"
+NO_HZT              = False
+NO_HYM              = False
+NO_PYART_HC         = False
+VERBOSE             = False
+# ====================================================================
 
 
-def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description="Run the full RadDB archiving pipeline end-to-end.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+def _build_args() -> argparse.Namespace:
+    return argparse.Namespace(
+        start               = START,
+        end                 = END,
+        radar               = RADAR,
+        network             = NETWORK,
+        base_path           = BASE_PATH,
+        raw_data_dir        = RAW_DATA_DIR,
+        static_vis_dir      = STATIC_VIS_DIR,
+        qpegrid_to_rad_dir  = QPEGRID_TO_RAD_DIR,
+        filter_feature      = FILTER_FEATURE,
+        filter_threshold    = FILTER_THRESHOLD,
+        filter_logic        = FILTER_LOGIC,
+        no_hzt              = NO_HZT,
+        no_hym              = NO_HYM,
+        no_pyart_hc         = NO_PYART_HC,
+        verbose             = VERBOSE,
     )
-    p.add_argument("--start", required=True,
-                   help='Start time, e.g. "2024-01-01 00:00".')
-    p.add_argument("--end", required=True,
-                   help='End time (inclusive), e.g. "2024-12-31 23:59".')
-    p.add_argument("--radar", default="all",
-                   help='Radar letter(s): "A", "A,D", or "all".')
-    p.add_argument("--network", default="MCH_LTE",
-                   help="radar_api network identifier.")
-    p.add_argument("--base-path", required=True,
-                   help="Output directory for the RadDB archive.")
-    p.add_argument("--raw-data-dir", required=True,
-                   help="Root directory of the raw METRANET files.")
-    p.add_argument("--static-vis-dir", required=True,
-                   help="Directory holding static visibility LUTs.")
-    p.add_argument("--qpegrid-to-rad-dir", required=True,
-                   help="Directory holding qpegrid -> radar LUTs.")
-    p.add_argument("--filter-feature", default="DBZH",
-                   help="Column used for clear-sky gate removal.")
-    p.add_argument("--filter-threshold", type=float, default=0.0,
-                   help="Threshold for the filter.")
-    p.add_argument("--filter-logic", default=">",
-                   help="Comparison operator (>, >=, <, <=, ==, !=).")
-    p.add_argument("--no-hzt", action="store_true",
-                   help="Disable HZT (freezing-level) ingestion.")
-    p.add_argument("--no-hym", action="store_true",
-                   help="Disable HYM hydrometeor-class ingestion.")
-    p.add_argument("--no-pyart-hc", action="store_true",
-                   help="Disable pyart semi-supervised hydroclass.")
-    p.add_argument("--verbose", action="store_true",
-                   help="Verbose per-volume logging.")
-    return p.parse_args()
 
 
 def _format_elapsed_time(seconds: float) -> str:
@@ -243,7 +241,7 @@ def _process_day_for_radar(
 
 
 def main() -> int:
-    args = _parse_args()
+    args = _build_args()
 
     start = pd.Timestamp(args.start)
     end = pd.Timestamp(args.end)
@@ -254,7 +252,7 @@ def main() -> int:
 
     base_path = Path(args.base_path)
     base_path.mkdir(parents=True, exist_ok=True)
-    checkpoint_path = base_path / CHECKPOINT_NAME
+    checkpoint_path = base_path / f"_archive_checkpoint_{start.year}.txt"
     checkpoint_seen = _load_checkpoint(checkpoint_path)
 
     db = raddb.RadDB(base_path=str(base_path))
