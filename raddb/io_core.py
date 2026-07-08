@@ -12,6 +12,8 @@ from __future__ import annotations
 import concurrent.futures
 import logging
 import re
+import time as _time
+from contextlib import nullcontext as _nullctx
 from pathlib import Path
 
 import numpy as np
@@ -19,8 +21,15 @@ import pandas as pd
 import xarray as xr
 import yaml
 
-from raddb.lut import RADAR_TO_IDX, get_full_sweep_index
-from raddb.helper import list_sweep_names, _find_polar_files_in_range, ensure_utc
+from raddb.lut import _parse_corners_npz, encode_gate_ids, get_full_sweep_index
+from raddb.helper import (
+    StageTimer,
+    _vprint,
+    list_sweep_names,
+    normalize_radar_name,
+    resolve_filter_logic,
+)
+from raddb.discovery import _find_polar_files_in_range
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +49,11 @@ LUT_COLUMNS = [
 # float32 gives 7 significant digits — sufficient for all radar variables.
 _POLAR_FLOAT32_COLS: frozenset = frozenset({"DBZH", "DBZH_raw", "ZDR", "ZDR_raw", "KDP", "RHOHV", "PHIDP", "HZT", "HC_MCH", "HC_PYART", "TEMP"})
 _LAPSE_RATE: float = -0.0065  # °C/m (standard environmental lapse rate, -6.5 °C/km)
+
+
+def _projection_columns(df: pd.DataFrame) -> list[str]:
+    """Columns added by :func:`raddb.lut.add_lut_projection` (e.g. x_2056 / y_2056)."""
+    return [c for c in df.columns if re.match(r"^[xy]_\w+$", c)]
 
 
 # ============================================================================
@@ -98,9 +112,9 @@ def _save_polar_parquet(
 def _cast_hc_column(arr, shift: int = 0) -> np.ndarray:
     """Cast an HC column to float32, optionally shifting values first.
 
-    HC_MCH raw = 0–8; shift=1 → parquet 1–9.
-    HC_PYART after PYART_TO_OPE remapping = 1–8; shift=1 → parquet 2–9.
-    Both land on the same 1–9 scale.  Values outside [1, 9] after shifting → NaN.
+    HC_MCH raw = 0-8; shift=1 → parquet 1-9.
+    HC_PYART after PYART_TO_OPE remapping = 1-8; shift=1 → parquet 2-9.
+    Both land on the same 1-9 scale.  Values outside [1, 9] after shifting → NaN.
     """
     arr_f = pd.to_numeric(pd.Series(arr), errors="coerce").to_numpy(dtype=float, na_value=np.nan)
     if shift:
@@ -112,7 +126,7 @@ def _cast_hc_column(arr, shift: int = 0) -> np.ndarray:
 def _compute_gate_temperature(df: pd.DataFrame, mask: np.ndarray) -> np.ndarray | None:
     """Compute temperature (°C) at surviving gates using standard lapse rate.
 
-    TEMP = _LAPSE_RATE × (gate_altitude − HZT)
+    TEMP = _LAPSE_RATE x (gate_altitude - HZT)
     gate_altitude = radar site altitude + z-height above radar (4/3 Earth radius model).
     Returns NaN array if HZT is absent; returns None only if geometry columns
     (range, elevation, altitude) are missing so no array can be sized.
@@ -133,6 +147,324 @@ def _compute_gate_temperature(df: pd.DataFrame, mask: np.ndarray) -> np.ndarray 
     return (_LAPSE_RATE * (gate_alt - hzt)).astype(np.float32)
 
 
+def _build_polar_dataframe(
+    df: pd.DataFrame,
+    radar: str,
+    filter_feature: str,
+    filter_threshold: float,
+    filter_logic: str,
+) -> tuple[pd.DataFrame, np.ndarray]:
+    """Filter a flattened volume DataFrame and attach gate_ids.
+
+    Rows that do not satisfy ``filter_feature [filter_logic] filter_threshold``
+    are dropped (row removal — zeros in surviving gates stay zeros).  HC_PYART
+    is skipped when HZT is absent (it requires HZT to be meaningful).
+
+    This is the single shared core of :func:`datatree_to_parquet` and
+    :func:`archive_volume`.
+
+    Returns
+    -------
+    (df_polar, mask) : the polar DataFrame (gate_id + polar columns) and the
+    boolean row mask, needed afterwards for TEMP computation.
+    """
+    fn = resolve_filter_logic(filter_logic)
+
+    if filter_feature in df.columns:
+        mask = fn(df[filter_feature].to_numpy(), filter_threshold)
+    else:
+        logger.warning(
+            "filter_feature '%s' not found in DataFrame; keeping all gates.",
+            filter_feature,
+        )
+        mask = np.ones(len(df), dtype=bool)
+
+    gate_ids = encode_gate_ids(
+        radar,
+        df["sweep"].to_numpy(dtype=np.int64)[mask],
+        df["azimuth"].to_numpy(dtype=np.float64)[mask],
+        df["range"].to_numpy()[mask],
+    )
+
+    hzt_available = "HZT" in df.columns
+    polar_cols = [
+        c for c in POLAR_COLUMNS
+        if c in df.columns
+        and c != "gate_id"
+        and not (c == "HC_PYART" and not hzt_available)
+    ]
+    df_polar = pd.DataFrame(
+        {"gate_id": gate_ids, **{c: df[c].to_numpy()[mask] for c in polar_cols}},
+    )
+    return df_polar, mask
+
+
+def archive_volume(
+    dt: xr.DataTree,
+    radar: str,
+    base_output_path: str,
+    filter_feature: str = "DBZH",
+    filter_threshold: float = 0.0,
+    filter_logic: str = ">",
+    timer=None,
+    volume: str | None = None,
+) -> str:
+    """Archive a single DataTree volume to Parquet format.
+
+    Converts the DataTree to a DataFrame, generates a ``gate_id`` for each
+    gate (linking back to the LUT), drops gates that do not satisfy
+    ``filter_feature [filter_logic] filter_threshold``, and saves the
+    result as a POL parquet file.
+
+    Non-matching gates are **dropped** (row removal), so zero values in
+    surviving gates are never converted to NaN.  NaN values in the
+    reconstruction come only from gates absent in the parquet (i.e. gates
+    that were filtered out or had no data in the original DataTree).
+
+    HZT availability check: if ``"HZT"`` is not present in the DataTree,
+    ``"HC_PYART"`` is also skipped because it requires HZT to be meaningful.
+
+    Parameters
+    ----------
+    dt : xr.DataTree
+        Processed volume (any radar network).
+    radar : str
+        Radar identifier (single letter, e.g. ``"A"``).
+    base_output_path : str
+        Base output directory for parquet files.
+    filter_feature : str
+        Column to use for gate filtering (default ``"DBZH"``).
+    filter_threshold : float
+        Threshold value for the filter (default ``0.0``).
+    filter_logic : str
+        Comparison operator (default ``">"``).
+    timer : StageTimer, optional
+        Profiling timer.
+    volume : str, optional
+        Volume label for timer records.
+
+    Returns
+    -------
+    str
+        Path to the saved POL parquet file.
+    """
+    radar = normalize_radar_name(radar)
+    resolve_filter_logic(filter_logic)  # fail fast before flattening
+
+    with (
+        timer.time_stage("datatree_to_df", volume=volume)
+        if timer
+        else _nullctx()
+    ):
+        df = datatree_to_dataframe(dt)
+
+    with (
+        timer.time_stage("generate_gate_ids", volume=volume)
+        if timer
+        else _nullctx()
+    ):
+        df_polar, _mask = _build_polar_dataframe(
+            df, radar, filter_feature, filter_threshold, filter_logic
+        )
+
+    with (
+        timer.time_stage("save_parquet", volume=volume)
+        if timer
+        else _nullctx()
+    ):
+        df_polar = _finalize_polar_dtypes(df_polar, df, _mask)
+        return _save_polar_parquet(df_polar, radar, base_output_path)
+
+
+def archive_multiple_volumes(
+    volumes: list[xr.DataTree] | dict[str, xr.DataTree],
+    radar: str,
+    base_output_path: str,
+    filter_feature: str = "DBZH",
+    filter_threshold: float = 0.0,
+    filter_logic: str = ">",
+    verbose: bool = True,
+    timer: StageTimer | None = None,
+) -> list[dict]:
+    """Archive multiple DataTree volumes sequentially.
+
+    Parameters
+    ----------
+    volumes : list or dict
+        If a list, each element is a DataTree.
+        If a dict, keys are volume labels and values are DataTrees.
+    radar : str
+        Radar identifier.
+    base_output_path : str
+        Base output directory.
+    filter_feature : str
+        Column to use for gate filtering (default ``"DBZH"``).
+    filter_threshold : float
+        Threshold value (default ``0.0``).
+    filter_logic : str
+        Comparison operator (default ``">"``).
+    verbose : bool
+        Print progress.
+    timer : StageTimer, optional
+        Profiling timer.
+
+    Returns
+    -------
+    list of dict
+        Results with keys: label, success, error, polar_path, n_gates.
+    """
+    radar = normalize_radar_name(radar)
+
+    if isinstance(volumes, dict):
+        items = list(volumes.items())
+    else:
+        items = [(f"volume_{i}", dt) for i, dt in enumerate(volumes)]
+
+    results = []
+    pipeline_t0 = _time.perf_counter()
+
+    for i, (label, dt) in enumerate(items, 1):
+        _vprint(f"\n>>  Volume {i}/{len(items)}: {label}", verbose)
+
+        result = {
+            "label": label,
+            "radar": radar,
+            "success": False,
+            "error": None,
+            "n_gates": 0,
+        }
+
+        vol_t0 = _time.perf_counter()
+        try:
+            with (
+                timer.time_stage("archive_volume", volume=label)
+                if timer
+                else _nullctx()
+            ):
+                polar_path = archive_volume(
+                    dt,
+                    radar=radar,
+                    base_output_path=base_output_path,
+                    filter_feature=filter_feature,
+                    filter_threshold=filter_threshold,
+                    filter_logic=filter_logic,
+                    timer=timer,
+                    volume=label,
+                )
+
+            result["success"] = True
+            result["polar_path"] = polar_path
+
+            df_polar = pd.read_parquet(polar_path)
+            result["n_gates"] = len(df_polar)
+
+            vol_elapsed = _time.perf_counter() - vol_t0
+            _vprint(
+                f"OK  Volume {i}/{len(items)} done in "
+                f"{vol_elapsed:.1f}s -- {result['n_gates']:,} gates saved",
+                verbose,
+            )
+
+        except Exception as e:
+            vol_elapsed = _time.perf_counter() - vol_t0
+            result["error"] = str(e)
+            _vprint(
+                f"FAIL  Volume {i}/{len(items)} FAILED in "
+                f"{vol_elapsed:.1f}s: {e}",
+                verbose,
+            )
+            logger.error(f"[{i}/{len(items)}] {label} - FAIL: {e}")
+
+        results.append(result)
+
+    total_elapsed = _time.perf_counter() - pipeline_t0
+    n_ok = sum(1 for r in results if r["success"])
+    _vprint(
+        f"\nArchiving complete: {n_ok}/{len(results)} volumes "
+        f"in {total_elapsed:.1f}s",
+        verbose,
+    )
+    return results
+
+
+def archive_volumes_multi_radar(
+    volumes_by_radar: dict[str, list[xr.DataTree] | dict[str, xr.DataTree]],
+    base_output_path: str,
+    filter_feature: str = "DBZH",
+    filter_threshold: float = 0.0,
+    filter_logic: str = ">",
+    verbose: bool = True,
+    timer: StageTimer | None = None,
+) -> dict[str, list[dict]]:
+    """Archive volumes for multiple radars sequentially.
+
+    Parameters
+    ----------
+    volumes_by_radar : dict
+        Keys are radar names, values are lists or dicts of DataTrees.
+        Example: ``{"A": [dt1, dt2], "D": [dt3, dt4]}``
+    base_output_path : str
+        Base output directory.
+    filter_feature : str
+        Column to use for gate filtering (default ``"DBZH"``).
+    filter_threshold : float
+        Threshold value (default ``0.0``).
+    filter_logic : str
+        Comparison operator (default ``">"``).
+    verbose : bool
+        Print progress.
+    timer : StageTimer, optional
+        Profiling timer.
+
+    Returns
+    -------
+    dict
+        Keys are radar names, values are lists of result dicts.
+    """
+    all_results = {}
+
+    for radar, volumes in volumes_by_radar.items():
+        radar = normalize_radar_name(radar)
+        _vprint(
+            f"\n{'='*60}\nArchiving radar {radar}\n{'='*60}",
+            verbose,
+        )
+
+        results = archive_multiple_volumes(
+            volumes,
+            radar=radar,
+            base_output_path=base_output_path,
+            filter_feature=filter_feature,
+            filter_threshold=filter_threshold,
+            filter_logic=filter_logic,
+            verbose=verbose,
+            timer=timer,
+        )
+
+        all_results[radar] = results
+
+    return all_results
+
+
+def _finalize_polar_dtypes(
+    df_polar: pd.DataFrame, df: pd.DataFrame, mask: np.ndarray
+) -> pd.DataFrame:
+    """Apply dtype optimisations and add the TEMP column.
+
+    HC columns are shifted +1 to the 1-based parquet scale; all polar
+    variables are cast to float32; TEMP is computed from gate geometry + HZT.
+    """
+    for col in list(df_polar.columns):
+        if col in ("HC_MCH", "HC_PYART"):
+            df_polar[col] = _cast_hc_column(df_polar[col], shift=1)
+        elif col in _POLAR_FLOAT32_COLS:
+            df_polar[col] = df_polar[col].astype(np.float32)
+    temp = _compute_gate_temperature(df, mask)
+    if temp is not None:
+        df_polar["TEMP"] = temp
+    return df_polar
+
+
 def datatree_to_parquet(
     dt: xr.DataTree,
     radar: str,
@@ -151,59 +483,13 @@ def datatree_to_parquet(
     If ``"HZT"`` is absent from the DataTree, ``"HC_PYART"`` is also skipped
     because it requires HZT to be meaningful.
     """
-    from raddb.pipeline import FILTER_LOGICS
-
-    fn = FILTER_LOGICS.get(filter_logic)
-    if fn is None:
-        raise ValueError(
-            f"Unknown filter_logic '{filter_logic}'. "
-            f"Choose from: {list(FILTER_LOGICS)}"
-        )
+    resolve_filter_logic(filter_logic)  # fail fast before flattening
 
     df = datatree_to_dataframe(dt, max_workers)
-
-    if filter_feature in df.columns:
-        _mask = fn(df[filter_feature].to_numpy(), filter_threshold)
-    else:
-        _mask = np.ones(len(df), dtype=bool)
-
-    _radar_idx = np.int64(RADAR_TO_IDX[radar.upper()])
-    _sweep_v   = df["sweep"].to_numpy(dtype=np.int64)[_mask]
-    _az_int    = np.round(df["azimuth"].to_numpy(dtype=np.float64)[_mask] * 10).astype(np.int64)
-    _rng_int   = df["range"].to_numpy(dtype=np.int64)[_mask]
-    _gate_ids  = (
-        _radar_idx * np.int64(1_000_000_000_000)
-        + _sweep_v  * np.int64(   10_000_000_000)
-        + _az_int   * np.int64(        1_000_000)
-        + _rng_int
+    df_polar, mask = _build_polar_dataframe(
+        df, radar, filter_feature, filter_threshold, filter_logic
     )
-
-    _hzt_available = "HZT" in df.columns
-    _polar_cols = [
-        c for c in POLAR_COLUMNS
-        if c in df.columns
-        and c != "gate_id"
-        and not (c == "HC_PYART" and not _hzt_available)
-    ]
-    df_polar = pd.DataFrame(
-        {"gate_id": _gate_ids, **{c: df[c].to_numpy()[_mask] for c in _polar_cols}},
-    )
-
-    # Apply dtype optimizations: float32 for all polar variables.
-    # Both HC columns shifted +1: HC_MCH 0-based raw → 1-based parquet;
-    # HC_PYART already remapped to operational ints (1-based) in mch_pipeline.
-    for col in list(df_polar.columns):
-        if col == "HC_MCH":
-            df_polar[col] = _cast_hc_column(df_polar[col], shift=1)
-        elif col == "HC_PYART":
-            df_polar[col] = _cast_hc_column(df_polar[col], shift=1)
-        elif col in _POLAR_FLOAT32_COLS:
-            df_polar[col] = df_polar[col].astype(np.float32)
-
-    _temp = _compute_gate_temperature(df, _mask)
-    if _temp is not None:
-        df_polar["TEMP"] = _temp
-
+    df_polar = _finalize_polar_dtypes(df_polar, df, mask)
     return _save_polar_parquet(df_polar, radar, base_output_path)
 
 
@@ -286,8 +572,7 @@ def parquet_to_dataframe(
             ]
             # Include any projected coordinate columns added by add_lut_projection
             # (e.g. x_2056, y_2056 for Swiss LV95 / EPSG:2056)
-            import re as _re
-            lut_cols += [c for c in lut_df.columns if _re.match(r"^[xy]_\w+$", c)]
+            lut_cols += _projection_columns(lut_df)
             lut_cols = [c for c in lut_cols if c in lut_df.columns]
             df_all = df_all.merge(lut_df[lut_cols], on="gate_id", how="left")
         else:
@@ -377,7 +662,7 @@ def parquet_to_datatree(
     # is plot-ready.
     lut_df = pd.read_parquet(lut_path, engine="pyarrow")
     _spatial_cols = ["latitude", "longitude", "altitude", "x", "y", "z"]
-    _proj_cols = [c for c in lut_df.columns if re.match(r"^[xy]_\w+$", c)]
+    _proj_cols = _projection_columns(lut_df)
     _join_cols = ["gate_id", "sweep", "azimuth", "range"] + _spatial_cols + _proj_cols
     _join_cols = [c for c in _join_cols if c in lut_df.columns]
     df_joined = df_polar.merge(
@@ -479,7 +764,7 @@ def reconstruct_sweep_dataset(
     # Identify spatial columns that should come from the LUT (always populated)
     # and non-spatial columns that should come from the polar data (may be NaN).
     spatial_cols = [c for c in _PER_GATE_COORDS if c in lut_df.columns]
-    spatial_cols += [c for c in lut_df.columns if re.match(r"^[xy]_\w+$", c)]
+    spatial_cols += _projection_columns(lut_df)
 
     non_spatial = [
         c for c in df_sweep.columns
@@ -532,21 +817,12 @@ def reconstruct_datatree(
     # These enable pcolormesh(shading="flat") rendering in plot_ppi. Missing
     # file → plots fall back to centroid-based rendering (less accurate).
     lut_dir = Path(lut_path).parent
-    corners_path = lut_dir / lut_dir.name  # placeholder for possible split
     radar_name = Path(lut_path).name.split("_")[0]
     corners_file = lut_dir / f"{radar_name}_corners.npz"
     sweep_corners_all: dict[int, dict] = {}
     if corners_file.exists():
         try:
-            npz = np.load(corners_file)
-            for key in npz.files:
-                parts = key.split("_", 2)
-                if len(parts) == 3 and parts[0] == "sweep":
-                    try:
-                        sw = int(parts[1])
-                    except ValueError:
-                        continue
-                    sweep_corners_all.setdefault(sw, {})[parts[2]] = npz[key]
+            sweep_corners_all = _parse_corners_npz(corners_file)
         except Exception as exc:
             logger.warning(f"Failed to load sweep corners from {corners_file}: {exc}")
 

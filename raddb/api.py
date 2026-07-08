@@ -17,24 +17,26 @@ from __future__ import annotations
 
 import datetime
 import logging
+import time
 from pathlib import Path
 
 import pandas as pd
 import xarray as xr
 
-from raddb.pipeline import (
+from raddb.io_core import (
     archive_volume,
     archive_multiple_volumes,
     archive_volumes_multi_radar,
-    filter_dt,
-    filter_df,
-)
-from raddb.io_core import (
     parquet_to_dataframe,
     parquet_to_datatree,
-    reconstruct_datatree,
     add_feature_to_df,
     add_feature_to_dt,
+)
+from raddb.helper import filter_df, filter_dt, normalize_radar_name
+from raddb.discovery import (
+    _group_files_by_volume,
+    _parse_volume_time,
+    print_available_data,
 )
 from raddb.lut import (
     generate_lut_from_datatree,
@@ -42,13 +44,48 @@ from raddb.lut import (
     load_radar_info,
     add_lut_projection,
 )
-from raddb.helper import (
-    normalize_radar_name,
-    _find_polar_files_in_range,
-    ensure_utc,
-)
 
 logger = logging.getLogger(__name__)
+
+
+# ================================================================
+# Private helpers for end-to-end archiving (ported from main.py)
+# ================================================================
+
+def _iter_days(start: pd.Timestamp, end: pd.Timestamp):
+    """Yield (day_start, day_end) pairs covering [start, end] inclusively."""
+    day = start.normalize()
+    last = end.normalize()
+    while day <= last:
+        day_start = max(day, start)
+        day_end = min(day + pd.Timedelta(days=1) - pd.Timedelta(seconds=1), end)
+        yield day_start, day_end
+        day = day + pd.Timedelta(days=1)
+
+
+def _load_checkpoint(path: Path) -> set[str]:
+    if not path.exists():
+        return set()
+    with path.open("r") as f:
+        return {line.strip() for line in f if line.strip()}
+
+
+def _append_checkpoint(path: Path, entry: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as f:
+        f.write(entry + "\n")
+
+
+def _format_elapsed_time(seconds: float) -> str:
+    """Format elapsed time in a human-readable format."""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    if hours > 0:
+        return f"{hours}h {minutes}m {secs}s"
+    elif minutes > 0:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
 
 
 class RadDB:
@@ -76,16 +113,341 @@ class RadDB:
     def __init__(
         self,
         base_path: str = "/ltenas8/users/giacobbi/raddb",
+        raw_data_path: str | None = None,
+        network: str = "MCH_LTE",
+        static_vis_dir: str | None = None,
+        qpegrid_to_rad_dir: str | None = None,
     ):
         """Initialize RadDB interface.
 
         Parameters
         ----------
         base_path : str
-            Base directory for RadDB storage.  All LUT and POL parquet
-            files will be stored under ``{base_path}/{radar}/``.
+            **Output** base directory for the RadDB archive.  All LUT and
+            POL parquet files will be stored under ``{base_path}/{radar}/``.
+        raw_data_path : str, optional
+            **Input** root of the raw METRANET data tree (e.g.
+            ``/ltenas8/data/RADAR``).  Required for
+            :meth:`show_available_data` and :meth:`archive_from_raw`.
+            Not needed when you archive DataTrees you already hold in
+            memory (:meth:`archive_volume` & co.).
+        network : str
+            Network identifier for raw ingestion (default ``"MCH_LTE"``).
+        static_vis_dir : str, optional
+            Directory with static visibility LUTs (MCH ingestion).
+        qpegrid_to_rad_dir : str, optional
+            Directory with QPE-grid-to-radar LUTs (MCH ingestion; needed
+            for HZT / temperature).
         """
         self.base_path = Path(base_path)
+        self.raw_data_path = Path(raw_data_path) if raw_data_path else None
+        self.network = network
+        self.static_vis_dir = static_vis_dir
+        self.qpegrid_to_rad_dir = qpegrid_to_rad_dir
+
+    # ================================================================
+    # Raw data discovery & end-to-end archiving
+    # ================================================================
+
+    def show_available_data(
+        self,
+        radars: list[str] | None = None,
+        detail: bool = False,
+    ) -> pd.DataFrame:
+        """Print a summary of the raw data available for archiving.
+
+        Scans ``raw_data_path`` (pure filesystem walk — no pyart needed)
+        and prints, per radar: the covered period, number of days and
+        volumes, and which products are present (POL / HYM / HZT).  Use
+        this to decide which radar, time period, and filter to archive
+        with :meth:`archive_from_raw`.
+
+        Parameters
+        ----------
+        radars : list of str, optional
+            Restrict the scan to these radar letters (e.g. ``["A", "L"]``).
+        detail : bool
+            Also print a per-day breakdown (volumes and time span per day).
+
+        Returns
+        -------
+        pd.DataFrame
+            One row per (radar, day) with ``n_volumes``, ``first_volume``,
+            ``last_volume``, ``has_hym``, ``has_hzt`` — for programmatic use.
+        """
+        if self.raw_data_path is None:
+            raise ValueError(
+                "RadDB was initialized without raw_data_path. "
+                "Pass raw_data_path=<METRANET root> when creating RadDB "
+                "to use data discovery."
+            )
+        return print_available_data(self.raw_data_path, radars=radars, detail=detail)
+
+    def archive_from_raw(
+        self,
+        radar: str | list[str],
+        start_time: str | datetime.datetime,
+        end_time: str | datetime.datetime,
+        filter_feature: str = "DBZH",
+        filter_threshold: float = 0.0,
+        filter_logic: str = ">",
+        hzt_enabled: bool = True,
+        hym_enabled: bool = True,
+        compute_pyart_hc: bool = True,
+        projection_epsg: int | None = 2056,
+        resume: bool = True,
+        verbose: bool = False,
+        show_progress: bool = True,
+    ) -> dict[str, tuple[int, int]]:
+        """Run the full raw-METRANET → Parquet archiving pipeline.
+
+        This is the end-to-end entry point (formerly ``main.py``): it walks
+        the requested time range day by day, processes every volume with the
+        MCH ingestion chain (visibility, KDP, attenuation, HZT, hydrometeor
+        classification), filters gates by
+        ``filter_feature [filter_logic] filter_threshold``, and archives
+        each volume to ``base_path``.  The radar LUT is generated
+        automatically on the first archived volume.
+
+        Memory stays bounded: each volume is processed, archived, and
+        dropped before the next one is loaded.  A checkpoint file
+        (``{base_path}/_archive_checkpoint_{year}.txt``) records archived
+        volumes so an interrupted run resumes where it left off.
+
+        Requires ``raw_data_path`` at initialization, plus the optional
+        MCH ancillary dirs (``static_vis_dir``, ``qpegrid_to_rad_dir``)
+        for the corresponding processing stages.  Needs **pyart** and
+        **radar_api** installed (imported only here, not by the package).
+
+        Parameters
+        ----------
+        radar : str or list of str
+            Radar letter(s): ``"A"``, ``"A,D"``, ``["A", "D"]`` or
+            ``"all"`` for all Swiss radars (A, D, L, P, W).
+        start_time, end_time : str or datetime
+            Time range to archive (inclusive).
+        filter_feature, filter_threshold, filter_logic
+            Gate filter defining *which data to keep* in the archive
+            (default: ``DBZH > 0``).
+        hzt_enabled, hym_enabled, compute_pyart_hc : bool
+            Toggle the optional MCH processing stages.
+        projection_epsg : int, optional
+            EPSG code added to the generated LUT (default ``2056``,
+            CH1903+/LV95).  ``None`` disables the extra projection.
+        resume : bool
+            Skip volumes already recorded in the checkpoint file
+            (default ``True``).  ``False`` re-archives everything.
+        verbose : bool
+            Print per-volume progress messages.
+        show_progress : bool
+            Show tqdm progress bars (if tqdm is installed).
+
+        Returns
+        -------
+        dict
+            ``{radar: (n_archived, n_failed)}`` totals.
+        """
+        try:
+            from raddb import mch_pipeline as mch
+        except ImportError as exc:
+            raise ImportError(
+                "archive_from_raw requires the MCH ingestion dependencies "
+                "(pyart, radar_api, scipy). Install them or archive "
+                "pre-built DataTrees with archive_volume() instead."
+            ) from exc
+
+        if self.raw_data_path is None:
+            raise ValueError(
+                "RadDB was initialized without raw_data_path — required "
+                "by archive_from_raw."
+            )
+
+        # --- resolve radars ---
+        if isinstance(radar, str):
+            if radar.strip().lower() == "all":
+                radars = list(mch.RADAR_LETTERS)
+            else:
+                radars = [r.strip().upper() for r in radar.split(",") if r.strip()]
+        else:
+            radars = [normalize_radar_name(r) for r in radar]
+        unknown = [r for r in radars if r not in mch.RADAR_LETTERS]
+        if unknown:
+            raise ValueError(
+                f"Unknown radar(s): {unknown}. Valid: {mch.RADAR_LETTERS}"
+            )
+
+        start = pd.Timestamp(start_time)
+        end = pd.Timestamp(end_time)
+        if end < start:
+            raise ValueError("end_time must be >= start_time")
+
+        try:
+            from tqdm import tqdm
+        except ImportError:
+            def tqdm(it, **kwargs):  # noqa: ANN001 - graceful fallback
+                return it
+            show_progress = False
+
+        self.base_path.mkdir(parents=True, exist_ok=True)
+        checkpoint_path = self.base_path / f"_archive_checkpoint_{start.year}.txt"
+        checkpoint_seen = _load_checkpoint(checkpoint_path) if resume else set()
+
+        print("=" * 70)
+        print("RadDB archiving run")
+        print(f"  range     : {start} -> {end}")
+        print(f"  radars    : {radars}")
+        print(f"  filter    : {filter_feature} {filter_logic} {filter_threshold}")
+        print(f"  base_path : {self.base_path}")
+        print(f"  resuming  : {len(checkpoint_seen)} volume(s) already archived")
+        print("=" * 70)
+
+        run_t0 = time.time()
+        totals: dict[str, list[int]] = {r: [0, 0] for r in radars}
+
+        days = list(_iter_days(start, end))
+        day_iter = tqdm(days, desc="days", unit="day") if show_progress else days
+        for day_start, day_end in day_iter:
+            for r in radars:
+                n_ok, n_fail = self._archive_raw_day(
+                    mch=mch,
+                    radar=r,
+                    day_start=day_start,
+                    day_end=day_end,
+                    filter_feature=filter_feature,
+                    filter_threshold=filter_threshold,
+                    filter_logic=filter_logic,
+                    hzt_enabled=hzt_enabled,
+                    hym_enabled=hym_enabled,
+                    compute_pyart_hc=compute_pyart_hc,
+                    projection_epsg=projection_epsg,
+                    checkpoint_path=checkpoint_path,
+                    checkpoint_seen=checkpoint_seen,
+                    verbose=verbose,
+                    show_progress=show_progress,
+                )
+                totals[r][0] += n_ok
+                totals[r][1] += n_fail
+
+        print("\n" + "=" * 70)
+        print("Run complete")
+        for r, (n_ok, n_fail) in totals.items():
+            print(f"  {r}: {n_ok} archived, {n_fail} failed")
+        print(f"  checkpoint: {checkpoint_path}")
+        print(f"  elapsed time: {_format_elapsed_time(time.time() - run_t0)}")
+        print("=" * 70)
+        return {r: tuple(v) for r, v in totals.items()}
+
+    def _archive_raw_day(
+        self,
+        *,
+        mch,
+        radar: str,
+        day_start: pd.Timestamp,
+        day_end: pd.Timestamp,
+        filter_feature: str,
+        filter_threshold: float,
+        filter_logic: str,
+        hzt_enabled: bool,
+        hym_enabled: bool,
+        compute_pyart_hc: bool,
+        projection_epsg: int | None,
+        checkpoint_path: Path,
+        checkpoint_seen: set[str],
+        verbose: bool,
+        show_progress: bool,
+    ) -> tuple[int, int]:
+        """Process every volume for one (radar, day). Returns (n_ok, n_fail)."""
+        try:
+            pol_files = mch.find_files_with_fallback(
+                network=self.network,
+                radar=radar,
+                start_time=day_start.to_pydatetime(),
+                end_time=day_end.to_pydatetime(),
+                product="POL",
+                raw_data_dir=str(self.raw_data_path),
+                verbose=verbose,
+            )
+        except Exception as e:
+            print(f"  [{radar} {day_start:%Y-%m-%d}] find_files failed: {e}")
+            return (0, 0)
+
+        if not pol_files:
+            return (0, 0)
+
+        volumes = _group_files_by_volume(pol_files)
+        n_ok = n_fail = 0
+
+        items = sorted(volumes.items())
+        if show_progress:
+            from tqdm import tqdm
+            items = tqdm(
+                items, desc=f"{radar} {day_start:%Y-%m-%d}",
+                unit="vol", leave=False,
+            )
+
+        # Generate the LUT up front from the first volume's sweeps if missing.
+        # generate_mch_lut reads the raw files directly, so this also covers
+        # resumed runs where every volume is checkpoint-skipped.
+        lut_path = self.base_path / radar / "LUT" / f"{radar}_LUT.parquet"
+        if not lut_path.exists() and volumes:
+            first_sweep_paths = sorted(volumes.items())[0][1]
+            try:
+                mch.generate_mch_lut(
+                    radar=radar,
+                    network=self.network,
+                    sample_volume_filepaths=first_sweep_paths,
+                    output_base_path=str(self.base_path),
+                    qpegrid_to_rad_dir=self.qpegrid_to_rad_dir,
+                    projection_epsg=projection_epsg,
+                )
+            except Exception as e:
+                print(f"  [{radar}] LUT generation failed: {e}")
+
+        for stem, sweep_paths in items:
+            ckpt_key = f"{radar}:{stem}"
+            if ckpt_key in checkpoint_seen:
+                continue
+
+            try:
+                volume_time = _parse_volume_time(stem)
+                vol_dt = mch.process_mch_volume(
+                    sweep_filepaths=sweep_paths,
+                    network=self.network,
+                    radar=radar,
+                    volume_time=volume_time,
+                    raw_data_dir=str(self.raw_data_path),
+                    static_vis_dir=self.static_vis_dir,
+                    qpegrid_to_rad_dir=self.qpegrid_to_rad_dir,
+                    hzt_enabled=hzt_enabled,
+                    hym_enabled=hym_enabled,
+                    compute_pyart_hc=compute_pyart_hc,
+                    verbose=verbose,
+                    volume_label=stem,
+                )
+
+                self.archive_volume(
+                    dt=vol_dt,
+                    radar=radar,
+                    filter_feature=filter_feature,
+                    filter_threshold=filter_threshold,
+                    filter_logic=filter_logic,
+                    volume_label=stem,
+                )
+
+                _append_checkpoint(checkpoint_path, ckpt_key)
+                checkpoint_seen.add(ckpt_key)
+                n_ok += 1
+
+                del vol_dt
+
+            except Exception as e:
+                n_fail += 1
+                print(f"  [{radar}] FAIL {stem}: {e}")
+                if verbose:
+                    import traceback
+                    traceback.print_exc()
+
+        return (n_ok, n_fail)
 
     # ================================================================
     # LUT Generation & Access
@@ -514,7 +876,7 @@ class RadDB:
     ) -> xr.DataTree:
         """Mask gates in a DataTree that do not satisfy the filter condition.
 
-        Convenience static method wrapping :func:`raddb.pipeline.filter_dt`.
+        Convenience static method wrapping :func:`raddb.helper.filter_dt`.
 
         Gates where ``feature [logic] threshold`` is False are set to NaN
         across all variables.  Gates where the condition is True keep their
@@ -540,7 +902,7 @@ class RadDB:
     ) -> pd.DataFrame:
         """Drop rows from a DataFrame that do not satisfy the filter condition.
 
-        Convenience static method wrapping :func:`raddb.pipeline.filter_df`.
+        Convenience static method wrapping :func:`raddb.helper.filter_df`.
 
         Parameters
         ----------
@@ -615,7 +977,7 @@ class RadDB:
             Forwarded to :func:`raddb.plot.plot_ppi` (``ax``, ``coords``,
             ``use_cartopy``, ``vmin``, ``vmax``, ``cmap``, ...).
         """
-        from raddb.plot import plot_ppi as _plot_ppi
+        from raddb.viz.plot import plot_ppi as _plot_ppi
         ts = pd.to_datetime(timestep)
         dt = self.load_datatree(
             radar=radar, start_time=ts, end_time=ts, label_column=variable,
@@ -647,7 +1009,7 @@ class RadDB:
         **kwargs
             Forwarded to :func:`raddb.plot.plot_rhi`.
         """
-        from raddb.plot import plot_rhi as _plot_rhi
+        from raddb.viz.plot import plot_rhi as _plot_rhi
         ts = pd.to_datetime(timestep)
         dt = self.load_datatree(
             radar=radar, start_time=ts, end_time=ts, label_column=variable,

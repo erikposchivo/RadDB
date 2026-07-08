@@ -3,42 +3,20 @@ raddb/helper.py
 ---------------
 Shared utilities and configuration for RadDB.
 """
-#from __future__ import annotations
 import re
 import time as _time
 import contextlib as _contextlib
 import datetime as _dt
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import xarray as xr
-#from donfig import Config
-#from raddb.configs import read_configs
-
-# --- Config Initialization ---
-'''def _read_donfig():
-    try:
-        return {k: v for k, v in read_configs().items() if v is not None}
-    except Exception:
-        return {}
-
-def init_config():
-    defaults = {"base_dir": None}
-    defaults.update(_read_donfig())
-    return Config("radar", defaults=[defaults], paths=[])
-
-config = init_config()'''
 
 # --- DataTree Helpers ---
 def list_sweep_names(dt: xr.DataTree) -> list[str]:
     """Return sorted sweep group names from a DataTree."""
     pat = re.compile(r"^sweep_\d+$")
     return sorted(s.lstrip("/") for s in dt.groups if pat.match(s.lstrip("/")))
-
-def nan_field_like(ds: xr.Dataset, reference_var: str = "DBZH") -> xr.DataArray:
-    """Return a DataArray of NaNs with the same shape/dims as reference_var."""
-    return xr.full_like(ds[reference_var], fill_value=np.nan, dtype=float)
 
 # --- Parquet Helpers ---
 def ensure_utc(dt_input):
@@ -77,42 +55,6 @@ def check_dataframe(df: pd.DataFrame) -> None:
     print(df.head())
     print("-" * 50)
 
-# --- File Discovery ---
-def _find_polar_files_in_range(
-    radar_path: Path,
-    start_time: str | pd.Timestamp | None = None,
-    end_time: str | pd.Timestamp | None = None,
-) -> list[Path]:
-    """Return POLAR parquet files within the given time range, sorted by timestamp."""
-    polar_files = sorted(radar_path.rglob("*_POL.parquet"))
-    if not polar_files:
-        return []
-
-    start_dt = ensure_utc(start_time) if start_time else None
-    end_dt = ensure_utc(end_time) if end_time else None
-
-    valid = []
-    for f in polar_files:
-        # Filename: {radar}_{YYYYMMDD}_{HHMMSS}_POL.parquet
-        stem = f.stem.replace("_POL", "")
-        parts = stem.split("_")
-        if len(parts) < 3:
-            continue
-        try:
-            ts = pd.to_datetime(parts[-2] + "_" + parts[-1], format="%Y%m%d_%H%M%S")
-        except Exception:
-            continue
-        ts = ensure_utc(ts)
-        if start_dt and ts < start_dt:
-            continue
-        if end_dt and ts > end_dt:
-            continue
-        valid.append((ts, f))
-
-    valid.sort(key=lambda x: x[0])
-    return [f for _, f in valid]
-
-
 # --- Radar Name Normalization ---
 def normalize_radar_name(radar: str) -> str:
     """
@@ -150,6 +92,137 @@ def normalize_radar_name(radar: str) -> str:
 
     # Otherwise, return the last character (or the string if it's already a single char)
     return radar_upper[-1] if len(radar_upper) > 0 else radar_upper
+
+
+# --- Filter Logic Registry ---
+FILTER_LOGICS: dict[str, callable] = {
+    "==": lambda a, b: a == b,
+    "!=": lambda a, b: a != b,
+    ">":  lambda a, b: a > b,
+    ">=": lambda a, b: a >= b,
+    "<":  lambda a, b: a < b,
+    "<=": lambda a, b: a <= b,
+}
+
+
+def resolve_filter_logic(logic: str):
+    """Return the comparison function for *logic*.
+
+    Raises
+    ------
+    ValueError
+        If ``logic`` is not one of the supported operators.
+    """
+    fn = FILTER_LOGICS.get(logic)
+    if fn is None:
+        raise ValueError(
+            f"Unknown logic '{logic}'. Choose from: {list(FILTER_LOGICS)}"
+        )
+    return fn
+
+
+def filter_df(
+    df: pd.DataFrame,
+    feature: str = "DBZH",
+    threshold: float = 0.0,
+    logic: str = ">",
+) -> pd.DataFrame:
+    """Filter a DataFrame, keeping rows where ``feature [logic] threshold``.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input DataFrame.
+    feature : str
+        Column name to filter on (default ``"DBZH"``).
+    threshold : float
+        Comparison value.
+    logic : str
+        Comparison operator: ``'>'``, ``'>='``, ``'<'``, ``'<='``,
+        ``'=='``, ``'!='``.  Default ``'>'``.
+
+    Returns
+    -------
+    pd.DataFrame
+        Filtered DataFrame with non-matching rows dropped (index reset).
+
+    Raises
+    ------
+    KeyError
+        If ``feature`` is not a column of ``df``.
+    ValueError
+        If ``logic`` is not one of the supported operators.
+    """
+    fn = resolve_filter_logic(logic)
+    if feature not in df.columns:
+        raise KeyError(f"Feature '{feature}' not found in DataFrame columns.")
+    mask = fn(df[feature].to_numpy(), threshold)
+    return df[mask].reset_index(drop=True)
+
+
+def filter_dt(
+    dt: xr.DataTree,
+    feature: str = "DBZH",
+    threshold: float = 0.0,
+    logic: str = ">",
+) -> xr.DataTree:
+    """Filter a DataTree, masking gates where ``feature [logic] threshold`` is False.
+
+    Gates that do **not** satisfy the condition are set to NaN across all
+    data variables in each sweep.  Gates that *do* satisfy the condition
+    keep their original values unchanged — including legitimate zero values.
+
+    .. note::
+        This operates on the multidimensional DataTree structure via
+        ``xr.Dataset.where()``.  For tabular (row-level) filtering use
+        :func:`filter_df` instead, which drops non-matching rows entirely.
+
+    Parameters
+    ----------
+    dt : xr.DataTree
+        Input DataTree with ``sweep_N`` groups.
+    feature : str
+        Variable name to use as the filter criterion (default ``"DBZH"``).
+    threshold : float
+        Comparison value.
+    logic : str
+        Comparison operator: ``'>'``, ``'>='``, ``'<'``, ``'<='``,
+        ``'=='``, ``'!='``.  Default ``'>'``.
+
+    Returns
+    -------
+    xr.DataTree
+        New DataTree where non-matching gates have NaN for all variables.
+        Matching gates are left entirely unchanged (zeros remain zeros).
+
+    Raises
+    ------
+    ValueError
+        If ``logic`` is not a supported operator.
+    """
+    fn = resolve_filter_logic(logic)
+
+    sweep_names = list_sweep_names(dt)
+    dict_ds = {}
+
+    for sweep_name in sweep_names:
+        ds = dt[sweep_name].to_dataset()
+        if feature in ds:
+            keep_mask = fn(ds[feature], threshold)
+            # Mask only variables that share the mask's dimensions.
+            # Variables on other dims (e.g. gate-edge arrays x_edges/y_edges
+            # on azimuth_edge/range_edge) are static geometry — masking them
+            # is meaningless and broadcasting the mask onto them explodes
+            # memory (dims are disjoint).
+            mask_dims = set(keep_mask.dims)
+            ds = ds.assign({
+                name: var.where(keep_mask)
+                for name, var in ds.data_vars.items()
+                if mask_dims & set(var.dims)
+            })
+        dict_ds[sweep_name] = ds
+
+    return xr.DataTree.from_dict(dict_ds)
 
 
 # ============================================================
@@ -235,399 +308,3 @@ class StageTimer:
         print("-" * 68)
         print(f"  {'TOTAL':<34} {total:>6.2f}s")
         print("=" * 68)
-
-
-# --- Profiling Plots ---
-
-def plot_stage_totals(
-    timer: "StageTimer",
-    title: str = "Pipeline — Total Time per Stage",
-    save_path: str | None = None,
-):
-    """Horizontal bar chart: total wall-clock time per pipeline stage."""
-    import matplotlib.pyplot as plt
-    import numpy as np
-
-    summary = timer.summary()
-    if summary.empty:
-        print("[profiling] No timing data — nothing to plot.")
-        return None
-
-    stages = summary.index.tolist()[::-1]
-    totals = summary["sum"].values[::-1]
-    counts = summary["count"].values[::-1].astype(int)
-    colors = plt.cm.RdYlGn_r(np.linspace(0.15, 0.85, len(stages)))
-
-    fig, ax = plt.subplots(figsize=(11, max(4, len(stages) * 0.55 + 1.5)))
-    bars = ax.barh(stages, totals, color=colors, edgecolor="white", height=0.65)
-    x_max = float(max(totals)) if len(totals) > 0 else 1.0
-    for bar, val, cnt in zip(bars, totals, counts):
-        ax.text(
-            bar.get_width() + x_max * 0.01,
-            bar.get_y() + bar.get_height() / 2,
-            f"{val:.2f}s  (n={cnt})",
-            va="center", ha="left", fontsize=8.5,
-        )
-    ax.set_xlim(0, x_max * 1.30)
-    ax.set_xlabel("Total Time (seconds)", fontsize=11)
-    ax.set_title(title, fontsize=13, pad=12)
-    ax.spines[["top", "right"]].set_visible(False)
-    ax.tick_params(labelsize=9)
-    plt.tight_layout()
-
-    if save_path:
-        fig.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.show()
-    return fig
-
-
-def plot_volume_timing(
-    timer: "StageTimer",
-    title: str = "Processing Time per Volume",
-    save_path: str | None = None,
-):
-    """Stacked bar chart: per-volume time breakdown by pipeline stage."""
-    import matplotlib.pyplot as plt
-    import numpy as np
-
-    df = timer.to_dataframe()
-    vol_df = df[df["volume"].notna()]
-    if vol_df.empty:
-        print("[profiling] No per-volume data available.")
-        return None
-
-    stage_order = (
-        vol_df.groupby("stage")["duration"].sum().sort_values(ascending=False).index.tolist()
-    )
-    pivot = (
-        vol_df.groupby(["volume", "stage"])["duration"]
-        .sum().unstack(fill_value=0.0)
-        .reindex(columns=stage_order, fill_value=0.0)
-    )
-
-    tab_colors = plt.cm.tab20.colors
-    stage_colors = {s: tab_colors[i % len(tab_colors)] for i, s in enumerate(stage_order)}
-    n_vols = len(pivot)
-
-    fig, ax = plt.subplots(figsize=(max(9, n_vols * 0.65 + 2), 6))
-    bottoms = np.zeros(n_vols)
-    for stage in stage_order:
-        ax.bar(
-            range(n_vols), pivot[stage].values, bottom=bottoms,
-            label=stage, color=stage_colors[stage], edgecolor="white", linewidth=0.4,
-        )
-        bottoms += pivot[stage].values
-
-    ax.set_xticks(range(n_vols))
-    ax.set_xticklabels([str(v)[-12:] for v in pivot.index], rotation=45, ha="right", fontsize=7.5)
-    ax.set_ylabel("Time (seconds)", fontsize=11)
-    ax.set_title(title, fontsize=13, pad=12)
-    ax.spines[["top", "right"]].set_visible(False)
-    ax.legend(bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=8, title="Stage", title_fontsize=8)
-    plt.tight_layout()
-
-    if save_path:
-        fig.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.show()
-    return fig
-
-
-def plot_sweep_timing(
-    timer: "StageTimer",
-    title: str = "Processing Time per Sweep",
-    save_path: str | None = None,
-):
-    """Box-plot: distribution of total sweep processing time across volumes."""
-    import matplotlib.pyplot as plt
-    import numpy as np
-
-    df = timer.to_dataframe()
-    sweep_df = df[df["sweep"].notna() & (df["stage"] == "load_metranet_sweep")]
-    if sweep_df.empty:
-        print("[profiling] No 'load_metranet_sweep' per-sweep records found.")
-        return None
-
-    sweeps = sorted(sweep_df["sweep"].unique())
-    data = [sweep_df[sweep_df["sweep"] == s]["duration"].values for s in sweeps]
-    labels = [f"Sweep {int(s)}" for s in sweeps]
-    colors = plt.cm.viridis(np.linspace(0.2, 0.8, len(sweeps)))
-
-    fig, ax = plt.subplots(figsize=(max(8, len(sweeps) * 0.75 + 2), 5))
-    bp = ax.boxplot(data, labels=labels, patch_artist=True, notch=False)
-    for patch, color in zip(bp["boxes"], colors):
-        patch.set_facecolor(color)
-        patch.set_alpha(0.8)
-
-    ax.set_ylabel("Time (seconds)", fontsize=11)
-    ax.set_title(title, fontsize=13, pad=12)
-    ax.grid(axis="y", alpha=0.3)
-    ax.spines[["top", "right"]].set_visible(False)
-    plt.tight_layout()
-
-    if save_path:
-        fig.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.show()
-    return fig
-
-
-def plot_task_gantt(
-    timer: "StageTimer",
-    stages: list[str] | None = None,
-    n_workers: int | None = None,
-    title: str = "Task Concurrency (Gantt)",
-    save_path: str | None = None,
-):
-    """Gantt chart showing when each volume-level task ran on the Dask cluster.
-
-    Each row is one volume. Bars represent the wall-clock span of each
-    requested stage (default: ``process_volume`` and ``archive_volume``).
-    Overlapping bars mean true parallel execution; sequential bars indicate
-    GIL contention or insufficient workers.
-
-    Parameters
-    ----------
-    timer : StageTimer
-        Timer populated after ``batch_archive_mch_volumes`` returns.
-    stages : list of str, optional
-        Stage names to plot.  Defaults to ``["process_volume", "archive_volume"]``.
-    n_workers : int, optional
-        If provided, draws a reference line for 100% worker utilization.
-    title : str
-        Chart title.
-    save_path : str, optional
-        If given, saves the figure to this path.
-    """
-    import matplotlib.pyplot as plt
-    import matplotlib.patches as mpatches
-    import numpy as np
-
-    if stages is None:
-        stages = ["process_volume", "archive_volume"]
-
-    df = timer.to_dataframe()
-    if df.empty or "t_start" not in df.columns:
-        print("[profiling] No t_start data — re-run with the updated StageTimer.")
-        return None
-
-    # Keep only volume-level stages with t_start recorded
-    gdf = df[df["stage"].isin(stages) & df["volume"].notna() & df["t_start"].notna()].copy()
-    if gdf.empty:
-        print(f"[profiling] No records found for stages {stages}.")
-        return None
-
-    # Normalise t_start so the chart starts at 0
-    t_origin = gdf["t_start"].min()
-    gdf["rel_start"] = gdf["t_start"] - t_origin
-    gdf["rel_end"]   = gdf["rel_start"] + gdf["duration"]
-
-    # Sort volumes by their earliest start time
-    vol_order = (
-        gdf.groupby("volume")["rel_start"].min().sort_values().index.tolist()
-    )
-    vol_pos = {v: i for i, v in enumerate(vol_order)}
-
-    stage_colors = plt.cm.tab10.colors
-    color_map = {s: stage_colors[i % len(stage_colors)] for i, s in enumerate(stages)}
-    bar_height = 0.55
-
-    fig, ax = plt.subplots(figsize=(12, max(4, len(vol_order) * 0.6 + 2)))
-
-    for _, row in gdf.iterrows():
-        y = vol_pos[row["volume"]]
-        ax.barh(
-            y, row["duration"], left=row["rel_start"],
-            height=bar_height, color=color_map[row["stage"]],
-            edgecolor="white", linewidth=0.5, alpha=0.85,
-        )
-
-    # Ideal wall-clock line: total CPU time / n_workers
-    if n_workers is not None:
-        total_cpu = gdf["duration"].sum()
-        ideal_wall = total_cpu / n_workers
-        ax.axvline(
-            ideal_wall, color="crimson", linestyle="--", linewidth=1.5,
-            label=f"Ideal wall clock ({n_workers} workers) = {ideal_wall:.0f}s",
-        )
-
-    # Actual wall-clock line (last task end)
-    actual_wall = gdf["rel_end"].max()
-    ax.axvline(
-        actual_wall, color="navy", linestyle=":", linewidth=1.5,
-        label=f"Actual wall clock = {actual_wall:.0f}s",
-    )
-
-    # Efficiency annotation
-    if n_workers is not None:
-        efficiency = (gdf["duration"].sum() / (n_workers * actual_wall)) * 100
-        ax.text(
-            0.99, 0.03,
-            f"Parallelism efficiency: {efficiency:.1f}%\n"
-            f"(= total CPU / (workers × wall clock))",
-            transform=ax.transAxes, ha="right", va="bottom",
-            fontsize=9, color="black",
-            bbox=dict(boxstyle="round,pad=0.3", fc="lightyellow", ec="gray", alpha=0.8),
-        )
-
-    ax.set_yticks(range(len(vol_order)))
-    ax.set_yticklabels([str(v)[-16:] for v in vol_order], fontsize=8)
-    ax.set_xlabel("Wall-clock time (seconds from first task start)", fontsize=10)
-    ax.set_title(title, fontsize=13, pad=10)
-    ax.spines[["top", "right"]].set_visible(False)
-
-    legend_patches = [mpatches.Patch(color=color_map[s], label=s) for s in stages]
-    ax.legend(handles=legend_patches + ax.get_lines(), fontsize=8, loc="upper left")
-
-    plt.tight_layout()
-    if save_path:
-        fig.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.show()
-    return fig
-
-
-def plot_profiling_dashboard(
-    timer: "StageTimer",
-    title_prefix: str = "",
-    save_path: str | None = None,
-):
-    """3x2 profiling dashboard: stage totals, distribution pie, per-volume bars,
-    stage breakdown per volume, and mean time per sweep line chart."""
-    import matplotlib.pyplot as plt
-    import matplotlib.gridspec as gridspec
-    import numpy as np
-
-    df = timer.to_dataframe()
-    if df.empty:
-        print("[profiling] No timing data — nothing to plot.")
-        return None
-
-    summary = timer.summary()
-    total_time = summary["sum"].sum() if not summary.empty else 0.0
-
-    fig = plt.figure(figsize=(18, 14))
-    gs = gridspec.GridSpec(3, 2, figure=fig, hspace=0.48, wspace=0.35)
-
-    # ── Panel 1 (top-left): Stage totals horizontal bar ──────────────────
-    ax1 = fig.add_subplot(gs[0, 0])
-    stages = summary.index.tolist()[::-1]
-    totals = summary["sum"].values[::-1]
-    bar_colors = plt.cm.RdYlGn_r(np.linspace(0.15, 0.85, len(stages)))
-    bars = ax1.barh(stages, totals, color=bar_colors, edgecolor="white", height=0.65)
-    x_max = float(max(totals)) if len(totals) > 0 else 1.0
-    for bar, val in zip(bars, totals):
-        ax1.text(
-            bar.get_width() + x_max * 0.02,
-            bar.get_y() + bar.get_height() / 2,
-            f"{val:.1f}s", va="center", ha="left", fontsize=7.5,
-        )
-    ax1.set_xlim(0, x_max * 1.30)
-    ax1.set_xlabel("Total Time (s)", fontsize=9)
-    ax1.set_title("Total Time per Stage", fontsize=11, pad=8)
-    ax1.spines[["top", "right"]].set_visible(False)
-    ax1.tick_params(labelsize=8)
-
-    # ── Panel 2 (top-right): Pie chart time distribution ─────────────────
-    ax2 = fig.add_subplot(gs[0, 1])
-    pie_colors = plt.cm.tab20.colors[: len(stages)]
-    wedges, _, autotexts = ax2.pie(
-        totals[::-1], labels=None, autopct="%1.1f%%", startangle=90,
-        colors=pie_colors, pctdistance=0.75,
-    )
-    for at in autotexts:
-        at.set_fontsize(7)
-    ax2.legend(
-        wedges, stages[::-1],
-        loc="center left", bbox_to_anchor=(1.0, 0.5), fontsize=7.5,
-        title="Stage", title_fontsize=8,
-    )
-    ax2.set_title("Time Distribution", fontsize=11, pad=8)
-
-    # ── Panel 3 (middle-left): Per-volume total time bar ─────────────────
-    ax3 = fig.add_subplot(gs[1, 0])
-    vol_df = df[df["volume"].notna()]
-    if not vol_df.empty:
-        vol_totals = vol_df.groupby("volume")["duration"].sum()
-        x3 = np.arange(len(vol_totals))
-        ax3.bar(x3, vol_totals.values, color="steelblue", edgecolor="white", linewidth=0.4)
-        ax3.set_xticks(x3)
-        ax3.set_xticklabels(
-            [str(v)[-12:] for v in vol_totals.index], rotation=45, ha="right", fontsize=7,
-        )
-        ax3.axhline(
-            vol_totals.mean(), color="crimson", linestyle="--", lw=1.5, alpha=0.8,
-            label=f"mean = {vol_totals.mean():.1f}s",
-        )
-        ax3.set_ylabel("Time (s)", fontsize=9)
-        ax3.set_title("Total Time per Volume", fontsize=11, pad=8)
-        ax3.legend(fontsize=8)
-        ax3.spines[["top", "right"]].set_visible(False)
-        ax3.tick_params(labelsize=7.5)
-    else:
-        ax3.text(0.5, 0.5, "No per-volume data", ha="center", va="center", transform=ax3.transAxes)
-        ax3.set_title("Total Time per Volume", fontsize=11, pad=8)
-
-    # ── Panel 4 (middle-right): Stage breakdown per volume (stacked) ─────
-    ax4 = fig.add_subplot(gs[1, 1])
-    if not vol_df.empty:
-        stage_order = (
-            vol_df.groupby("stage")["duration"].sum().sort_values(ascending=False).index.tolist()
-        )
-        pivot = (
-            vol_df.groupby(["volume", "stage"])["duration"]
-            .sum().unstack(fill_value=0.0)
-            .reindex(columns=stage_order, fill_value=0.0)
-        )
-        tab_colors = plt.cm.tab20.colors
-        bottoms4 = np.zeros(len(pivot))
-        for i, stage in enumerate(stage_order):
-            ax4.bar(
-                range(len(pivot)), pivot[stage].values, bottom=bottoms4,
-                label=stage, color=tab_colors[i % len(tab_colors)], edgecolor="white", linewidth=0.3,
-            )
-            bottoms4 += pivot[stage].values
-        ax4.set_xticks(range(len(pivot)))
-        ax4.set_xticklabels(
-            [str(v)[-12:] for v in pivot.index], rotation=45, ha="right", fontsize=7,
-        )
-        ax4.set_ylabel("Time (s)", fontsize=9)
-        ax4.set_title("Stage Breakdown per Volume", fontsize=11, pad=8)
-        ax4.legend(fontsize=6.5, loc="upper right", title="Stage", title_fontsize=7)
-        ax4.spines[["top", "right"]].set_visible(False)
-    else:
-        ax4.text(0.5, 0.5, "No per-volume data", ha="center", va="center", transform=ax4.transAxes)
-        ax4.set_title("Stage Breakdown per Volume", fontsize=11, pad=8)
-
-    # ── Panel 5 (bottom, full width): Mean time per sweep per top stage ──
-    ax5 = fig.add_subplot(gs[2, :])
-    sweep_df = df[df["sweep"].notna()]
-    if not sweep_df.empty:
-        top_stages = (
-            sweep_df.groupby("stage")["duration"].sum()
-            .sort_values(ascending=False).head(6).index.tolist()
-        )
-        line_colors = plt.cm.tab10.colors
-        for idx, stage in enumerate(top_stages):
-            by_sweep = sweep_df[sweep_df["stage"] == stage].groupby("sweep")["duration"].mean()
-            ax5.plot(
-                by_sweep.index, by_sweep.values,
-                "o-", label=stage, color=line_colors[idx % 10], markersize=5, linewidth=1.5,
-            )
-        ax5.set_xlabel("Sweep Number", fontsize=9)
-        ax5.set_ylabel("Mean Time (s)", fontsize=9)
-        ax5.set_title("Mean Processing Time per Sweep — Top Stages", fontsize=11, pad=8)
-        ax5.legend(fontsize=8, loc="upper right", title="Stage", title_fontsize=8)
-        ax5.grid(alpha=0.3)
-        ax5.spines[["top", "right"]].set_visible(False)
-    else:
-        ax5.text(0.5, 0.5, "No per-sweep data", ha="center", va="center", transform=ax5.transAxes)
-        ax5.set_title("Mean Processing Time per Sweep", fontsize=11, pad=8)
-
-    prefix = f"{title_prefix} — " if title_prefix else ""
-    fig.suptitle(
-        f"{prefix}Pipeline Profiling Dashboard  (total: {total_time:.1f}s)",
-        fontsize=14, fontweight="bold", y=1.01,
-    )
-
-    if save_path:
-        fig.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.show()
-    return fig

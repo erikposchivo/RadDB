@@ -9,7 +9,7 @@ name = "raddb"
 description = "Generic radar data archiving library — archive xarray DataTree volumes as Parquet"
 readme = "README.md"
 authors = [
-	{ name = "Gionata Ghiggi", email = "gionata.erikposchivo@epfl.ch" },
+	{ name = "Gionata Ghiggi", email = "" },
 ]
 license = { file = "LICENSE" }
 classifiers = [

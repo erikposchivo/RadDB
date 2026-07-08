@@ -8,10 +8,9 @@ network: reading raw files via ``radar_api`` / ``pyart``, applying visibility
 corrections, KDP, attenuation, hydrometeor classification, and converting the
 processed PyART radar objects into xarray DataTrees that RadDB can archive.
 
-**This file is intentionally excluded from the RadDB package** (via .gitignore)
-so that RadDB remains a generic, dependency-light library that works with any
-xarray DataTree.  Users who need the MCH ingestion chain should keep this file
-alongside their project and import from it directly.
+This module ships as ``raddb.mch_pipeline`` but is **not** imported by the
+RadDB package itself, so the core library stays dependency-light — pyart,
+radar_api and scipy are only required when this module is used.
 
 Usage
 -----
@@ -22,21 +21,19 @@ The recommended workflow is:
 2. Pass the DataTrees to RadDB for archiving:
    ``db.archive_volume()`` or ``db.archive_multiple_volumes()``.
 
-For end-to-end processing of a long time range, see ``main.py`` at the
-package root — it fuses processing and archiving volume-by-volume with
-a resumable checkpoint, avoiding the RAM blow-up of holding all
-DataTrees in memory at once.
+For end-to-end processing of a long time range, use
+``RadDB.archive_from_raw()`` — it fuses processing and archiving
+volume-by-volume with a resumable checkpoint, avoiding the RAM blow-up
+of holding all DataTrees in memory at once.
 
 Dependencies (not required by RadDB itself)
 -------------------------------------------
 - pyart  (``pyart_mch`` or ``arm_pyart``)
 - radar_api
 - scipy
-- xmltodict
 """
 from __future__ import annotations
 
-import concurrent.futures
 import datetime
 import functools
 import glob
@@ -44,7 +41,6 @@ import logging
 import os
 import pickle
 import time as _time
-from collections import defaultdict
 from contextlib import nullcontext as _nullctx
 from pathlib import Path
 
@@ -53,7 +49,6 @@ import pandas as pd
 import pyart
 import radar_api
 import xarray as xr
-import xmltodict
 from pyart.aux_io import read_cartesian_metranet
 from pyart.correct import calculate_attenuation_zphi, smooth_phidp_single_window
 from pyart.retrieve import kdp_leastsquare_single_window
@@ -61,8 +56,9 @@ from scipy.spatial import KDTree
 
 # RadDB imports (generic package)
 import raddb
+from raddb.discovery import _group_files_by_volume, _parse_volume_time
 from raddb.helper import StageTimer, _vprint, normalize_radar_name
-from raddb.lut import RADAR_TO_IDX
+from raddb.lut import encode_gate_ids
 
 logger = logging.getLogger(__name__)
 
@@ -99,19 +95,6 @@ FIELD_MAPPING = {
 def check_radar_letter(radar_letter: str) -> bool:
     """Check if a given radar-identification letter is valid."""
     return radar_letter.upper() in RADAR_LETTERS
-
-
-def read_status(status_file: str, verbose: bool = False) -> dict:
-    """Read a radar XML status file."""
-    try:
-        status = xmltodict.parse(
-            open(status_file, "r").read().replace("-P/", "-P_")
-        )
-        return status
-    except Exception as e:
-        if verbose:
-            logger.warning(f"ERROR reading status file {status_file}: {e}")
-        return {}
 
 
 @functools.lru_cache(maxsize=None)
@@ -195,86 +178,6 @@ def hzt_hourly_to_5min(filedict: dict, tsteps_min: int = 5) -> dict:
             deltaHZT_temp += deltaHZT
         hzt[tstamp_hzt0 + dt * idx] = hzt[tstamp_hzt0] + deltaHZT_temp
     return hzt
-
-
-# ============================================================================
-# NOISE COMPUTATION
-# ============================================================================
-
-
-def compute_noise(
-    rad_obj, status_fpath: str, sweep_number: int, verbose: bool = False
-) -> None:
-    """Compute noise estimate for a radar object."""
-    NOISE_100 = 5
-
-    if not os.path.isfile(status_fpath):
-        if verbose:
-            logger.warning("Cannot find status file. Using default noise value.")
-        noisedBADU_h = NOISE_100
-        noisedBADU_v = NOISE_100
-    else:
-        status = read_status(status_fpath)
-        if not len(status.keys()):
-            if verbose:
-                logger.warning(
-                    "Cannot read status file. Using default noise value."
-                )
-            noisedBADU_h = NOISE_100
-            noisedBADU_v = NOISE_100
-        else:
-            try:
-                noise_h = float(
-                    status["status"]["sweep"][sweep_number]["RADAR"]["STAT"][
-                        "CALIB"
-                    ]["noisepower_frontend_h_inuse"]["@value"]
-                )
-                rconst_h = float(
-                    status["status"]["sweep"][sweep_number]["RADAR"]["STAT"][
-                        "CALIB"
-                    ]["rconst_h"]["@value"]
-                )
-                noisedBADU_h = 10.0 * np.log10(noise_h) + rconst_h
-
-                noise_v = float(
-                    status["status"]["sweep"][sweep_number]["RADAR"]["STAT"][
-                        "CALIB"
-                    ]["noisepower_frontend_v_inuse"]["@value"]
-                )
-                rconst_v = float(
-                    status["status"]["sweep"][sweep_number]["RADAR"]["STAT"][
-                        "CALIB"
-                    ]["rconst_v"]["@value"]
-                )
-                noisedBADU_v = 10.0 * np.log10(noise_v) + rconst_v
-            except Exception:
-                noisedBADU_h = NOISE_100
-                noisedBADU_v = NOISE_100
-
-    noisedBZ_h = pyart.retrieve.compute_noisedBZ(
-        rad_obj.nrays,
-        noisedBADU_h,
-        rad_obj.range["data"],
-        100.0,
-        noise_field="noisedBZ_hh",
-    )
-    noisedBZ_v = pyart.retrieve.compute_noisedBZ(
-        rad_obj.nrays,
-        noisedBADU_v,
-        rad_obj.range["data"],
-        100.0,
-        noise_field="noisedBZ_vv",
-    )
-
-    noisedBZ_h["data"] = np.ma.array(
-        noisedBZ_h["data"], mask=np.isnan(noisedBZ_h["data"])
-    )
-    noisedBZ_v["data"] = np.ma.array(
-        noisedBZ_v["data"], mask=np.isnan(noisedBZ_v["data"])
-    )
-
-    rad_obj.add_field("noise_h", noisedBZ_h)
-    rad_obj.add_field("noise_v", noisedBZ_v)
 
 
 # ============================================================================
@@ -862,95 +765,8 @@ def pyart_volume_to_datatree(
 
 
 # ============================================================================
-# METRANET -> xarray (via radar_api)
-# ============================================================================
-
-
-def metranet_to_datatree(
-    filepath: str | Path,
-    network: str = "MCH_LTE",
-    product: str = "POL",
-) -> xr.DataTree:
-    """Read a METRANET file directly into an xarray DataTree via radar_api."""
-    return radar_api.open_datatree(str(filepath), network=network, product=product)
-
-
-def volume_to_datatree(
-    sweep_filepaths: list,
-    network: str = "MCH_LTE",
-    product: str = "POL",
-    max_workers: int = 1,
-) -> xr.DataTree:
-    """Load all sweeps of a volume from METRANET files into a DataTree."""
-    from raddb.helper import list_sweep_names
-
-    def _load_sweep(idx_path):
-        sweep_idx, sweep_filepath = idx_path
-        try:
-            dt_sweep = metranet_to_datatree(
-                sweep_filepath, network=network, product=product
-            )
-            names = list_sweep_names(dt_sweep)
-            if not names:
-                return None, None
-            ds = dt_sweep[names[0]].to_dataset().assign_attrs(
-                {"sweep_number": sweep_idx}
-            )
-            return f"sweep_{sweep_idx}", ds
-        except Exception as exc:
-            logger.error(f"Error loading {sweep_filepath}: {exc}")
-            return None, None
-
-    paths = sorted([str(p) for p in sweep_filepaths])
-    args = [(i, p) for i, p in enumerate(paths, 1)]
-    dict_ds = {}
-
-    if max_workers <= 1:
-        for arg in args:
-            k, ds = _load_sweep(arg)
-            if k and ds is not None:
-                dict_ds[k] = ds
-    else:
-        with concurrent.futures.ThreadPoolExecutor(max_workers) as executor:
-            futures = [executor.submit(_load_sweep, arg) for arg in args]
-            for future in concurrent.futures.as_completed(futures):
-                k, ds = future.result()
-                if k and ds is not None:
-                    dict_ds[k] = ds
-
-    if not dict_ds:
-        raise ValueError("No valid sweep datasets loaded.")
-    return xr.DataTree.from_dict(dict_ds)
-
-
-# ============================================================================
 # FILE DISCOVERY HELPERS
 # ============================================================================
-
-
-def _parse_volume_time(stem: str) -> datetime.datetime:
-    """Parse volume timestamp from METRANET filename."""
-    try:
-        y, j, h, m = (
-            int(stem[3:5]),
-            int(stem[5:8]),
-            int(stem[8:10]),
-            int(stem[10:12]),
-        )
-        return datetime.datetime(2000 + y, 1, 1) + datetime.timedelta(
-            days=j - 1, hours=h, minutes=m
-        )
-    except Exception:
-        return datetime.datetime(1970, 1, 1)
-
-
-def _group_files_by_volume(paths: list[str]) -> dict:
-    """Group sweep files by volume (based on filename stem)."""
-    vols = defaultdict(list)
-    for p in paths:
-        stem = Path(p).stem
-        vols[stem].append(p)
-    return dict(vols)
 
 
 def _raw_data_dir_candidates(
@@ -1565,22 +1381,15 @@ def generate_mch_lut(
         )
         gate_alt = radar_alt + z_raw
 
-        # Vectorised int64 gate_id generation (zero string allocations)
-        _radar_idx = np.int64(RADAR_TO_IDX[radar.upper()])
-        _az_int    = np.round(azimuths * 10).astype(np.int64)   # (n_az,)
-        _rng_int   = ranges.astype(np.int64)                     # (n_rng,)
-        _gate_ids  = (
-            _radar_idx          * np.int64(1_000_000_000_000)
-            + sweep_idx         * np.int64(   10_000_000_000)
-            + _az_int[:, None]  * np.int64(        1_000_000)
-            + _rng_int[None, :]
-        ).ravel()
+        gate_az  = np.repeat(azimuths, n_rng)
+        gate_rng = np.tile(ranges, n_az)
+        gate_ids = encode_gate_ids(radar, sweep_idx, gate_az, gate_rng)
 
         lut_dfs.append(pd.DataFrame({
-            "gate_id":         _gate_ids,
+            "gate_id":         gate_ids,
             "sweep":           np.full(n_az * n_rng, sweep_idx, dtype=np.int32),
-            "azimuth":         np.repeat(azimuths, n_rng),
-            "range":           np.tile(ranges, n_az),
+            "azimuth":         gate_az,
+            "range":           gate_rng,
             "elevation_angle": np.full(n_az * n_rng, elevation),
             "latitude":        gate_lat.ravel(),
             "longitude":       gate_lon.ravel(),

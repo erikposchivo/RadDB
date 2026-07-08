@@ -5,8 +5,7 @@ RadDB archives xarray DataTree volumes as Parquet files with an efficient
 LUT-based layout.  It is network-agnostic: any DataTree with the standard
 xradar coordinate layout can be archived and reconstructed.
 
-MCH/METRANET-specific ingestion code lives in ``mch_pipeline.py``
-(outside the package, excluded via .gitignore).
+MCH/METRANET-specific ingestion code lives in ``raddb/mch_pipeline.py``.
 """
 from __future__ import annotations
 
@@ -55,25 +54,23 @@ from raddb.lut import (
     add_lut_projection,
 )
 
-# Pipeline functions
-from raddb.pipeline import (
-    FILTER_LOGICS,
-    filter_df,
-    filter_dt,
+# Filtering & archiving functions
+from raddb.helper import FILTER_LOGICS, filter_df, filter_dt
+from raddb.io_core import (
     archive_volume,
     archive_multiple_volumes,
     archive_volumes_multi_radar,
 )
 
 # Plotting functions
-from raddb.plot import (
+from raddb.viz.plot import (
     plot_ppi,
     plot_rhi,
     plot_latent_scatter,
 )
 
 # Profiling helpers
-from raddb.helper import (
+from raddb.viz.profiling import (
     plot_stage_totals,
     plot_volume_timing,
     plot_sweep_timing,

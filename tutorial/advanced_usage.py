@@ -29,11 +29,11 @@ import matplotlib
 matplotlib.use("Agg")
 
 import raddb
-from raddb.helper import StageTimer, plot_profiling_dashboard
+from raddb import StageTimer, plot_profiling_dashboard
 
 # MCH pipeline (not part of the RadDB package)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from mch_pipeline import (
+from raddb.mch_pipeline import (
     process_mch_volume,
     process_mch_volumes,
     generate_mch_lut,

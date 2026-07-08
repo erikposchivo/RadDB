@@ -1,7 +1,7 @@
 """
 raddb/tests/test_pipeline.py
 ----------------------------
-Tests for the sequential archiving pipeline (raddb.pipeline) and the
+Tests for the sequential archiving functions (raddb.io_core) and the
 sequential MCH batch pipeline (mch_pipeline.process_mch_volumes).
 
 All tests use synthetic DataTrees — no real METRANET files are required.
@@ -84,7 +84,7 @@ class TestSequentialArchive:
     """archive_multiple_volumes correctness tests."""
 
     def test_single_volume_success(self, tiny_datatree, base_path):
-        from raddb.pipeline import archive_multiple_volumes
+        from raddb.io_core import archive_multiple_volumes
 
         results = archive_multiple_volumes(
             {"vol_001": tiny_datatree},
@@ -105,7 +105,7 @@ class TestSequentialArchive:
         assert (df["DBZH"] > 0.0).all(), "Clear-sky gates should have been removed"
 
     def test_multiple_volumes(self, tiny_datatree, base_path):
-        from raddb.pipeline import archive_multiple_volumes
+        from raddb.io_core import archive_multiple_volumes
 
         volumes = {
             f"vol_{i:03d}": _make_datatree(
@@ -121,7 +121,7 @@ class TestSequentialArchive:
         assert all(r["success"] for r in results)
 
     def test_bad_datatree_captured_as_failure(self, base_path):
-        from raddb.pipeline import archive_multiple_volumes
+        from raddb.io_core import archive_multiple_volumes
 
         bad_ds = xr.Dataset({"DBZH": (["azimuth", "range"], np.ones((5, 5)))})
         bad_dt = xr.DataTree.from_dict({"sweep_1": bad_ds})
@@ -147,7 +147,7 @@ class TestMultiRadarArchive:
     """archive_volumes_multi_radar tests."""
 
     def test_multi_radar_sequential(self, base_path):
-        from raddb.pipeline import archive_volumes_multi_radar
+        from raddb.io_core import archive_volumes_multi_radar
 
         volumes_by_radar = {
             "A": {"vol_001": _make_datatree(vol_time=pd.Timestamp("2024-08-01 17:00:00"))},
@@ -173,7 +173,7 @@ class TestTimerAggregation:
     """StageTimer records accumulate across sequential archiving."""
 
     def test_timer_accumulates_across_run(self, base_path):
-        from raddb.pipeline import archive_multiple_volumes
+        from raddb.io_core import archive_multiple_volumes
         from raddb.helper import StageTimer
 
         timer = StageTimer()

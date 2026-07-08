@@ -199,25 +199,55 @@ def compute_gate_xyz(
 # Gate ID generation
 # ============================================================================
 
+def encode_gate_ids(
+    radar: str,
+    sweeps: int | np.ndarray,
+    azimuths: np.ndarray,
+    ranges: np.ndarray,
+) -> np.ndarray:
+    """Vectorised 64-bit gate identifier encoding.
+
+    Encoding: ``radar_idx * 10^12 + sweep * 10^10 + az_int * 10^6 + range_int``
+
+    where ``az_int = round(azimuth * 10)`` (1 decimal place precision) and
+    ``range_int = int(range_m)`` (integer metres).  This is the single
+    canonical implementation, used by LUT generation and volume archiving.
+
+    Parameters
+    ----------
+    radar : str
+        Radar identifier (single letter, e.g. ``"A"``).
+    sweeps : int or array
+        Sweep number(s) — a scalar (applied to all gates) or an array
+        aligned with ``azimuths`` / ``ranges``.
+    azimuths, ranges : arrays (aligned per gate)
+        Azimuth [deg] and range [m] of each gate.
+
+    Returns
+    -------
+    np.ndarray of int64
+    """
+    radar_idx = np.int64(RADAR_TO_IDX[radar.upper()])
+    sweep_v = np.asarray(sweeps, dtype=np.int64)
+    az_int  = np.round(np.asarray(azimuths, dtype=np.float64) * 10).astype(np.int64)
+    rng_int = np.asarray(ranges).astype(np.int64)
+    return (
+        radar_idx * np.int64(1_000_000_000_000)
+        + sweep_v  * np.int64(   10_000_000_000)
+        + az_int   * np.int64(        1_000_000)
+        + rng_int
+    )
+
+
 def generate_gate_id(
     radar: str, sweep: int, azimuth: float, range_m: float
 ) -> int:
     """Create a unique gate identifier as a 64-bit integer.
 
-    Encoding: ``radar_idx * 10^12 + sweep * 10^10 + az_int * 10^6 + range_int``
-
-    where ``az_int = round(azimuth * 10)`` (1 decimal place precision) and
-    ``range_int = int(range_m)`` (integer metres).
+    Scalar convenience wrapper around :func:`encode_gate_ids` — see there
+    for the encoding definition.
     """
-    radar_idx = RADAR_TO_IDX[radar.upper()]
-    az_int = int(round(azimuth * 10))
-    range_int = int(range_m)
-    return (
-        radar_idx * 1_000_000_000_000
-        + sweep    *    10_000_000_000
-        + az_int   *         1_000_000
-        + range_int
-    )
+    return int(encode_gate_ids(radar, sweep, azimuth, range_m))
 
 
 # ============================================================================
@@ -284,7 +314,6 @@ def generate_lut_from_datatree(
     lut_dfs = []
     sweep_meta = {}
     radar_lat, radar_lon, radar_alt = None, None, None
-    _radar_idx = np.int64(RADAR_TO_IDX[radar.upper()])
 
     for sweep_name in sweep_names:
         sweep_idx = int(sweep_name.split("_")[-1])
@@ -318,21 +347,15 @@ def generate_lut_from_datatree(
             x_raw, y_raw, z_raw, radar_lat, radar_lon, radar_alt
         )
 
-        # Vectorised int64 gate_id generation (zero string allocations)
-        _az_int  = np.round(azimuths * 10).astype(np.int64)   # (n_az,)
-        _rng_int = ranges.astype(np.int64)                      # (n_rng,)
-        _gate_ids = (
-            _radar_idx         * np.int64(1_000_000_000_000)
-            + sweep_idx        * np.int64(   10_000_000_000)
-            + _az_int[:, None] * np.int64(        1_000_000)
-            + _rng_int[None, :]
-        ).ravel()
+        gate_az  = np.repeat(azimuths, n_rng)
+        gate_rng = np.tile(ranges, n_az)
+        gate_ids = encode_gate_ids(radar, sweep_idx, gate_az, gate_rng)
 
         lut_dfs.append(pd.DataFrame({
-            "gate_id":         _gate_ids,
+            "gate_id":         gate_ids,
             "sweep":           np.full(n_az * n_rng, sweep_idx, dtype=np.int32),
-            "azimuth":         np.repeat(azimuths, n_rng),
-            "range":           np.tile(ranges, n_az),
+            "azimuth":         gate_az,
+            "range":           gate_rng,
             "elevation_angle": np.full(n_az * n_rng, elevation_angle),
             "latitude":        gate_lat.ravel(),
             "longitude":       gate_lon.ravel(),
@@ -500,19 +523,8 @@ def compute_corners_from_lut(
     return str(corners_path)
 
 
-def load_sweep_corners(
-    radar: str, lut_base_path: str | Path
-) -> dict[int, dict]:
-    """Load per-sweep corner arrays from ``{radar}_corners.npz``.
-
-    Returns
-    -------
-    dict {sweep_number: {"x_edges", "y_edges", ...}}  — empty dict if the
-    corners file does not exist (backwards-compatible).
-    """
-    corners_path = Path(lut_base_path) / radar / "LUT" / f"{radar}_corners.npz"
-    if not corners_path.exists():
-        return {}
+def _parse_corners_npz(corners_path: str | Path) -> dict[int, dict]:
+    """Parse a ``*_corners.npz`` file into ``{sweep: {array_name: array}}``."""
     data = np.load(corners_path)
     out: dict[int, dict] = {}
     for key in data.files:
@@ -526,6 +538,22 @@ def load_sweep_corners(
             continue
         out.setdefault(sw, {})[parts[2]] = data[key]
     return out
+
+
+def load_sweep_corners(
+    radar: str, lut_base_path: str | Path
+) -> dict[int, dict]:
+    """Load per-sweep corner arrays from ``{radar}_corners.npz``.
+
+    Returns
+    -------
+    dict {sweep_number: {"x_edges", "y_edges", ...}}  — empty dict if the
+    corners file does not exist (backwards-compatible).
+    """
+    corners_path = Path(lut_base_path) / radar / "LUT" / f"{radar}_corners.npz"
+    if not corners_path.exists():
+        return {}
+    return _parse_corners_npz(corners_path)
 
 
 def load_radar_lut(

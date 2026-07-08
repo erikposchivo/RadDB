@@ -51,7 +51,7 @@ db = raddb.RadDB(base_path=BASE_PATH)
 print("\nLoading DataTree via MCH pipeline...")
 
 # Import the MCH pipeline (not part of the RadDB package)
-from mch_pipeline import process_mch_volume, find_files_with_fallback, _group_files_by_volume, _parse_volume_time
+from raddb.mch_pipeline import process_mch_volume, find_files_with_fallback, _group_files_by_volume, _parse_volume_time
 
 RAW_DATA_DIR = "/ltenas8/data/RADAR"
 NETWORK = "MCH_LTE"
@@ -101,7 +101,6 @@ dt_sample = process_mch_volume(
 lut_path = db.generate_lut(
     radar=RADAR_NAME,
     sample_datatree=dt_sample,
-    ke=1.25,
     network=NETWORK,
 )
 print(f"  LUT ready at: {lut_path}")
