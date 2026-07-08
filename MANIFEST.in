@@ -2,4 +2,5 @@ prune .github
 prune ci
 prune docs
 prune raddb/tests
-prune tutorials
+prune raddb/mch
+prune tutorial

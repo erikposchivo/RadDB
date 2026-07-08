@@ -3,19 +3,21 @@ raddb/discovery.py
 ------------------
 File discovery for RadDB — both sides of the archive:
 
-- **Raw data scanning** (input side): walk a METRANET directory tree
-  (``{root}/{NETWORK}/{yyyy}/{mm}/{dd}/{hh}/ML{R}/...``) and summarise which
-  radars, time periods, and products are available for archiving.  This is
-  what powers :meth:`raddb.RadDB.show_available_data`.
+- **DataTree file discovery** (input side): locate DataTree files
+  (NetCDF / Zarr) on disk, optionally filtered by a filename timestamp,
+  ready to load with :func:`raddb.io_core.open_any_datatree` and archive
+  with :meth:`raddb.RadDB.archive_from_datatrees`.
 - **Archived POL search** (output side): locate ``*_POL.parquet`` files in a
   time range inside an existing RadDB archive.
 
 Everything here is pure filesystem + pandas — no pyart / radar_api
-dependency — so discovery works in any environment.
+dependency — so discovery works in any environment.  (Raw METRANET
+scanning lives in the private ``raddb.mch.discovery`` module.)
 """
 from __future__ import annotations
 
 import datetime
+import re
 from collections import defaultdict
 from pathlib import Path
 
@@ -25,7 +27,7 @@ from raddb.helper import ensure_utc
 
 
 # ============================================================================
-# METRANET filename helpers  (shared with raddb.mch_pipeline)
+# METRANET filename helpers  (shared with raddb.mch)
 # ============================================================================
 
 def _parse_volume_time(stem: str) -> datetime.datetime:
@@ -59,188 +61,105 @@ def _group_files_by_volume(paths: list[str]) -> dict:
 
 
 # ============================================================================
-# Raw METRANET archive scanning  (input side)
+# DataTree file discovery  (input side)
 # ============================================================================
 
-def _raw_network_roots(raw_data_dir: str | Path) -> list[Path]:
-    """Return network root dirs (e.g. ``.../RADAR/MCH``) under *raw_data_dir*.
+# Filename-stem timestamp patterns, tried in order.
+_DT_TIME_PATTERNS = [
+    (r"(\d{8})[T_-]?(\d{6})", "%Y%m%d%H%M%S"),  # YYYYMMDD[T_-]HHMMSS
+    (r"(\d{8})[T_-]?(\d{4})", "%Y%m%d%H%M"),    # YYYYMMDD[T_-]HHMM
+    (r"(\d{12})", "%Y%m%d%H%M"),                # YYYYMMDDHHMM
+]
 
-    Accepts either the directory that contains network folders
-    (``.../RADAR``) or a network folder itself (``.../RADAR/MCH``) — detected
-    by whether 4-digit year subdirectories are present.
+
+def _parse_datatree_file_time(path: str | Path) -> pd.Timestamp | None:
+    """Best-effort UTC timestamp from a DataTree filename stem.
+
+    Tries the patterns in :data:`_DT_TIME_PATTERNS` against the stem
+    (e.g. ``vol_20240101_000000.nc`` or ``A_202401010000.zarr``).
+    Returns ``None`` when no pattern yields a valid timestamp.
     """
-    root = Path(raw_data_dir)
-    if not root.exists():
-        raise FileNotFoundError(f"Raw data directory not found: {root}")
-
-    def _has_year_dirs(d: Path) -> bool:
-        return any(
-            s.is_dir() and s.name.isdigit() and len(s.name) == 4
-            for s in d.iterdir()
-        )
-
-    if _has_year_dirs(root):
-        return [root]
-    nets = [d for d in root.iterdir() if d.is_dir() and _has_year_dirs(d)]
-    if not nets:
-        raise FileNotFoundError(
-            f"No METRANET layout found under {root} "
-            "(expected {root}/[NETWORK]/yyyy/mm/dd/hh/ML*/...)"
-        )
-    return sorted(nets)
+    stem = Path(path).stem
+    for pattern, fmt in _DT_TIME_PATTERNS:
+        m = re.search(pattern, stem)
+        if not m:
+            continue
+        try:
+            ts = pd.to_datetime("".join(m.groups()), format=fmt)
+        except Exception:
+            continue
+        return ensure_utc(ts)
+    return None
 
 
-def scan_raw_archive(
-    raw_data_dir: str | Path,
-    radars: list[str] | None = None,
-) -> pd.DataFrame:
-    """Scan a raw METRANET tree and summarise available data per (radar, day).
+def find_datatree_files(
+    directory: str | Path,
+    recursive: bool = True,
+    extensions: tuple[str, ...] = (".nc", ".nc4", ".cdf", ".zarr"),
+    start_time: str | pd.Timestamp | None = None,
+    end_time: str | pd.Timestamp | None = None,
+    strict_time: bool = False,
+) -> list[Path]:
+    """Find DataTree files (NetCDF files / Zarr stores) under *directory*.
+
+    Zarr stores are **directories** — they are matched as leaves and never
+    descended into.  Results are sorted by (filename timestamp, path); files
+    whose stem has no parseable timestamp sort last.
 
     Parameters
     ----------
-    raw_data_dir : str or Path
-        Root of the raw archive — either ``.../RADAR`` (containing network
-        dirs like ``MCH``) or a network dir itself.
-    radars : list of str, optional
-        Restrict the scan to these radar letters (e.g. ``["A", "L"]``).
+    directory : str or Path
+        Directory to scan.
+    recursive : bool
+        Recurse into subdirectories (default ``True``).
+    extensions : tuple of str
+        File/store suffixes to match (case-insensitive).
+    start_time, end_time : str or Timestamp, optional
+        Keep only files whose filename timestamp (see
+        :func:`_parse_datatree_file_time`) falls in this range.
+    strict_time : bool
+        When a time range is given, drop files whose timestamp cannot be
+        parsed from the filename (default ``False`` — they are kept).
 
     Returns
     -------
-    pd.DataFrame
-        One row per (network, radar, date) with columns:
-        ``network, radar, date, n_volumes, first_volume, last_volume,
-        n_sweep_files, has_hym, has_hzt``.
+    list of Path
+        Matching files/stores, time-sorted.
     """
-    want = {r.upper() for r in radars} if radars else None
-    rows = []
+    root = Path(directory)
+    if not root.is_dir():
+        raise FileNotFoundError(f"Directory not found: {root}")
 
-    for net_root in _raw_network_roots(raw_data_dir):
-        network = net_root.name
-        for year_dir in sorted(d for d in net_root.iterdir() if d.is_dir()):
-            for month_dir in sorted(d for d in year_dir.iterdir() if d.is_dir()):
-                for day_dir in sorted(d for d in month_dir.iterdir() if d.is_dir()):
-                    # Collect per-radar info across the hour dirs of this day
-                    day_pol: dict[str, dict] = {}
-                    day_hym: set[str] = set()
-                    day_hzt = False
-                    for hour_dir in sorted(d for d in day_dir.iterdir() if d.is_dir()):
-                        for prod_dir in hour_dir.iterdir():
-                            if not prod_dir.is_dir():
-                                continue
-                            name = prod_dir.name.upper()
-                            if name == "HZT":
-                                day_hzt = True
-                            elif name.startswith("YM") and len(name) == 3:
-                                day_hym.add(name[-1])
-                            elif name.startswith("ML") and len(name) == 3:
-                                radar = name[-1]
-                                if want and radar not in want:
-                                    continue
-                                files = [f for f in prod_dir.iterdir() if f.is_file()]
-                                if not files:
-                                    continue
-                                info = day_pol.setdefault(
-                                    radar, {"stems": set(), "n_files": 0}
-                                )
-                                info["stems"].update(f.stem for f in files)
-                                info["n_files"] += len(files)
+    exts = {e.lower() for e in extensions}
+    matches: list[Path] = []
+    stack = [root]
+    while stack:
+        d = stack.pop()
+        for entry in sorted(d.iterdir()):
+            if entry.suffix.lower() in exts:
+                matches.append(entry)  # .zarr dirs are leaves: no descent
+            elif entry.is_dir() and recursive:
+                stack.append(entry)
 
-                    for radar, info in sorted(day_pol.items()):
-                        times = sorted(_parse_volume_time(s) for s in info["stems"])
-                        rows.append({
-                            "network": network,
-                            "radar": radar,
-                            "date": f"{year_dir.name}-{month_dir.name}-{day_dir.name}",
-                            "n_volumes": len(info["stems"]),
-                            "first_volume": times[0],
-                            "last_volume": times[-1],
-                            "n_sweep_files": info["n_files"],
-                            "has_hym": radar in day_hym,
-                            "has_hzt": day_hzt,
-                        })
+    start_dt = ensure_utc(start_time) if start_time else None
+    end_dt = ensure_utc(end_time) if end_time else None
+    has_range = start_dt is not None or end_dt is not None
 
-    df = pd.DataFrame(rows)
-    if not df.empty:
-        df = df.sort_values(["network", "radar", "date"]).reset_index(drop=True)
-    return df
+    kept: list[tuple[pd.Timestamp | None, Path]] = []
+    for p in matches:
+        ts = _parse_datatree_file_time(p)
+        if ts is None:
+            if has_range and strict_time:
+                continue
+        else:
+            if start_dt and ts < start_dt:
+                continue
+            if end_dt and ts > end_dt:
+                continue
+        kept.append((ts, p))
 
-
-def summarize_raw_archive(df_days: pd.DataFrame) -> pd.DataFrame:
-    """Aggregate a :func:`scan_raw_archive` result to one row per radar."""
-    if df_days.empty:
-        return pd.DataFrame()
-    g = df_days.groupby(["network", "radar"])
-    out = pd.DataFrame({
-        "days": g["date"].nunique(),
-        "volumes": g["n_volumes"].sum(),
-        "first_volume": g["first_volume"].min(),
-        "last_volume": g["last_volume"].max(),
-        "hym": g["has_hym"].all(),
-        "hzt": g["has_hzt"].all(),
-    }).reset_index()
-    return out
-
-
-def print_available_data(
-    raw_data_dir: str | Path,
-    radars: list[str] | None = None,
-    detail: bool = False,
-) -> pd.DataFrame:
-    """Print a human-readable summary of available raw data; return the scan.
-
-    Parameters
-    ----------
-    raw_data_dir : str or Path
-        Raw METRANET root (see :func:`scan_raw_archive`).
-    radars : list of str, optional
-        Restrict to these radars.
-    detail : bool
-        Also print the per-day table (volumes per radar per day).
-
-    Returns
-    -------
-    pd.DataFrame
-        The per-day scan DataFrame (as from :func:`scan_raw_archive`),
-        for programmatic use.
-    """
-    df_days = scan_raw_archive(raw_data_dir, radars=radars)
-
-    print("=" * 78)
-    print(f"  RadDB — available raw data   (root: {raw_data_dir})")
-    print("=" * 78)
-    if df_days.empty:
-        print("  No METRANET volumes found.")
-        print("=" * 78)
-        return df_days
-
-    summary = summarize_raw_archive(df_days)
-    hdr = f"  {'net':<5} {'radar':<6} {'period':<28} {'days':>5} {'volumes':>8}  products"
-    print(hdr)
-    print("-" * 78)
-    for _, r in summary.iterrows():
-        period = f"{r['first_volume']:%Y-%m-%d %H:%M} -> {r['last_volume']:%Y-%m-%d %H:%M}"
-        products = "POL" + ("+HYM" if r["hym"] else "") + ("+HZT" if r["hzt"] else "")
-        print(
-            f"  {r['network']:<5} {r['radar']:<6} {period:<28} "
-            f"{r['days']:>5} {r['volumes']:>8,}  {products}"
-        )
-    print("-" * 78)
-    print(f"  total: {summary['volumes'].sum():,} volumes across "
-          f"{df_days['date'].nunique()} day(s), {len(summary)} radar(s)")
-
-    if detail:
-        print("-" * 78)
-        print("  per-day detail:")
-        for _, r in df_days.iterrows():
-            print(
-                f"    {r['radar']}  {r['date']}  "
-                f"{r['n_volumes']:>4} volumes  "
-                f"({r['first_volume']:%H:%M} -> {r['last_volume']:%H:%M})"
-                f"{'  +HYM' if r['has_hym'] else ''}"
-                f"{'  +HZT' if r['has_hzt'] else ''}"
-            )
-    print("=" * 78)
-    return df_days
+    kept.sort(key=lambda x: (x[0] is None, x[0] or pd.Timestamp(0, tz="UTC"), str(x[1])))
+    return [p for _, p in kept]
 
 
 # ============================================================================

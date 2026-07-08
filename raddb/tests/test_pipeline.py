@@ -1,8 +1,7 @@
 """
 raddb/tests/test_pipeline.py
 ----------------------------
-Tests for the sequential archiving functions (raddb.io_core) and the
-sequential MCH batch pipeline (mch_pipeline.process_mch_volumes).
+Tests for the sequential archiving functions (raddb.io_core).
 
 All tests use synthetic DataTrees — no real METRANET files are required.
 """

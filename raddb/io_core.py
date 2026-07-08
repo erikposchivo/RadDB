@@ -5,7 +5,8 @@ Core I/O conversion functions for radar data.
 
 This module provides generic conversions between xarray DataTree,
 pandas DataFrame, and Parquet files.  It does **not** depend on pyart
-or radar_api — all MCH-specific I/O lives in ``mch_pipeline.py``.
+or radar_api — all MCH-specific I/O lives in the private ``raddb.mch``
+subpackage.
 """
 from __future__ import annotations
 
@@ -54,6 +55,54 @@ _LAPSE_RATE: float = -0.0065  # °C/m (standard environmental lapse rate, -6.5 �
 def _projection_columns(df: pd.DataFrame) -> list[str]:
     """Columns added by :func:`raddb.lut.add_lut_projection` (e.g. x_2056 / y_2056)."""
     return [c for c in df.columns if re.match(r"^[xy]_\w+$", c)]
+
+
+# ============================================================================
+# DataTree file loading  (NetCDF / Zarr)
+# ============================================================================
+
+def open_any_datatree(
+    path: str | Path,
+    engine: str | None = None,
+    **open_kwargs,
+) -> xr.DataTree:
+    """Open a DataTree from disk — NetCDF file or Zarr store.
+
+    Engine resolution: an explicit ``engine`` wins; a ``*.zarr`` suffix or a
+    directory containing ``.zgroup`` / ``zarr.json`` selects ``"zarr"``;
+    otherwise xarray auto-detects the NetCDF backend (netCDF4 / h5netcdf).
+
+    Parameters
+    ----------
+    path : str or Path
+        Path to a NetCDF file or Zarr store.
+    engine : str, optional
+        xarray backend override (e.g. ``"h5netcdf"``, ``"zarr"``).
+    **open_kwargs
+        Forwarded to :func:`xarray.open_datatree`.
+
+    Returns
+    -------
+    xr.DataTree
+    """
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"DataTree file/store not found: {p}")
+
+    if engine is None and (
+        p.suffix.lower() == ".zarr"
+        or (p.is_dir() and ((p / ".zgroup").exists() or (p / "zarr.json").exists()))
+    ):
+        engine = "zarr"
+
+    try:
+        return xr.open_datatree(p, engine=engine, **open_kwargs)
+    except (ImportError, ModuleNotFoundError) as exc:
+        raise ImportError(
+            f"Opening {p.name} requires an xarray backend that is not "
+            "installed (netCDF4/h5netcdf for NetCDF, zarr for Zarr stores). "
+            "Install with: pip install raddb[io]"
+        ) from exc
 
 
 # ============================================================================

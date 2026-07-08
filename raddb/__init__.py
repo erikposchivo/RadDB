@@ -5,7 +5,8 @@ RadDB archives xarray DataTree volumes as Parquet files with an efficient
 LUT-based layout.  It is network-agnostic: any DataTree with the standard
 xradar coordinate layout can be archived and reconstructed.
 
-MCH/METRANET-specific ingestion code lives in ``raddb/mch_pipeline.py``.
+MCH/METRANET-specific ingestion code lives in the private ``raddb.mch``
+subpackage (gitignored in the public repository; never imported here).
 """
 from __future__ import annotations
 
@@ -30,6 +31,7 @@ from raddb.io_core import (
     datatree_to_dataset,
     datatree_to_dataframe,
     datatree_to_parquet,
+    open_any_datatree,
     parquet_to_dataframe,
     parquet_to_datatree,
     labels_to_dataframe,
@@ -39,6 +41,9 @@ from raddb.io_core import (
     add_feature_to_df,
     add_feature_to_dt,
 )
+
+# Discovery functions
+from raddb.discovery import find_datatree_files
 
 # LUT functions
 from raddb.lut import (
@@ -90,6 +95,7 @@ __all__ = [
     "datatree_to_dataset",
     "datatree_to_dataframe",
     "datatree_to_parquet",
+    "open_any_datatree",
     "parquet_to_dataframe",
     "parquet_to_datatree",
     "labels_to_dataframe",
@@ -98,6 +104,8 @@ __all__ = [
     "reconstruct_datatree",
     "add_feature_to_df",
     "add_feature_to_dt",
+    # Discovery functions
+    "find_datatree_files",
     # LUT functions
     "RADAR_TO_IDX",
     "antenna_vectors_to_cartesian",

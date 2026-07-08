@@ -164,4 +164,7 @@ train_interactive.py
 tmp_fig.py
 log.txt
 
+# Private MCH subpackage (versioned in a separate private repo)
+raddb/mch/
+
 pyproject.toml

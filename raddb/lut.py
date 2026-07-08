@@ -270,7 +270,7 @@ def generate_lut_from_datatree(
     elevation per sweep).
 
     For MCH-specific LUT generation from raw METRANET files, use
-    ``mch_pipeline.generate_mch_lut()`` instead.
+    ``raddb.mch.generate_mch_lut()`` instead.
 
     Parameters
     ----------
