@@ -1,4 +1,10 @@
- Don't track these files
+# Don't track these files
+
+# data
+*.parquet
+*.csv
+*.png
+*.gif
 
 *~
 .DS_Store
@@ -157,3 +163,8 @@ cython_debug/
 train_interactive.py
 tmp_fig.py
 log.txt
+
+# Private MCH subpackage (versioned in a separate private repo)
+raddb/mch/
+
+pyproject.toml

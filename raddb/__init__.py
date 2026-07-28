@@ -1,70 +1,152 @@
-# -----------------------------------------------------------------------------.
-# MIT License
+"""
+RadDB Package — Generic radar data archiving and reconstruction.
 
-# Copyright (c) 2025 RadDB developers
-#
-# This file is part of RadDB.
+RadDB archives xarray DataTree volumes as Parquet files with an efficient
+LUT-based layout.  It is network-agnostic: any DataTree with the standard
+xradar coordinate layout can be archived and reconstructed.
 
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in all
-# copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
-
-# -----------------------------------------------------------------------------.
-"""RadDB Package."""
+MCH/METRANET-specific ingestion code lives in the private ``raddb.mch``
+subpackage (gitignored in the public repository; never imported here).
+"""
+from __future__ import annotations
 
 import contextlib
 import os
 from importlib.metadata import PackageNotFoundError, version
 
-from raddb._config import config
-from raddb.configs import (
-    define_configs,
-    read_configs,
+# PROJ data directory — MUST stay the first raddb import: it repairs a
+# PROJ_DATA/PROJ_LIB inherited from another environment before pyproj is
+# imported (by geopandas, cartopy, raddb.lut, ...).
+from raddb._proj import PROJ_DATA
+
+# High-level interface
+from raddb.main import RadDB
+
+# Helper functions
+from raddb.helper import (
+    read_parquet_files,
+    check_dataframe,
+    list_sweep_names,
+    normalize_radar_name,
+    StageTimer,
 )
-from raddb.download import download_files
-from raddb.info import group_filepaths
-from raddb.io import (
-    available_networks,
-    available_radars,
+
+# I/O functions
+from raddb.io_core import (
+    datatree_to_dataset,
+    datatree_to_dataframe,
+    datatree_to_parquet,
+    open_any_datatree,
+    parquet_to_dataframe,
+    parquet_to_datatree,
+    scan_polar_parquet,
+    dataframe_to_datatree,
+    labels_to_dataframe,
+    join_labels_with_lut,
+    reconstruct_sweep_dataset,
+    reconstruct_datatree,
+    add_feature_to_df,
+    add_feature_to_dt,
 )
-from raddb.readers import (
-    open_dataset,
-    open_datatree,
-    open_pyart,
+
+# Discovery functions
+from raddb.discovery import find_datatree_files
+
+# LUT functions
+from raddb.lut import (
+    RADAR_TO_IDX,
+    antenna_vectors_to_cartesian,
+    cartesian_to_geographic,
+    compute_gate_xyz,
+    generate_gate_id,
+    generate_lut_from_datatree,
+    load_radar_lut,
+    load_radar_info,
+    get_full_sweep_index,
+    add_lut_projection,
 )
-from raddb.search import find_files
+
+# Filtering & archiving functions
+from raddb.helper import FILTER_LOGICS, filter_df, filter_dt
+from raddb.io_core import (
+    archive_volume,
+    archive_multiple_volumes,
+    archive_volumes_multi_radar,
+)
+
+# Plotting functions
+from raddb.viz.plot import (
+    plot_ppi,
+    plot_rhi,
+    plot_latent_scatter,
+)
+
+# Profiling helpers
+from raddb.viz.profiling import (
+    plot_stage_totals,
+    plot_volume_timing,
+    plot_sweep_timing,
+    plot_profiling_dashboard,
+)
+
+__all__ = [
+    # High-level API
+    "RadDB",
+    # Environment
+    "PROJ_DATA",
+    # Helper functions
+    "read_parquet_files",
+    "check_dataframe",
+    "list_sweep_names",
+    "normalize_radar_name",
+    "StageTimer",
+    # I/O functions
+    "datatree_to_dataset",
+    "datatree_to_dataframe",
+    "datatree_to_parquet",
+    "open_any_datatree",
+    "parquet_to_dataframe",
+    "parquet_to_datatree",
+    "scan_polar_parquet",
+    "dataframe_to_datatree",
+    "labels_to_dataframe",
+    "join_labels_with_lut",
+    "reconstruct_sweep_dataset",
+    "reconstruct_datatree",
+    "add_feature_to_df",
+    "add_feature_to_dt",
+    # Discovery functions
+    "find_datatree_files",
+    # LUT functions
+    "RADAR_TO_IDX",
+    "antenna_vectors_to_cartesian",
+    "cartesian_to_geographic",
+    "compute_gate_xyz",
+    "generate_gate_id",
+    "generate_lut_from_datatree",
+    "load_radar_lut",
+    "load_radar_info",
+    "get_full_sweep_index",
+    "add_lut_projection",
+    # Pipeline functions
+    "FILTER_LOGICS",
+    "filter_df",
+    "filter_dt",
+    "archive_volume",
+    "archive_multiple_volumes",
+    "archive_volumes_multi_radar",
+    # Plotting functions
+    "plot_ppi",
+    "plot_rhi",
+    "plot_latent_scatter",
+    # Profiling helpers
+    "plot_stage_totals",
+    "plot_volume_timing",
+    "plot_sweep_timing",
+    "plot_profiling_dashboard",
+]
 
 _root_path = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 
-
-__all__ = [
-    "available_radars",
-    "available_networks",
-    "config",
-    "define_configs",
-    "read_configs",
-    "find_files",
-    "group_filepaths",
-    "open_datatree",
-    "open_dataset",
-    "open_pyart",
-    "download_files",
-]
-
-# Get version
 with contextlib.suppress(PackageNotFoundError):
     __version__ = version("raddb")

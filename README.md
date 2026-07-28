@@ -1,191 +1,149 @@
-<div align="center">
+# RadDB — generic radar data archiving & analysis
 
-# Welcome to RadDB
+RadDB archives xarray **DataTree** radar volumes as compact Parquet files and
+gives you a small, fluent object API to load, filter, crop, cross-section and
+plot them.  It is **network-agnostic**: any DataTree with the standard
+[xradar](https://docs.openradarscience.org/projects/xradar/) coordinate layout
+(MeteoSwiss, NEXRAD, …) can be archived and analysed — no pyart required.
 
-![Radars currently accessible through RadDB](/docs/source/static/raddb_coverage.png)
+MeteoSwiss/METRANET-specific ingestion (pyart + radar_api) lives in the private
+`raddb.mch` subpackage and is kept out of the generic core.
 
-|                   |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Deployment        | [![PyPI](https://badge.fury.io/py/raddb.svg?style=flat)](https://pypi.org/project/raddb/) [![Conda](https://img.shields.io/conda/vn/conda-forge/radar-api.svg?logo=conda-forge&logoColor=white&style=flat)](https://anaconda.org/conda-forge/radar-api)                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| Activity          | [![PyPI Downloads](https://img.shields.io/pypi/dm/raddb.svg?label=PyPI%20downloads&style=flat)](https://pypi.org/project/raddb/) [![Conda Downloads](https://img.shields.io/conda/dn/conda-forge/radar-api.svg?label=Conda%20downloads&style=flat)](https://anaconda.org/conda-forge/radar-api)                                                                                                                                                                                                                                                                                                                                                                                       |
-| Python Versions   | [![Python Versions](https://img.shields.io/badge/Python-3.10%20%203.11%20%203.12%20%203.13-blue?style=flat)](https://www.python.org/downloads/)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| Supported Systems | [![Linux](https://img.shields.io/github/actions/workflow/status/erikposchivo/raddb/.github/workflows/tests.yaml?label=Linux&style=flat)](https://github.com/erikposchivo/raddb/actions/workflows/tests.yaml) [![macOS](https://img.shields.io/github/actions/workflow/status/erikposchivo/raddb/.github/workflows/tests.yaml?label=macOS&style=flat)](https://github.com/erikposchivo/raddb/actions/workflows/tests.yaml) [![Windows](https://img.shields.io/github/actions/workflow/status/erikposchivo/raddb/.github/workflows/tests_windows.yaml?label=Windows&style=flat)](https://github.com/erikposchivo/raddb/actions/workflows/tests_windows.yaml)                                                |
-| Project Status    | [![Project Status](https://www.repostatus.org/badges/latest/active.svg?style=flat)](https://www.repostatus.org/#active)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| Build Status      | [![Tests](https://github.com/erikposchivo/raddb/actions/workflows/tests.yaml/badge.svg?style=flat)](https://github.com/erikposchivo/raddb/actions/workflows/tests.yaml) [![Lint](https://github.com/erikposchivo/raddb/actions/workflows/lint.yaml/badge.svg?style=flat)](https://github.com/erikposchivo/raddb/actions/workflows/lint.yaml) [![Docs](https://readthedocs.org/projects/raddb/badge/?version=latest&style=flat)](https://radar-api.readthedocs.io/en/latest/)                                                                                                                                                                                                                      |
-| Linting           | [![Black](https://img.shields.io/badge/code%20style-black-000000.svg?style=flat)](https://github.com/psf/black) [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json&style=flat)](https://github.com/astral-sh/ruff) [![Codespell](https://img.shields.io/badge/Codespell-enabled-brightgreen?style=flat)](https://github.com/codespell-project/codespell)                                                                                                                                                                                                                                                                 |
-| Code Coverage     | [![Coveralls](https://coveralls.io/repos/github/erikposchivo/raddb/badge.svg?branch=main&style=flat)](https://coveralls.io/github/erikposchivo/raddb?branch=main) [![Codecov](https://codecov.io/gh/erikposchivo/raddb/branch/main/graph/badge.svg?token=G7IESZ02CW?style=flat)](https://codecov.io/gh/erikposchivo/raddb)                                                                                                                                                                                                                                                                                                                                                                            |
-| Code Quality      | [![Codefactor](https://www.codefactor.io/repository/github/erikposchivo/raddb/badge?style=flat)](https://www.codefactor.io/repository/github/erikposchivo/raddb) [![Codebeat](https://codebeat.co/badges/57498d71-f042-473f-bb8e-9b45e50572d8?style=flat)](https://codebeat.co/projects/github-com-erikposchivo-raddb-main) [![Codacy](https://app.codacy.com/project/badge/Grade/bee842cb10004ad8bb9288256f2fc8af?style=flat)](https://app.codacy.com/gh/erikposchivo/raddb/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade) [![Codescene](https://codescene.io/projects/63299/status-badges/average-code-health?style=flat)](https://codescene.io/projects/63299) |
-| License           | [![License](https://img.shields.io/github/license/erikposchivo/raddb?style=flat)](https://github.com/erikposchivo/raddb/blob/main/LICENSE)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| Community         | [![Discourse](https://img.shields.io/badge/Slack-raddb-green.svg?logo=slack&style=flat)](https://openradar.discourse.group/) [![GitHub Discussions](https://img.shields.io/badge/GitHub-Discussions-green?logo=github&style=flat)](https://github.com/erikposchivo/raddb/discussions)                                                                                                                                                                                                                                                                                                                                                                                                       |
-| Citation          | [![DOI](https://zenodo.org/badge/922589509.svg?style=flat)](https://doi.org/10.5281/zenodo.14743651)                                                                                                                                                                                                                                                                                                                                                                                    </div>                                                                                                                                                                                                |
+## Storage model
 
-[**Documentation: https://radar-api.readthedocs.io**](https://radar-api.readthedocs.io/)
+A radar is stored as a **static LUT** (per-gate geometry, generated once) plus one
+**POL parquet per volume** (the dynamic moments), linked by an integer `gate_id`:
 
-<div align="left">
-
-## 🚀 Quick start
-
-RadDB provides an easy-to-use python interface to find, download and
-read weather radar data from several meteorological services.
-
-RadDB currently provides data access to the following
-radar networks: `NEXRAD`, `IDEAM` and `FMI`.
-
-The list of available radars can be retrieved using:
-
-```python
-import raddb
-
-raddb.available_networks()
-raddb.available_radars()
-raddb.available_radars(network="NEXRAD")
+```
+{archive_dir}/{radar}/LUT/{radar}_LUT.parquet          # gate_id, lat/lon/alt, x_<epsg>/y_<epsg>, sweep, …
+{archive_dir}/{radar}/{YYYY}/{MM}/{DD}/{radar}_{YYYYMMDD}_{HHMMSS}_POL.parquet
 ```
 
-Before starting using RadDB, we highly suggest to save into a configuration file
-the directory on your local disk where to save the radar data of interest.
+No-echo gates are dropped at archive time (default `DBZH > 0`), so the archive
+stays small.
 
-To facilitate the creation of the RadDB configuration file, you can adapt and execute the following script:
-
-```python
-import raddb
-
-base_dir = (
-    "<path/to/directory/RADAR"  # path to the directory where to download the data
-)
-raddb.define_configs(base_dir=base_dir)
-
-# You can check that the config file has been correctly created with:
-configs = raddb.read_configs()
-print(configs)
-```
-
-______________________________________________________________________
-
-### 📥 Download radar data
-
-You can start to download radar data editing the following code example:
-
-```python
-import raddb
-
-start_time = "2021-09-07 17:00:00"
-end_time = "2021-09-07 17:30:00"
-
-radar = "KMKX"
-network = "NEXRAD"
-
-filepaths = raddb.download_files(
-    network=network,
-    radar=radar,
-    start_time=start_time,
-    end_time=end_time,
-)
-```
-
-______________________________________________________________________
-
-### 💫 Open radar files into xarray or pyart
-
-RadDB allows to read directly radar data from the cloud without the
-need to previously download and save the files on your disk.
-
-RadDB make use of pyart and xradar readers to open the files into either
-an xarray object or pyart radar object.
-
-```python
-import raddb
-import pyart
-
-# Search for files on cloud bucket
-filepaths = raddb.find_files(
-    network=network,
-    radar=radar,
-    start_time=start_time,
-    end_time=end_time,
-    protocol="s3",
-)
-print(filepaths)
-
-# Define the file to open
-filepath = filepaths[0]
-
-# Open all sweeps of a radar volume into a xradar datatree
-dt = raddb.open_datatree(filepath, network=network)
-
-# Extract the radar sweep of interest
-ds = dt["sweep_0"].to_dataset()
-
-# Open directly a single radar sweep into a xradar dataset
-ds = raddb.open_dataset(filepath, network=network, sweep="sweep_0")
-
-# Open all sweeps of a radar volume into a pyart radar object
-radar_obj = raddb.open_pyart(filepath, network=network)
-
-# Display the data with pyart
-display = pyart.graph.RadarDisplay(radar_obj)
-display.plot("reflectivity", cmap="pyart_ChaseSpectral", vmin=-20, vmax=70)
-display.set_limits((-150, 150), (-150, 150))
-```
-
-______________________________________________________________________
-
-## 📖 Documentation
-
-To discover RadDB utilities and functionalities,
-please read the software documentation available at [https://radar-api.readthedocs.io/en/latest/](https://radar-api.readthedocs.io/en/latest/).
-
-All RadDB tutorials are available as Jupyter Notebooks in the [`tutorial`](https://github.com/erikposchivo/raddb/tree/main/tutorials) directory.
-
-______________________________________________________________________
-
-## 🛠️ Installation
-
-### conda
-
-RadDB can be installed via [conda][conda_link] on Linux, Mac, and Windows.
-Install the package by typing the following command in the terminal:
+## Installation
 
 ```bash
-conda install radar-api
+pip install -e .            # core
+pip install -e ".[viz]"     # + cartopy / pyproj / shapely for maps
 ```
 
-In case conda-forge is not set up for your system yet, see the easy to follow instructions on [conda-forge][conda_forge_link].
+Core runtime deps: `numpy, pandas, polars, geopandas, xarray, pyarrow, dask,
+fsspec, s3fs, matplotlib`.
 
-### pip
+## Quick start
 
-RadDB can be installed also via [pip][pip_link] on Linux, Mac, and Windows.
-On Windows you can install [WinPython][winpy_link] to get Python and pip running.
-Then, install the RadDB package by typing the following command in the terminal:
+`RadDB` is a single, dual-role class:
 
-```bash
-pip install radar-api
+* **archive-bound** — `db = RadDB(archive_dir, crs=…)`; use it to `archive()` and `open()`.
+* **data-carrying** — the object returned by `open()` (call it `rdf`).  It holds the
+  data as a **polars** DataFrame (`rdf.data`) and exposes the query / convert /
+  crop / cross-section / plot methods.  Each of those returns a **new** `RadDB`,
+  so calls chain fluently.
+
+```python
+import raddb
+
+db = raddb.RadDB(archive_dir="/data/raddb", crs=2056)   # 2056 = CH1903+/LV95
+
+# --- archive -----------------------------------------------------------------
+# From saved DataTree files on disk (.zarr / .nc); the LUT is auto-generated:
+db.archive(datatree_dir="/data/MCH_datatree")           # radar inferred per file
+# ...or archive in-memory DataTrees directly:
+# db.archive(datatree=dt, radar="A")
+# db.archive(datatree=[dt1, dt2], radar="A")
+# db.archive(datatree={"A": [dt1], "D": [dt2]})         # multi-radar
+
+# --- open --------------------------------------------------------------------
+rdf = db.open(time_period=("2024-08-26", "2024-08-27"), radars="L")
+print(rdf)                     # rich summary: gates, radars, time range, columns
+len(rdf), rdf.columns(), rdf.radars()
+rdf.start_time(), rdf.end_time()
+rdf.extent()                   # [xmin, xmax, ymin, ymax] in `crs`
+rdf.geographic_extent()        # [lon_min, lon_max, lat_min, lat_max]
+rdf.crs(), rdf.geographic_crs()
+
+# --- filter / convert --------------------------------------------------------
+strong = rdf.filter({"var": "DBZH", "logic": ">", "threshold": 20})
+strong = rdf.filter([{"var": "DBZH", "logic": ">", "threshold": 20},
+                     {"var": "RHOHV", "logic": ">", "threshold": 0.9}])   # AND
+pdf = rdf.to_pandas(with_geometry=True)     # pandas + gate coordinates
+gdf = rdf.to_geopandas()                    # GeoDataFrame (with CRS)
+dt  = rdf.to_datatree()                     # xarray DataTree (for plotting)
+
+# --- area of interest --------------------------------------------------------
+box   = rdf.crop_by_bbox(extent=[2.60e6, 2.62e6, 1.11e6, 1.13e6])   # or bounds=(xmin,ymin,xmax,ymax)
+poly  = rdf.crop_by_polygone("catchment.geojson")
+disc  = rdf.crop_around_point((2.61e6, 1.12e6), distance=20_000)    # metres
+# rdf.interactive_crop()      # draw an AOI on a Jupyter map (needs ipyleaflet)
+
+# --- cross-section -----------------------------------------------------------
+cs = rdf.extract_cross_section(p1=(2.60e6, 1.12e6), p2=(2.63e6, 1.12e6))
+
+# --- plot --------------------------------------------------------------------
+rdf.plot_ppi(sweep=1, variable="DBZH", save="ppi.png")
+cs.plot_cross_section(variable="DBZH", save="xsec.png")
+rdf.plot_rhi(azimuth=270, variable="DBZH")
+
+# fluent: open -> filter -> crop -> plot
+rdf.filter({"var": "DBZH", "logic": ">", "threshold": 20}) \
+   .crop_by_bbox(extent=rdf.extent()) \
+   .plot_ppi(variable="DBZH", save="strong.png")
 ```
 
-To install the latest development version via pip, see the [documentation][dev_install_link].
+`filter` / `crs` argument shapes: filters are `{"var", "logic", "threshold"}`
+dicts (`logic` ∈ `==,!=,>,>=,<,<=`); `crs` is an EPSG int (e.g. `2056`), a
+CRS-coercible object, or `None`.
 
-## 💭 Feedback and Contributing Guidelines
+### What is on disk? (archive-bound)
 
-If you aim to contribute your data or discuss the future development of RadDB,
-we suggest to join the [**Open Radar Science Discourse Group**](https://openradar.discourse.group/).
+```python
+db.inventory()                      # radars, volume counts, time ranges, size
+db.inventory(detailed=True)         # + LUT info, stored moments, day-by-day counts
+db.inventory(datatree_dir="/data/MCH_datatree")   # DataTree files not archived yet
+```
 
-Feel free to also open a [GitHub Issue](https://github.com/erikposchivo/raddb/issues) or a [GitHub Discussion](https://github.com/erikposchivo/raddb/discussions) specific to your questions or ideas.
+### LUT accessors (archive-bound)
 
-## Citation
+```python
+db.list_radars()                    # radars present in the archive
+db.get_lut("L")                     # the static LUT (pandas)
+db.get_radar_info("L")              # site location / sweep geometry
+db.add_lut_projection("L", epsg=2056)
+```
 
-If you are using RadDB in your publication please cite our Zenodo repository:
+## Module structure
 
-> Ghiggi Gionata. erikposchivo/raddb. Zenodo. [![<https://doi.org/10.5281/zenodo.14743651>](https://zenodo.org/badge/922589509.svg?style=flat)](https://doi.org/10.5281/zenodo.14743651)
+```
+raddb/
+├── __init__.py     # public API surface
+├── main.py         # the RadDB class (this API)
+├── io_core.py      # DataTree <-> DataFrame <-> Parquet + archive backends
+├── lut.py          # LUT generation / geo projection
+├── aoi.py          # AOI / crop / cross-section geometry
+├── discovery.py    # find_datatree_files + filename-time parsing
+├── helper.py       # filters, radar-name normalisation, timers
+├── viz/            # plot.py (PPI/RHI/cross-section), interactive.py
+└── mch/            # private MeteoSwiss/METRANET ingestion (pyart) — not in the public wheel
+```
 
-If you want to cite a specific software version, have a look at the [Zenodo site](https://doi.org/10.5281/zenodo.14743651).
+Sample-data scripts live under `scripts/` (`make_sample_mch_datatrees.py`,
+`download_nexrad_datatree.py`).
+
+## Notes
+
+* **Projected coordinates / `crs`.** Generating a LUT with a projection (e.g.
+  `crs=2056`) and the projected accessors (`extent`, `to_geopandas`) use `pyproj`,
+  which needs the PROJ database.  A `PROJ_DATA` / `PROJ_LIB` inherited from another
+  environment (a conda base env, a system PROJ) points at a proj.db of the wrong
+  PROJ version and makes every projection fail with *"no database context
+  specified"* — `import raddb` detects that and repoints PROJ at the running
+  interpreter's own `share/proj` (see `raddb/_proj.py`; `raddb.PROJ_DATA` reports
+  what it changed, `None` when nothing had to be).
+* **Zarr / NetCDF.** Saved volumes are read back with `raddb.open_any_datatree`
+  (engine auto-detected); either format works.
 
 ## License
 
-The content of this repository is released under the terms of the [MIT license](LICENSE).
-
-</div>
-
-[conda_forge_link]: https://github.com/conda-forge/radar-api-feedstock#installing-radar-api
-[conda_link]: https://docs.conda.io/en/latest/miniconda.html
-[dev_install_link]: https://radar-api.readthedocs.io/en/latest/02_installation.html#installation-for-contributors
-[pip_link]: https://pypi.org/project/radar-api
-[winpy_link]: https://winpython.github.io/
+See LICENSE (MIT).

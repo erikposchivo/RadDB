@@ -6,10 +6,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "raddb"
-description = "Python software to retrieve weather radar data from cloud buckets"
+description = "Generic radar data archiving library — archive xarray DataTree volumes as Parquet"
 readme = "README.md"
 authors = [
-	{ name = "Gionata Ghiggi", email = "gionata.erikposchivo@epfl.ch" },
+	{ name = "Gionata Ghiggi" },
 ]
 license = { file = "LICENSE" }
 classifiers = [
@@ -35,16 +35,20 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Hydrology",
     "Topic :: Scientific/Engineering :: Image Processing",
 ]
-keywords = ["Weather", "Radar", "Precipitation", "NEXRAD", "FMI"]
+keywords = ["Weather", "Radar", "Precipitation", "Parquet", "DataTree", "Archive"]
 dependencies = [
-    "fsspec",
-    "s3fs",
-    "pyyaml",
-    "donfig",
-    "trollsift",
     "numpy",
     "pandas",
-    "tqdm",
+    "polars",
+    "geopandas",
+    "xarray",
+    "pyyaml",
+    "pyarrow",
+    "dask",
+    "distributed",
+    "fsspec",
+    "s3fs",
+    "matplotlib",
 ]
 requires-python = ">=3.10"
 dynamic = ["version"]
@@ -54,15 +58,21 @@ license-files = ["LICENSE"]
 
 [tool.setuptools.packages.find]
 include = ["raddb*"]
+# raddb.mch is the private MCH subpackage (gitignored, separate repo) —
+# excluded here as defense in depth for wheels built from a full checkout.
+exclude = ["raddb.mch*", "raddb.tests*"]
 
 [tool.setuptools_scm]
 write_to = "raddb/_version.py"
 
 [project.optional-dependencies]
+viz = ["cartopy>=0.22", "pyproj>=3.0", "shapely>=2.0"]
+io = ["netcdf4", "zarr"]
 dev = ["pre-commit", "loghub",
        "black[jupyter]", "blackdoc", "codespell", "ruff",
        "pytest", "pytest-cov", "pytest-mock", "pytest-check", "pytest-sugar",
        "pytest-watcher", "deepdiff",
+       "netcdf4", "zarr",
        "pip-tools", "bumpver", "twine", "wheel", "build", "setuptools>=61.0.0",
        "sphinx", "sphinx-gallery", "sphinx-book-theme", "nbsphinx", "sphinx_mdinclude"]
 
