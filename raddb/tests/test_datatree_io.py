@@ -3,7 +3,7 @@ raddb/tests/test_datatree_io.py
 -------------------------------
 Tests for the public DataTree-file workflow: discovery
 (``find_datatree_files``), loading (``open_any_datatree``), and end-to-end
-archiving (``RadDB.archive_from_datatrees``).
+archiving from saved DataTree files (``RadDB.archive(datatree_dir=...)``).
 
 All tests use synthetic DataTrees written to tmp_path — no real radar
 files required.  NetCDF/Zarr-dependent tests skip when the backend is
@@ -23,7 +23,7 @@ _PKG_ROOT = Path(__file__).resolve().parents[2]
 if str(_PKG_ROOT) not in sys.path:
     sys.path.insert(0, str(_PKG_ROOT))
 
-from raddb.tests.test_pipeline import _make_datatree  # noqa: E402
+from raddb.tests.test_fixes import _make_datatree  # noqa: E402  (has lat/lon for LUT gen)
 
 RADAR = "A"
 
@@ -178,24 +178,22 @@ class TestParseDatatreeFileTime:
 
 
 # ===========================================================================
-# RadDB.archive_from_datatrees (end to end)
+# RadDB.archive(datatree_dir=...) (end to end)
 # ===========================================================================
 
 class TestArchiveFromDatatrees:
 
     def test_end_to_end(self, tmp_path):
         pytest.importorskip("netCDF4")
-        from raddb.api import RadDB
+        from raddb.main import RadDB
 
         src = tmp_path / "input"
         out = tmp_path / "archive"
         _write_nc_volumes(src)
 
-        db = RadDB(base_path=str(out))
-        n_ok, n_fail = db.archive_from_datatrees(
-            src, radar=RADAR, show_progress=False,
-        )
-        assert (n_ok, n_fail) == (3, 0)
+        db = RadDB(archive_dir=str(out))
+        res = db.archive(datatree_dir=src, radar=RADAR)
+        assert (res["n_archived"], res["n_failed"]) == (3, 0)
 
         # LUT auto-generated
         assert (out / RADAR / "LUT" / f"{RADAR}_LUT.parquet").exists()
@@ -204,52 +202,64 @@ class TestArchiveFromDatatrees:
         assert len(pol_files) == 3
 
         # loading works and the filter kept only DBZH > 0
-        df = db.load_dataframe(
-            radar=RADAR,
-            start_time="2024-01-01 00:00",
-            end_time="2024-01-01 23:59",
+        rdf = db.open(
+            radars=RADAR,
+            time_period=("2024-01-01 00:00", "2024-01-01 23:59"),
         )
-        assert len(df) > 0
-        assert (df["DBZH"] > 0.0).all()
+        assert len(rdf) > 0
+        assert (rdf.data["DBZH"] > 0.0).all()
 
     def test_resume_skips_archived(self, tmp_path):
         pytest.importorskip("netCDF4")
-        from raddb.api import RadDB
+        from raddb.main import RadDB
 
         src = tmp_path / "input"
         out = tmp_path / "archive"
         _write_nc_volumes(src)
 
-        db = RadDB(base_path=str(out))
-        assert db.archive_from_datatrees(src, radar=RADAR, show_progress=False) == (3, 0)
+        db = RadDB(archive_dir=str(out))
+        assert db.archive(datatree_dir=src, radar=RADAR)["n_archived"] == 3
         # second run: everything checkpointed
-        assert db.archive_from_datatrees(src, radar=RADAR, show_progress=False) == (0, 0)
+        assert db.archive(datatree_dir=src, radar=RADAR)["n_archived"] == 0
 
-    def test_explicit_file_list(self, tmp_path):
+    def test_time_period_subset(self, tmp_path):
         pytest.importorskip("netCDF4")
-        from raddb.api import RadDB
+        from raddb.main import RadDB
 
         src = tmp_path / "input"
         out = tmp_path / "archive"
-        paths = _write_nc_volumes(src, minutes=(0, 5))
+        _write_nc_volumes(src, minutes=(0, 5, 10))
 
-        db = RadDB(base_path=str(out))
-        n_ok, n_fail = db.archive_from_datatrees(
-            paths, radar=RADAR, show_progress=False,
+        db = RadDB(archive_dir=str(out))
+        res = db.archive(
+            datatree_dir=src, radar=RADAR,
+            time_period=("2024-01-01 12:04", "2024-01-01 12:11"),
         )
-        assert (n_ok, n_fail) == (2, 0)
+        assert res["n_archived"] == 2  # 12:05 and 12:10 only
 
-    def test_invalid_radar_raises(self, tmp_path):
-        from raddb.api import RadDB
+    def test_unrecognized_radar_skipped(self, tmp_path):
+        pytest.importorskip("netCDF4")
+        from raddb.main import RadDB
 
-        db = RadDB(base_path=str(tmp_path))
-        with pytest.raises(ValueError, match="single letter"):
-            db.archive_from_datatrees(tmp_path, radar="ABC")
+        src = tmp_path / "input"
+        out = tmp_path / "archive"
+        _write_nc_volumes(src)  # files are named vol_* -> radar "vol" (not A-Z)
+
+        db = RadDB(archive_dir=str(out))
+        res = db.archive(datatree_dir=src)  # radar=None -> infer per file; "vol" skipped
+        assert res["n_archived"] == 0
+
+    def test_both_sources_raises(self, tmp_path):
+        from raddb.main import RadDB
+
+        db = RadDB(archive_dir=str(tmp_path))
+        with pytest.raises(ValueError, match="exactly one"):
+            db.archive(datatree_dir=tmp_path, datatree=object())
 
     def test_empty_source_returns_zero(self, tmp_path):
-        from raddb.api import RadDB
+        from raddb.main import RadDB
 
         src = tmp_path / "empty"
         src.mkdir()
-        db = RadDB(base_path=str(tmp_path / "out"))
-        assert db.archive_from_datatrees(src, radar=RADAR, show_progress=False) == (0, 0)
+        db = RadDB(archive_dir=str(tmp_path / "out"))
+        assert db.archive(datatree_dir=src, radar=RADAR)["n_archived"] == 0

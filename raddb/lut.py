@@ -18,6 +18,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import polars as pl
 import xarray as xr
 import yaml
 
@@ -450,12 +451,15 @@ def compute_sweep_corners(
     lat_e, lon_e, _ = cartesian_to_geographic(
         x_e, y_e, z_e, radar_lat=radar_lat, radar_lon=radar_lon, radar_alt=radar_alt,
     )
+    # float64 throughout: these edges are the gate polygon vertices, and gate
+    # position precision is a hard requirement (float32 costs ~20 cm, and the
+    # error does not shrink with range).
     return {
-        "x_edges":   x_e.astype(np.float32),
-        "y_edges":   y_e.astype(np.float32),
-        "z_edges":   z_e.astype(np.float32),
-        "lon_edges": lon_e.astype(np.float32),
-        "lat_edges": lat_e.astype(np.float32),
+        "x_edges":   x_e.astype(np.float64),
+        "y_edges":   y_e.astype(np.float64),
+        "z_edges":   z_e.astype(np.float64),
+        "lon_edges": lon_e.astype(np.float64),
+        "lat_edges": lat_e.astype(np.float64),
     }
 
 
@@ -500,16 +504,16 @@ def compute_corners_from_lut(
     lut_df = load_radar_lut(radar, lut_base_path)
     info = load_radar_info(radar, lut_base_path)
     corners_by_sweep: dict[int, dict] = {}
-    for sweep_num in sorted(lut_df["sweep"].unique()):
-        sub = lut_df[lut_df["sweep"] == sweep_num]
-        azimuths = np.sort(sub["azimuth"].unique())
-        ranges   = np.sort(sub["range"].unique())
+    for sweep_num in sorted(lut_df["sweep"].unique().to_list()):
+        sub = lut_df.filter(pl.col("sweep") == sweep_num)
+        azimuths = np.sort(sub["azimuth"].unique().to_numpy())
+        ranges   = np.sort(sub["range"].unique().to_numpy())
         n_az, n_rng = len(azimuths), len(ranges)
         # Rebuild per-ray elevation from the LUT (stored as constant per sweep
         # in elevation_angle). If the per-ray elevation varies within a sweep,
         # we'd need the raw antenna data; for Swiss radars the fixed-angle
         # approximation is accurate to < 0.1°.
-        el_mean = float(sub["elevation_angle"].iloc[0])
+        el_mean = float(sub["elevation_angle"][0])
         elevations = np.full(n_az, el_mean, dtype=np.float64)
         corners_by_sweep[int(sweep_num)] = compute_sweep_corners(
             ranges=ranges, azimuths=azimuths, elevations=elevations,
@@ -556,14 +560,201 @@ def load_sweep_corners(
     return _parse_corners_npz(corners_path)
 
 
-def load_radar_lut(
-    radar: str, lut_base_path: str | Path
-) -> pd.DataFrame:
-    """Load the LUT parquet for a radar."""
+# ============================================================================
+# GeoArrow export  (gate wedge polygons)
+# ============================================================================
+
+# Per-radar cache of gate_id -> (sweep, azimuth index, range index) into the
+# corner arrays: {(base_path, radar): pl.DataFrame}.  ~27 MB per radar, built
+# once per session.
+_GRID_CACHE: dict[tuple[str, str], "pl.DataFrame"] = {}
+
+
+def decode_gate_ids(gate_ids) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Inverse of :func:`encode_gate_ids` (radar index excluded).
+
+    Returns
+    -------
+    (sweeps, azimuths, ranges) : np.ndarray
+        Sweep number (int64), azimuth in degrees (float64, 1 decimal) and range
+        in metres (float64), one entry per gate_id.
+    """
+    ids = np.asarray(gate_ids, dtype=np.int64)
+    sweeps = (ids // np.int64(10_000_000_000)) % np.int64(100)
+    az_int = (ids // np.int64(1_000_000)) % np.int64(10_000)
+    rng_m = ids % np.int64(1_000_000)
+    return sweeps, az_int.astype(np.float64) / 10.0, rng_m.astype(np.float64)
+
+
+def _gate_grid_index(radar: str, lut_base_path: str | Path) -> "pl.DataFrame":
+    """Map every ``gate_id`` to its position in the per-sweep corner arrays.
+
+    Returns a frame ``[gate_id, sweep, az_idx, rng_idx]``.  The indices are
+    computed against ``np.sort(unique(...))`` of the LUT's own azimuth/range
+    values — the exact ordering :func:`compute_corners_from_lut` uses — so they
+    address :func:`compute_sweep_corners` output directly.
+
+    The lookup is keyed on ``gate_id`` rather than on azimuth/range values
+    because ``gate_id`` stores azimuth rounded to 0.1° while the LUT keeps the
+    raw antenna azimuth (~0.03° jitter); matching the floats would fail.
+    """
+    key = (str(lut_base_path), radar)
+    cached = _GRID_CACHE.get(key)
+    if cached is not None:
+        return cached
+
     lut_path = Path(lut_base_path) / radar / "LUT" / f"{radar}_LUT.parquet"
     if not lut_path.exists():
         raise FileNotFoundError(f"LUT not found at {lut_path}.")
-    return pd.read_parquet(lut_path, engine="pyarrow")
+    lut = pl.read_parquet(lut_path, columns=["gate_id", "sweep", "azimuth", "range"])
+
+    parts = []
+    for (sweep_num,), sub in lut.group_by(["sweep"]):
+        az_grid = np.sort(sub["azimuth"].unique().to_numpy())
+        rng_grid = np.sort(sub["range"].unique().to_numpy())
+        parts.append(sub.select(
+            "gate_id",
+            pl.lit(int(sweep_num), dtype=pl.Int32).alias("sweep"),
+            pl.Series("az_idx", np.searchsorted(az_grid, sub["azimuth"].to_numpy()), dtype=pl.Int32),
+            pl.Series("rng_idx", np.searchsorted(rng_grid, sub["range"].to_numpy()), dtype=pl.Int32),
+        ))
+    table = pl.concat(parts, how="vertical")
+    _GRID_CACHE[key] = table
+    return table
+
+
+def gate_polygons_geoarrow(
+    radar: str,
+    lut_base_path: str | Path,
+    gate_ids,
+    frame: str = "geographic",
+):
+    """Build the gate wedge polygons for ``gate_ids`` as a GeoArrow array.
+
+    Each gate becomes a 4-corner ring (closed, 5 vertices) taken from the
+    per-sweep edge arrays produced by :func:`compute_sweep_corners` — the exact
+    wedge, not a rectangle. The corners file is rebuilt via
+    :func:`compute_corners_from_lut` if it does not exist yet.
+
+    Parameters
+    ----------
+    radar : str
+        Single-letter radar identifier.
+    lut_base_path : str or Path
+        RadDB archive base directory.
+    gate_ids : array-like of int64
+        Gates to build polygons for, in the order they should appear.
+    frame : {"geographic", "cartesian"}
+        ``"geographic"`` uses ``lon_edges``/``lat_edges`` (EPSG:4326, the frame
+        web maps expect); ``"cartesian"`` uses ``x_edges``/``y_edges`` (metres
+        from the radar).
+
+    Returns
+    -------
+    pyarrow.Array
+        A ``geoarrow.polygon`` extension array, one polygon per gate_id.
+        Gates whose (azimuth, range) is absent from the LUT grid yield null.
+    """
+    import pyarrow as pa
+
+    if frame not in ("geographic", "cartesian"):
+        raise ValueError(f"frame must be 'geographic' or 'cartesian'; got {frame!r}.")
+    xkey, ykey = (("lon_edges", "lat_edges") if frame == "geographic"
+                  else ("x_edges", "y_edges"))
+
+    corners = load_sweep_corners(radar, lut_base_path)
+    if not corners:
+        compute_corners_from_lut(radar, lut_base_path)
+        corners = load_sweep_corners(radar, lut_base_path)
+
+    ids = np.asarray(gate_ids, dtype=np.int64)
+    n = len(ids)
+    # Left-join keeps the caller's row order and leaves unknown gates null.
+    located = (
+        pl.DataFrame({"gate_id": ids, "_ord": np.arange(n, dtype=np.int64)})
+        .join(_gate_grid_index(radar, lut_base_path), on="gate_id", how="left")
+        .sort("_ord")
+    )
+    sweeps = located["sweep"].to_numpy()
+    az_idx = located["az_idx"].fill_null(0).to_numpy()
+    rng_idx = located["rng_idx"].fill_null(0).to_numpy()
+    known = located["sweep"].is_not_null().to_numpy()
+
+    # 5 vertices x 2 coordinates per gate; NaN marks a gate we could not place.
+    ring_xy = np.full((n, 5, 2), np.nan, dtype=np.float64)
+
+    for sweep_num in np.unique(sweeps[known]):
+        sw = int(sweep_num)
+        if sw not in corners:
+            logger.warning("sweep %d missing from the corners file; gates skipped.", sw)
+            continue
+        rows = np.flatnonzero(known & (sweeps == sweep_num))
+        ai, ri = az_idx[rows], rng_idx[rows]
+        xe, ye = corners[sw][xkey], corners[sw][ykey]
+
+        # Ring: (az_i, r_j) -> (az_i, r_j+1) -> (az_i+1, r_j+1) -> (az_i+1, r_j) -> close.
+        for k, (ii, jj) in enumerate(((0, 0), (0, 1), (1, 1), (1, 0), (0, 0))):
+            ring_xy[rows, k, 0] = xe[ai + ii, ri + jj]
+            ring_xy[rows, k, 1] = ye[ai + ii, ri + jj]
+
+    valid = ~np.isnan(ring_xy[:, 0, 0])
+    if not valid.all():
+        logger.warning(
+            "%d of %d gate_ids could not be placed on the LUT grid (null geometry).",
+            int((~valid).sum()), n,
+        )
+
+    # geoarrow.polygon = List<List<FixedSizeList<double>[2]>>: polygon -> rings -> xy.
+    # A null in the outer offsets makes that polygon null (unplaceable gate).
+    coords = pa.FixedSizeListArray.from_arrays(
+        pa.array(ring_xy.reshape(-1), type=pa.float64()), 2
+    )
+    rings = pa.ListArray.from_arrays(np.arange(n + 1, dtype=np.int32) * 5, coords)
+    offsets = pa.array(
+        np.arange(n + 1, dtype=np.int32),
+        mask=np.concatenate([~valid, [False]]),
+    )
+    return pa.ListArray.from_arrays(offsets, rings)
+
+
+def geoarrow_field(name: str, dtype, kind: str, crs: str | None = None):
+    """Build a ``pyarrow.Field`` tagged as a GeoArrow extension type.
+
+    GeoArrow identifies geometry through *field* metadata, so the tag can only be
+    attached where the array is placed into a table/schema.
+
+    Parameters
+    ----------
+    name : str
+        Column name.
+    dtype : pyarrow.DataType
+        Type of the geometry array (e.g. ``polygons.type``).
+    kind : str
+        GeoArrow geometry kind, e.g. ``"point"`` or ``"polygon"``.
+    crs : str, optional
+        CRS identifier such as ``"EPSG:4326"``.
+    """
+    import pyarrow as pa
+
+    meta = {b"ARROW:extension:name": f"geoarrow.{kind}".encode()}
+    if crs:
+        meta[b"ARROW:extension:metadata"] = (
+            f'{{"crs":"{crs}","crs_type":"authority_code"}}'
+        ).encode()
+    return pa.field(name, dtype, metadata=meta)
+
+
+def load_radar_lut(
+    radar: str, lut_base_path: str | Path
+) -> pl.DataFrame:
+    """Load the LUT parquet for a radar as a **polars** DataFrame.
+
+    Call :meth:`polars.DataFrame.to_pandas` on the result if you need pandas.
+    """
+    lut_path = Path(lut_base_path) / radar / "LUT" / f"{radar}_LUT.parquet"
+    if not lut_path.exists():
+        raise FileNotFoundError(f"LUT not found at {lut_path}.")
+    return pl.read_parquet(lut_path)
 
 
 def load_radar_info(
@@ -594,21 +785,24 @@ def get_full_sweep_index(
 # ============================================================================
 
 def add_lut_projection(
-    lut_df: pd.DataFrame,
+    lut_df: "pl.DataFrame | pd.DataFrame",
     epsg: int | None = None,
     crs=None,
-) -> pd.DataFrame:
+) -> "pl.DataFrame | pd.DataFrame":
     """Add projected coordinates to a LUT DataFrame.
 
     Converts the ``latitude`` / ``longitude`` columns to the target CRS and
     appends ``x_{suffix}`` / ``y_{suffix}`` columns, where ``suffix`` is the
     EPSG code (if available) or ``"custom"``.
 
+    Accepts either a polars or a pandas frame and returns the same kind — LUT
+    *loading* is polars, but LUT *generation* still builds pandas frames.
+
     Requires **pyproj** (``pip install pyproj``).
 
     Parameters
     ----------
-    lut_df : pd.DataFrame
+    lut_df : pl.DataFrame or pd.DataFrame
         LUT DataFrame with ``latitude`` and ``longitude`` columns (degrees,
         WGS-84 / EPSG:4326).
     epsg : int, optional
@@ -621,8 +815,8 @@ def add_lut_projection(
 
     Returns
     -------
-    pd.DataFrame
-        Copy of ``lut_df`` with two new columns:
+    pl.DataFrame or pd.DataFrame
+        Copy of ``lut_df`` (same kind) with two new columns:
         ``x_{suffix}`` (easting / metres) and ``y_{suffix}`` (northing / metres).
 
     Raises
@@ -674,6 +868,12 @@ def add_lut_projection(
         lut_df["longitude"].to_numpy(),
         lut_df["latitude"].to_numpy(),
     )
+
+    if isinstance(lut_df, pl.DataFrame):
+        return lut_df.with_columns(
+            pl.Series(f"x_{col_suffix}", x_proj),
+            pl.Series(f"y_{col_suffix}", y_proj),
+        )
 
     lut_out = lut_df.copy()
     lut_out[f"x_{col_suffix}"] = x_proj

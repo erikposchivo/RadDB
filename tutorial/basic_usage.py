@@ -7,14 +7,15 @@ radar data starting from **DataTree files on disk** (NetCDF / Zarr):
 
 1. Build (or obtain) DataTree volumes and save them to disk
 2. Discover the DataTree files with ``find_datatree_files``
-3. Archive them end to end with ``RadDB.archive_from_datatrees``
+3. Archive them with ``RadDB.archive(datatree_dir=...)``
    (the radar LUT is generated automatically from the first volume)
-4. Load the archive back as DataFrame / DataTree and plot
+4. ``RadDB.open(...)`` returns a data-carrying ``RadDB`` (``rdf``) with a
+   polars backend; filter / convert / plot from it
 
 RadDB is a **generic** library — it works with any xarray DataTree with
 the standard xradar coordinate layout.  No pyart / radar_api needed.
 If you already hold DataTrees in memory, skip the disk round-trip and
-call ``db.archive_volume(dt, radar)`` directly.
+call ``db.archive(datatree=dt, radar=...)`` directly.
 """
 #%%
 from pathlib import Path
@@ -112,40 +113,38 @@ print(f"\nPreview of {files[0].name}: {raddb.list_sweep_names(dt_preview)}")
 # Gates failing the filter (default DBZH > 0) are dropped to keep the
 # archive small.  A checkpoint file makes interrupted runs resumable.
 
-db = raddb.RadDB(base_path=str(BASE_PATH))
+db = raddb.RadDB(archive_dir=str(BASE_PATH), crs=2056)
 
-n_ok, n_fail = db.archive_from_datatrees(
-    source=INPUT_DIR,          # a directory, a single file, or a list of paths
+result = db.archive(
+    datatree_dir=INPUT_DIR,     # directory of saved .nc / .zarr volumes
     radar=RADAR_NAME,
-    filter_feature="DBZH",
-    filter_threshold=0.0,
-    filter_logic=">",
+    filter={"var": "DBZH", "logic": ">", "threshold": 0.0},
 )
-print(f"\nArchived: {n_ok} volume(s), failed: {n_fail}")
+print(f"\nArchived: {result['n_archived']} volume(s), failed: {result['n_failed']}")
 
 # Already have DataTrees in memory?  Archive them directly instead:
-#   db.archive_volume(dt, radar=RADAR_NAME)
-#   db.archive_multiple_volumes({label: dt, ...}, radar=RADAR_NAME)
+#   db.archive(datatree=dt, radar=RADAR_NAME)
+#   db.archive(datatree=[dt1, dt2], radar=RADAR_NAME)
 
 #%%
 # =============================================================================
 # STEP 4: Load the archive back
 # =============================================================================
 
-df = db.load_dataframe(
-    radar=RADAR_NAME,
-    start_time="2024-07-15 00:00",
-    end_time="2024-07-15 23:59",
-    merge_lut=True,
+# open() returns a data-carrying RadDB (``rdf``) backed by polars
+rdf = db.open(
+    radars=RADAR_NAME,
+    time_period=("2024-07-15 00:00", "2024-07-15 23:59"),
 )
-print(f"DataFrame: {len(df):,} rows, columns: {list(df.columns)}")
+print(rdf)                                       # rich multi-line summary
+print(f"gates: {len(rdf):,} | radars: {rdf.radars()} | columns: {rdf.columns()}")
+print(f"extent (LV95): {rdf.extent()}")
 
-dt_loaded = db.load_datatree(
-    radar=RADAR_NAME,
-    start_time="2024-07-15 00:00",
-    end_time="2024-07-15 23:59",
-)
-print(f"DataTree sweeps: {raddb.list_sweep_names(dt_loaded)}")
+# subset / convert as needed (each returns a new RadDB or a frame)
+strong = rdf.filter({"var": "DBZH", "logic": ">", "threshold": 20})
+pdf = rdf.to_pandas(with_geometry=True)          # pandas + gate coordinates
+# gdf = rdf.to_geopandas()                        # GeoDataFrame with a CRS
+print(f"strong-echo gates: {len(strong):,}")
 
 #%%
 # =============================================================================
@@ -154,11 +153,5 @@ print(f"DataTree sweeps: {raddb.list_sweep_names(dt_loaded)}")
 
 import matplotlib.pyplot as plt
 
-db.plot_ppi(
-    radar=RADAR_NAME,
-    timestep="2024-07-15 12:00:00",
-    sweep=1,
-    variable="DBZH",
-    coords="cartesian",
-)
+rdf.plot_ppi(sweep=1, variable="DBZH", coords="cartesian")
 plt.show()

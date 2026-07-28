@@ -181,10 +181,10 @@ class TestSweepColumnInDataFrame:
         )
 
     def test_sweep_present_in_multi_radar(self, tmp_path):
-        """Verify sweep column is present in load_multi_radar_dataframe."""
+        """Verify sweep column appears after a multi-radar open + geometry merge."""
         from raddb.lut import generate_lut_from_datatree
         from raddb.io_core import datatree_to_parquet
-        from raddb.api import RadDB
+        from raddb.main import RadDB
 
         base = str(tmp_path)
         dt = _make_datatree(vol_time=pd.Timestamp("2024-08-01 12:00:00"))
@@ -194,16 +194,15 @@ class TestSweepColumnInDataFrame:
             generate_lut_from_datatree(dt, radar=r, output_base_path=base)
             datatree_to_parquet(dt, radar=r, base_output_path=base)
 
-        db = RadDB(base_path=base)
-        df_multi = db.load_multi_radar_dataframe(
+        db = RadDB(archive_dir=base)
+        rdf = db.open(
             radars=["A", "D"],
-            start_time="2024-08-01 00:00",
-            end_time="2024-08-02 00:00",
-            merge_lut=True,
+            time_period=("2024-08-01 00:00", "2024-08-02 00:00"),
         )
+        df_multi = rdf.to_pandas(with_geometry=True)
 
         assert not df_multi.empty
-        assert "sweep" in df_multi.columns, "sweep must be in multi-radar DataFrame"
+        assert "sweep" in df_multi.columns, "sweep must be present after geometry merge"
         assert "radar" in df_multi.columns
         assert set(df_multi["radar"].unique()) == {"A", "D"}
 
@@ -248,7 +247,7 @@ class TestGenerateLutProjection:
         proj_y_cols = [c for c in lut.columns if c.startswith("y_")]
         assert len(proj_x_cols) == 1, f"Expected one x_ projection column, got {proj_x_cols}"
         assert len(proj_y_cols) == 1, f"Expected one y_ projection column, got {proj_y_cols}"
-        assert not lut[proj_x_cols[0]].isna().all(), "Projected x values should not all be NaN"
+        assert lut[proj_x_cols[0]].is_not_null().any(), "Projected x values should not all be NaN"
 
     def test_lut_without_projection_has_no_extra_cols(self, tmp_path):
         from raddb.lut import generate_lut_from_datatree, load_radar_lut
@@ -262,20 +261,18 @@ class TestGenerateLutProjection:
         proj_cols = [c for c in lut.columns if c.startswith("x_") or c.startswith("y_")]
         assert len(proj_cols) == 0, f"No projection columns expected, got {proj_cols}"
 
-    def test_api_generate_lut_with_projection(self, tmp_path):
+    def test_api_archive_with_projection(self, tmp_path):
+        """archive() auto-generates a LUT with projected columns when crs is set."""
         pyproj = pytest.importorskip("pyproj")
 
-        from raddb.api import RadDB
+        from raddb.main import RadDB
         from raddb.lut import load_radar_lut
 
-        db = RadDB(base_path=str(tmp_path))
-        dt = _make_datatree(vol_time=pd.Timestamp("2024-08-01 12:00:00"))
         crs = self._make_crs()
+        db = RadDB(archive_dir=str(tmp_path), crs=crs)
+        dt = _make_datatree(vol_time=pd.Timestamp("2024-08-01 12:00:00"))
 
-        db.generate_lut(
-            radar=RADAR, sample_datatree=dt,
-            projection_crs=crs,
-        )
+        db.archive(datatree=dt, radar=RADAR)
 
         lut = load_radar_lut(RADAR, str(tmp_path))
         proj_x_cols = [c for c in lut.columns if c.startswith("x_")]

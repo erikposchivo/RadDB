@@ -25,7 +25,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import matplotlib.ticker as mticker
-from matplotlib.colors import BoundaryNorm, ListedColormap, Normalize
+from matplotlib.colors import BoundaryNorm, ListedColormap, Normalize, TwoSlopeNorm
 import xarray as xr
 
 from raddb.hc_mapping import HC_CLASSES as _HC_CLASSES, HC_COLORS as _HC_COLORS
@@ -35,16 +35,36 @@ from raddb.hc_mapping import HC_CLASSES as _HC_CLASSES, HC_COLORS as _HC_COLORS
 # Per-variable plotting defaults
 # ============================================================================
 
+def _first_available_cmap(*names: str) -> str:
+    """First registered colormap among ``names`` (last is the guaranteed fallback).
+
+    Lets ``DBZH`` prefer Py-ART's ``HomeyerRainbow`` when pyart has been imported
+    (registering it), falling back to ``turbo`` otherwise.
+    """
+    available = set(plt.colormaps())
+    for name in names:
+        if name in available:
+            return name
+    return names[-1]
+
+
+# Colormaps chosen to match raddb/viz/report_raddb_figures.py (raddb_ppi_ex.png),
+# with two deliberate departures: KDP uses a non-cyclic map (the report's twilight
+# wraps around and is misleading for a signed quantity), and TEMP is a 0-centred
+# diverging (coolwarm's midpoint is grey) via TwoSlopeNorm so 0 °C reads grey.
+
 _PLOT_DEFAULTS: dict[str, dict] = {
-    "DBZH":     dict(cmap="turbo",    vmin=-10,  vmax=60,   label="Reflectivity [dBz]"),
-    "DBZH_raw": dict(cmap="turbo",    vmin=-10,  vmax=60,   label="Raw reflectivity [dBz]"),
-    "ZDR":      dict(cmap="RdBu_r",   vmin=-2,   vmax=5,    label="Differential reflectivity [dB]"),
-    "ZDR_raw":  dict(cmap="RdBu_r",   vmin=-2,   vmax=5,    label="Raw differential reflectivity [dB]"),
-    "KDP":      dict(cmap="RdBu_r",   vmin=-1,   vmax=3,    label="Specific differential phase [°/km]"),
-    "RHOHV":    dict(cmap="viridis",  vmin=0.5,  vmax=1.0,  label="Co-polar correlation [-]"),
+    "DBZH":     dict(cmap="HomeyerRainbow",   vmin=0,    vmax=60,   label="Reflectivity [dBz]"),
+    "DBZH_raw": dict(cmap="HomeyerRainbow",   vmin=0,    vmax=60,   label="Raw reflectivity [dBz]"),
+    "ZDR":      dict(cmap="viridis",  vmin=-2,   vmax=7,    label="Differential reflectivity [dB]"),
+    "ZDR_raw":  dict(cmap="viridis",  vmin=-2,   vmax=7,    label="Raw differential reflectivity [dB]"),
+    "KDP":      dict(cmap="plasma",   vmin=-2,   vmax=5,    label="Specific differential phase [°/km]"),
+    "RHOHV":    dict(cmap="cividis",  vmin=0.5,  vmax=1.0,  label="Co-polar correlation [-]"),
     "PHIDP":    dict(cmap="twilight", vmin=-180, vmax=180,  label="Differential phase [deg]"),
     "HZT":      dict(cmap="viridis",  vmin=0,    vmax=5000, label="Freezing level height [m]"),
-    "TEMP":     dict(cmap="RdBu_r",   vmin=-30,  vmax=15,   label="Temperature [°C]"),
+    "TEMP":     dict(cmap="coolwarm",
+                     norm=lambda: TwoSlopeNorm(vmin=-30, vcenter=0, vmax=30),
+                     label="Temperature [°C]"),
     "HC_MCH":   dict(discrete=True,   classes=_HC_CLASSES,  colors=_HC_COLORS, label="MCH hydrometeor class"),
     "HC_PYART": dict(discrete=True,   classes=_HC_CLASSES,  colors=_HC_COLORS, label="PyART hydrometeor class"),
 }
@@ -53,6 +73,38 @@ _PLOT_DEFAULTS: dict[str, dict] = {
 # ============================================================================
 # Internal helpers
 # ============================================================================
+
+_PYART_CMAPS_TRIED = False
+
+
+def _ensure_cmap_registered(name):
+    """Return a usable colormap name; register Py-ART's colormaps on demand.
+
+    Non-string values (Colormap instances) pass through.  A string already known
+    to matplotlib is returned as-is.  Otherwise Py-ART is imported **once** — that
+    registers its colormaps (e.g. ``HomeyerRainbow``) with matplotlib — and the
+    name is re-checked.  If it's still missing (pyart absent or unknown name),
+    fall back to ``turbo`` with a warning so plotting never hard-crashes.
+    """
+    global _PYART_CMAPS_TRIED
+    if not isinstance(name, str) or name in plt.colormaps():
+        return name
+    if not _PYART_CMAPS_TRIED:
+        _PYART_CMAPS_TRIED = True
+        try:
+            import pyart  # noqa: F401  # registers Py-ART colormaps with matplotlib
+        except Exception:  # noqa: BLE001 - pyart optional
+            pass
+    if name in plt.colormaps():
+        return name
+    import warnings
+    warnings.warn(
+        f"colormap {name!r} is unavailable (Py-ART colormaps need pyart installed); "
+        "falling back to 'turbo'.",
+        stacklevel=2,
+    )
+    return "turbo"
+
 
 def _resolve_plot_kwargs(variable: str, user_kwargs: dict):
     """Merge per-variable defaults with user overrides.
@@ -80,13 +132,24 @@ def _resolve_plot_kwargs(variable: str, user_kwargs: dict):
         plot_kwargs.setdefault("cmap", cmap)
         plot_kwargs.setdefault("norm", norm)
     else:
-        for k in ("cmap", "vmin", "vmax"):
-            if k in defaults:
-                plot_kwargs.setdefault(k, defaults[k])
+        if "cmap" in defaults:
+            plot_kwargs.setdefault("cmap", defaults["cmap"])
+        if "norm" in defaults:
+            # a default norm (e.g. 0-centred diverging); build a fresh instance so
+            # it isn't shared/mutated across figures. Skipped if the caller passed
+            # any explicit scale (norm / vmin / vmax) to avoid a matplotlib clash.
+            if not any(k in plot_kwargs for k in ("norm", "vmin", "vmax")):
+                nrm = defaults["norm"]
+                plot_kwargs["norm"] = nrm() if callable(nrm) else nrm
+        else:
+            for k in ("vmin", "vmax"):
+                if k in defaults:
+                    plot_kwargs.setdefault(k, defaults[k])
 
     # Make NaN gates transparent (not bottom-of-colormap colored).
     cmap_val = plot_kwargs.get("cmap")
     if cmap_val is not None:
+        cmap_val = _ensure_cmap_registered(cmap_val)  # register pyart cmaps if needed
         cmap_obj = plt.get_cmap(cmap_val).copy() if isinstance(cmap_val, str) else cmap_val.copy()
         cmap_obj.set_bad("none")
         plot_kwargs["cmap"] = cmap_obj
@@ -102,6 +165,59 @@ def _maybe_cartopy():
         return ccrs, cfeature
     except ImportError:
         return None, None
+
+
+_LV95_BORDERS = "unset"  # cache: list of country-border lines in EPSG:2056
+
+
+def _lv95_border_lines():
+    """Country-border lines near Switzerland, reprojected to EPSG:2056 (cached).
+
+    Sourced from cartopy's Natural Earth 10 m admin-0 boundary lines, clipped to
+    a lon/lat box around Switzerland before reprojection (LV95 is only valid near
+    CH).  Returns a list of shapely (Multi)LineStrings in LV95, or ``[]`` if
+    cartopy / the data is unavailable — so the swiss PPI still draws, just without
+    borders.  Drawn on a plain matplotlib axis, so no GeoAxes / extent quirks.
+    """
+    global _LV95_BORDERS
+    if _LV95_BORDERS != "unset":
+        return _LV95_BORDERS
+    lines = []
+    try:
+        import shapely
+        from cartopy.io import shapereader as shpreader
+        from raddb.aoi import _reproject_to_2056
+
+        path = shpreader.natural_earth(
+            resolution="10m", category="cultural", name="admin_0_boundary_lines_land"
+        )
+        clip = shapely.box(3.0, 43.0, 13.5, 49.5)  # Switzerland + neighbours
+        for geom in shpreader.Reader(path).geometries():
+            piece = geom.intersection(clip)
+            if not piece.is_empty:
+                lines.append(_reproject_to_2056(piece, 4326))
+    except Exception as exc:  # noqa: BLE001 - cartopy missing / data not cached
+        import warnings
+        warnings.warn(
+            f"cartopy country borders unavailable ({exc}); swiss PPI drawn without them.",
+            stacklevel=2,
+        )
+    _LV95_BORDERS = lines
+    return _LV95_BORDERS
+
+
+def _draw_lv95_borders(ax):
+    """Plot the cached LV95 country borders as light lines (clipped to the axes)."""
+    def _iter_lines(g):
+        if g.geom_type == "LineString":
+            yield g
+        elif g.geom_type in ("MultiLineString", "GeometryCollection"):
+            for sub in g.geoms:
+                yield from _iter_lines(sub)
+
+    for geom in _lv95_border_lines():
+        for line in _iter_lines(geom):
+            ax.plot(*line.xy, color="0.4", linewidth=0.6, zorder=1)
 
 
 def _get_sweep_dataset(dt, sweep) -> xr.Dataset:
@@ -158,6 +274,447 @@ def _volume_time_str(ds) -> str:
 # PPI
 # ============================================================================
 
+def plot_aoi_quicklook(
+    aoi_geom,
+    selected=None,
+    radars=None,
+    base_path=None,
+    context="switzerland",
+    ax=None,
+    figsize=(9, 9),
+    title=None,
+    range_rings_km=(100,),
+    show_gates=False,
+    gate_sample=50_000,
+    xlim=None,
+    ylim=(1_040_000, 1_310_000),
+    save_path=None,
+):
+    """Map an AOI on a country-scale background for a quick sanity-check.
+
+    Answers "**is my AOI where I think it is?**": the AOI footprint (red) drawn on
+    the **Switzerland outline** with the involved radar sites, in a **square**
+    national-extent view.  Rendered in Swiss LV95 (EPSG:2056), axis units km.  The
+    Swiss outline comes from cartopy's cached Natural Earth data; everything else
+    is dependency-free, so the map still draws (without the outline) if that data
+    is missing.
+
+    Parameters
+    ----------
+    aoi_geom : shapely geometry
+        AOI footprint in EPSG:2056 (Polygon for bbox/polygon/point AOIs;
+        LineString for a cross-section line).
+    selected : pd.DataFrame, optional
+        Selected gates carrying ``x_2056`` / ``y_2056``.  Only scattered when
+        ``show_gates=True`` — off by default so the map stays readable.
+    radars : list of str, optional
+        Radar letters to mark (needs ``base_path`` to load their site coords).
+    base_path : str or Path, optional
+        RadDB archive base directory, for loading radar site coordinates.
+    context : str, shapely geometry, GeoDataFrame, or None
+        Map background. ``"switzerland"`` (default) draws the national outline;
+        ``None`` draws none; a geometry/GeoDataFrame draws a custom context.
+    ax : matplotlib Axes, optional
+        Draw into an existing axis instead of creating a figure.
+    figsize : tuple
+        Default ``(9, 9)`` — square, sized to show the whole country.
+    title : str, optional
+    range_rings_km : number or iterable of number, optional
+        Range-ring radii (km) drawn dashed around each radar site.  Accepts a
+        single value (``100``) or several (``(50, 100)``); ``None`` omits them.
+    show_gates : bool
+        Scatter the selected gate centroids (default False).
+    gate_sample : int
+        Cap the number of scattered centroids (random subsample); ``None`` = all.
+    xlim, ylim : (min, max) in EPSG:2056 metres, optional
+        Axis limits.  ``xlim`` defaults to auto (fills the context/AOI extent);
+        ``ylim`` defaults to the Swiss north band (1.04–1.31 Mm ≈ North 40–310 km).
+        Pass ``None`` to either for auto-framing of that axis.
+    save_path : str or Path, optional
+        If given, save the figure (dpi=150, tight).
+
+    Returns
+    -------
+    (fig, ax)
+    """
+    import shapely
+    from raddb.aoi import _resolve_context
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.figure
+
+    # --- context background (Switzerland outline) ---
+    ctx_geom = _resolve_context(context)
+    if ctx_geom is not None:
+        _draw_context(ax, ctx_geom)
+
+    # --- radar site positions (also used to frame the view) ---
+    sites: dict[str, tuple[float, float]] = {}
+    if radars and base_path is not None:
+        from raddb.lut import load_radar_info
+        from raddb.aoi import _reproject_to_2056
+
+        for r in radars:
+            try:
+                info = load_radar_info(r, base_path)
+            except Exception:  # noqa: BLE001 - missing info shouldn't kill the quicklook
+                continue
+            pt = _reproject_to_2056(shapely.Point(info["longitude"], info["latitude"]), 4326)
+            sites[r] = (pt.x, pt.y)
+
+    # --- optional selected gate centroids ---
+    if (
+        selected is not None
+        and show_gates
+        and len(selected)
+        and {"x_2056", "y_2056"}.issubset(selected.columns)
+    ):
+        xs = selected["x_2056"].to_numpy()
+        ys = selected["y_2056"].to_numpy()
+        if gate_sample and len(xs) > gate_sample:
+            idx = np.random.default_rng(0).choice(len(xs), gate_sample, replace=False)
+            xs, ys = xs[idx], ys[idx]
+        ax.scatter(
+            xs, ys, s=2, c="tab:blue", alpha=0.25, linewidths=0,
+            label=f"selected gates (n={len(selected):,})", zorder=2,
+        )
+
+    # --- radar sites (+ dashed range rings) ---
+    theta = np.linspace(0, 2 * np.pi, 361)
+    # accept None, a single number (e.g. 100), or an iterable of radii
+    if range_rings_km is None:
+        rings = ()
+    elif isinstance(range_rings_km, (int, float)):
+        rings = (range_rings_km,)
+    else:
+        rings = tuple(range_rings_km)
+    ring_label = (
+        f"range rings ({', '.join(str(int(d)) for d in rings)} km)" if rings else None
+    )
+    first_site = True
+    ring_labeled = False
+    for r, (sx, sy) in sites.items():
+        for d_km in rings:
+            ax.plot(
+                sx + d_km * 1e3 * np.cos(theta), sy + d_km * 1e3 * np.sin(theta),
+                color="0.5", lw=0.7, ls="--", zorder=1,
+                label=None if ring_labeled else ring_label,
+            )
+            ring_labeled = True
+        ax.plot(sx, sy, "k^", ms=9, zorder=5, label="radar" if first_site else None)
+        ax.annotate(
+            r, (sx, sy), textcoords="offset points", xytext=(5, 5),
+            fontweight="bold", zorder=6,
+        )
+        first_site = False
+
+    # --- AOI footprint ---
+    _draw_aoi_outline(ax, aoi_geom)
+
+    # --- frame: x fills the context/AOI extent; y defaults to the Swiss band ---
+    boxes = [aoi_geom.bounds]
+    if ctx_geom is not None:
+        boxes.append(ctx_geom.bounds)
+    boxes += [(x, y, x, y) for x, y in sites.values()]
+    xmin = min(b[0] for b in boxes)
+    ymin = min(b[1] for b in boxes)
+    xmax = max(b[2] for b in boxes)
+    ymax = max(b[3] for b in boxes)
+    if xlim is not None:
+        ax.set_xlim(*xlim)
+    else:
+        mx = 0.06 * max(xmax - xmin, 1.0)
+        ax.set_xlim(xmin - mx, xmax + mx)
+    if ylim is not None:
+        ax.set_ylim(*ylim)
+    else:
+        my = 0.06 * max(ymax - ymin, 1.0)
+        ax.set_ylim(ymin - my, ymax + my)
+
+    # --- cosmetics: equal aspect, LV95 km ticks ---
+    ax.set_aspect("equal")
+    ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{(v - 2e6) / 1e3:.0f}"))
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{(v - 1e6) / 1e3:.0f}"))
+    ax.set_xlabel("East [km]")
+    ax.set_ylabel("North [km]")
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="upper right", fontsize=9, framealpha=0.9)
+    ax.set_title(title or "Quicklook - Area Of Interest")
+
+    if save_path is not None:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    return fig, ax
+
+
+def _draw_context(ax, geom, label="Switzerland"):
+    """Draw a light-gray filled context outline (country/region) behind the AOI."""
+    polys = geom.geoms if geom.geom_type == "MultiPolygon" else [geom]
+    first = True
+    for g in polys:
+        if g.geom_type != "Polygon":
+            continue
+        ax.fill(*g.exterior.xy, fc="0.93", ec="0.55", lw=0.8, zorder=0,
+                label=label if first else None)
+        first = False
+
+
+def _draw_aoi_outline(ax, geom, color="red"):
+    """Draw an AOI geometry outline (Polygon fill+edge, or LineString path)."""
+    gt = geom.geom_type
+    if gt == "Polygon":
+        ax.fill(*geom.exterior.xy, color=color, alpha=0.25, zorder=3)
+        ax.plot(*geom.exterior.xy, color=color, lw=2, zorder=4, label="AOI")
+    elif gt in ("LineString", "LinearRing"):
+        ax.plot(*geom.xy, color=color, lw=2, zorder=4, label="AOI")
+    elif gt in ("MultiPolygon", "GeometryCollection"):
+        first = True
+        for g in geom.geoms:
+            lbl = "AOI" if first else None
+            if g.geom_type == "Polygon":
+                ax.fill(*g.exterior.xy, color=color, alpha=0.25, zorder=3)
+                ax.plot(*g.exterior.xy, color=color, lw=2, zorder=4, label=lbl)
+            first = False
+    else:  # Point or other
+        ax.plot(geom.x, geom.y, marker="*", color=color, ms=12, zorder=4, label="AOI")
+
+
+# ============================================================================
+# Regular-grid slice maps (from RadDB.aoi_to_grid)
+# ============================================================================
+
+def plot_grid(
+    ds,
+    variable: str = "DBZH",
+    radar=None,
+    z: float | None = None,
+    iz: int | None = None,
+    time=None,
+    ax=None,
+    figsize=(8, 7),
+    title: str | None = None,
+    add_colorbar: bool = True,
+    use_cartopy: bool | None = None,
+    xlim=None,
+    ylim=None,
+    **plot_kwargs,
+):
+    """Map one horizontal slice of an :meth:`RadDB.aoi_to_grid` Dataset.
+
+    Selects one radar (or a **pair for a difference map**), one altitude layer,
+    and (if present) one volume time, then draws the (y, x) slice in the Swiss
+    LV95 frame (East/North km ticks, optional cartopy country borders) — the
+    same frame as the AOI quicklook and ``coords="swiss"`` PPIs.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Output of :meth:`RadDB.aoi_to_grid` (dims ``(time?, radar, z, y, x)``).
+    variable : str
+        Data variable to draw (default ``"DBZH"``).
+    radar : str or (str, str), optional
+        A radar letter selects that radar's layer (inferred when the grid holds
+        exactly one).  A **pair** ``("P", "L")`` draws the per-voxel difference
+        ``P − L`` with a symmetric diverging colormap — the cross-radar
+        comparison the per-radar grid exists for.
+    z : float, optional
+        Altitude of the layer to draw (m ASL); the nearest ``z`` bin is used.
+    iz : int, optional
+        Alternative to ``z``: direct index into the ``z`` dimension.
+    time : str or datetime, optional
+        Volume time (nearest match); required only when the grid has several.
+    ax : matplotlib Axes, optional
+    figsize, title, add_colorbar
+        Usual matplotlib options.
+    use_cartopy : bool, optional
+        Draw LV95-reprojected country borders (auto when cartopy is available).
+    xlim, ylim : (min, max) in LV95 metres, optional
+    **plot_kwargs
+        ``cmap`` / ``vmin`` / ``vmax`` / ``norm`` overrides.
+
+    Returns
+    -------
+    (fig, ax, mesh)
+    """
+    if variable not in ds.data_vars:
+        raise KeyError(f"variable {variable!r} not in grid; available: {list(ds.data_vars)}")
+
+    sel = ds[variable]
+
+    # --- time selection (grid times are naive UTC) ---
+    if "time" in sel.dims:
+        if time is not None:
+            ts = pd.to_datetime(time)
+            ts = ts.tz_convert("UTC").tz_localize(None) if ts.tzinfo is not None else ts
+            sel = sel.sel(time=ts.to_datetime64(), method="nearest")
+        elif sel.sizes["time"] == 1:
+            sel = sel.isel(time=0)
+        else:
+            raise ValueError(f"grid holds {sel.sizes['time']} volumes; pass time= to pick one.")
+
+    # --- altitude layer ---
+    if iz is not None:
+        sel = sel.isel(z=int(iz))
+    elif z is not None:
+        sel = sel.sel(z=float(z), method="nearest")
+    elif sel.sizes.get("z", 1) == 1:
+        sel = sel.isel(z=0)
+    else:
+        raise ValueError("pass z= (altitude, m ASL) or iz= to pick the layer to draw.")
+    z_val = float(sel["z"])
+
+    # --- radar selection: single layer or difference of a pair ---
+    radars_in = [str(r) for r in np.atleast_1d(ds["radar"].values)]
+    is_diff = isinstance(radar, (tuple, list)) and len(radar) == 2
+    if is_diff:
+        r0, r1 = radar
+        data2d = sel.sel(radar=r0) - sel.sel(radar=r1)
+        default_title = f"{variable} difference {r0}−{r1} — z≈{z_val:.0f} m ASL"
+        plot_kwargs.setdefault("cmap", "RdBu_r")
+        if not any(k in plot_kwargs for k in ("vmin", "vmax", "norm")):
+            vmax = float(np.nanmax(np.abs(data2d.values))) if np.isfinite(data2d.values).any() else 1.0
+            plot_kwargs["vmin"], plot_kwargs["vmax"] = -vmax, vmax
+        resolved, is_discrete, class_labels, cbar_label = _resolve_plot_kwargs("__diff__", plot_kwargs)
+        cbar_label = f"Δ{variable} ({r0}−{r1})"
+    else:
+        if radar is None:
+            if len(radars_in) != 1:
+                raise ValueError(f"grid holds radars {radars_in}; pass radar= (or a pair for a difference).")
+            radar = radars_in[0]
+        data2d = sel.sel(radar=radar)
+        default_title = f"{variable} — radar {radar} — z≈{z_val:.0f} m ASL"
+        resolved, is_discrete, class_labels, cbar_label = _resolve_plot_kwargs(variable, plot_kwargs)
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.figure
+
+    # pixel-edge mesh from centres (regular spacing)
+    res = float(ds.attrs.get("resolution_m", np.diff(ds["x"].values).mean()))
+    xe = np.append(ds["x"].values - res / 2, ds["x"].values[-1] + res / 2)
+    ye = np.append(ds["y"].values - res / 2, ds["y"].values[-1] + res / 2)
+    p = ax.pcolormesh(xe, ye, data2d.values, shading="flat", **resolved)
+
+    ccrs, _ = _maybe_cartopy()
+    if use_cartopy is None:
+        use_cartopy = ccrs is not None
+    if use_cartopy:
+        _draw_lv95_borders(ax)
+
+    ax.set_aspect("equal")
+    ax.grid(True, alpha=0.3)
+    ax.set_xlim(*(xlim if xlim is not None else (xe[0], xe[-1])))
+    ax.set_ylim(*(ylim if ylim is not None else (ye[0], ye[-1])))
+    ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{(v - 2e6) / 1e3:.0f}"))
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{(v - 1e6) / 1e3:.0f}"))
+    ax.set_xlabel("East [km]")
+    ax.set_ylabel("North [km]")
+    ax.set_title(title or default_title)
+
+    if add_colorbar:
+        _add_colorbar(p, ax, is_discrete, class_labels, cbar_label)
+    return fig, ax, p
+
+
+# ============================================================================
+# Vertical cross-section (arbitrary line, from crop_cross_section)
+# ============================================================================
+
+def plot_cross_section(
+    df_cs,
+    variable: str = "DBZH",
+    ax=None,
+    figsize=(12, 5),
+    title: str | None = None,
+    add_colorbar: bool = True,
+    edgecolor="none",
+    xlim=None,
+    ylim=None,
+    **plot_kwargs,
+):
+    """Render a vertical cross-section from a :meth:`RadDB.crop_cross_section` result.
+
+    Each row's ``cs_polygon`` — the gate's 4-corner polygon in the
+    (distance-along-line, altitude) plane — is drawn as a filled patch coloured
+    by ``variable`` (per-variable colormap defaults apply, incl. discrete HC
+    classes).  Axes: distance along the section line [km] (from ``p1``) vs
+    altitude [km ASL].
+
+    Note: pass a **single volume** (filter by ``volume_time``) and ideally a
+    single radar — overlapping radars/volumes draw on top of each other.
+
+    Parameters
+    ----------
+    df_cs : pd.DataFrame
+        Output of :meth:`RadDB.crop_cross_section` (needs ``cs_polygon`` +
+        ``variable`` columns).
+    variable : str
+        Column to colour by (default ``"DBZH"``).
+    ax : matplotlib Axes, optional
+    figsize : tuple
+    title : str, optional
+    add_colorbar : bool
+    edgecolor : matplotlib color
+        Patch edge colour (default ``"none"``; e.g. ``"k"`` to outline gates).
+    xlim : (dmin_km, dmax_km), optional
+        Along-section distance limits in km.
+    ylim : (zmin_km, zmax_km), optional
+        Altitude limits in km.
+    **plot_kwargs
+        ``cmap`` / ``vmin`` / ``vmax`` / ``norm`` overrides.
+
+    Returns
+    -------
+    (fig, ax, collection)
+    """
+    from matplotlib.collections import PolyCollection
+
+    if "cs_polygon" not in df_cs.columns:
+        raise KeyError("df_cs has no 'cs_polygon' column; use RadDB.crop_cross_section first.")
+    if variable not in df_cs.columns:
+        raise KeyError(f"variable {variable!r} not in df_cs columns.")
+
+    data = df_cs[df_cs[variable].notna() & df_cs["cs_polygon"].notna()]
+    if data.empty:
+        raise ValueError(f"no non-NaN {variable!r} values on this cross-section.")
+
+    plot_kwargs, is_discrete, class_labels, cbar_label = _resolve_plot_kwargs(
+        variable, plot_kwargs
+    )
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.figure
+
+    # polygons in km on both axes
+    verts = [np.asarray(p.exterior.coords)[:, :2] / 1000.0 for p in data["cs_polygon"]]
+    pc = PolyCollection(verts, array=data[variable].to_numpy(), edgecolor=edgecolor, linewidth=0.1)
+    if "cmap" in plot_kwargs:
+        pc.set_cmap(plot_kwargs["cmap"])
+    if "norm" in plot_kwargs:
+        pc.set_norm(plot_kwargs["norm"])
+    else:
+        pc.set_clim(plot_kwargs.get("vmin"), plot_kwargs.get("vmax"))
+    ax.add_collection(pc)
+
+    d_all = np.concatenate([v[:, 0] for v in verts])
+    z_all = np.concatenate([v[:, 1] for v in verts])
+    ax.set_xlim(*(xlim if xlim is not None else (d_all.min(), d_all.max())))
+    ax.set_ylim(*(ylim if ylim is not None else (max(0.0, z_all.min() - 0.2), z_all.max() + 0.2)))
+
+    ax.set_xlabel("Distance along section [km]")
+    ax.set_ylabel("Altitude [km ASL]")
+    ax.grid(True, alpha=0.3)
+    if title:
+        ax.set_title(title)
+    if add_colorbar:
+        _add_colorbar(pc, ax, is_discrete, class_labels, cbar_label)
+    return fig, ax, pc
+
+
 def plot_ppi(
     dt,
     sweep,
@@ -190,13 +747,20 @@ def plot_ppi(
         If None (default), auto-detect: use cartopy when installed. Pass
         ``False`` to force plain matplotlib. Pass ``True`` to require cartopy
         (raises ImportError if missing).
-    coords : {"geo", "cartesian"}
-        ``"geo"`` plots on ``(longitude, latitude)``. ``"cartesian"`` plots on
-        ``(x, y)`` km from the radar site. When cartopy is available, both
-        modes add a context map (coastlines, borders). In ``"cartesian"`` mode
-        the axes tick labels are formatted in km.
+    coords : {"geo", "cartesian", "swiss"}
+        Coordinate frame for the axes:
+
+        - ``"geo"`` — ``(longitude, latitude)`` degrees.
+        - ``"cartesian"`` — ``(x, y)`` km **relative to the radar** (origin at the
+          site).  With cartopy this is an AEQD map centred on the radar.
+        - ``"swiss"`` (aka ``"lv95"`` / ``"2056"``) — absolute **Swiss LV95**
+          ``(x_2056, y_2056)``, axis ticks in km (E from the 2 000 km
+          false-easting, N from 1 000 km).  This is the **same frame as the AOI
+          quicklook**, so a cropped-df PPI lines up with `crop_*` overlays.  With
+          cartopy (``use_cartopy``) it overlays country borders reprojected to
+          LV95 as a basemap; otherwise the same plot without borders.
     add_range_rings : bool
-        For cartesian mode, draw 50/100/150 km range rings.
+        For ``cartesian`` / ``swiss`` modes, draw 50/100/150 km range rings.
     add_colorbar : bool
     title : str, optional
     figsize : tuple
@@ -232,8 +796,9 @@ def plot_ppi(
             "Run: pip install 'raddb[viz]' or: pip install cartopy"
         )
 
-    # If the user passed a non-GeoAxes axis, silently disable cartopy.
-    if use_cartopy and ax is not None:
+    # If the user passed a non-GeoAxes axis, silently disable cartopy — except
+    # for "swiss", which draws on a plain axis (borders are reprojected lines).
+    if use_cartopy and ax is not None and coords not in ("swiss", "lv95", "2056"):
         try:
             from cartopy.mpl.geoaxes import GeoAxes
             if not isinstance(ax, GeoAxes):
@@ -371,8 +936,68 @@ def plot_ppi(
                 ax.set_xlim(xlim)
             if ylim is not None:
                 ax.set_ylim(ylim)
+    # ---------------------------------------------------------- swiss (LV95)
+    elif coords in ("swiss", "lv95", "2056"):
+        # Absolute Swiss LV95 (EPSG:2056) — same frame as the AOI quicklook.
+        # With cartopy, an LV95 GeoAxes adds a country-border basemap; otherwise
+        # plain matplotlib.  Either way the axes are LV95 km (radar x, range rings).
+        if "x_2056" not in ds.coords:
+            raise KeyError(
+                "coords='swiss' needs x_2056/y_2056 in the sweep; reconstruct the "
+                "DataTree from a LUT that has the EPSG:2056 projection columns."
+            )
+
+        # Gate mesh in LV95: reproject the corner mesh for flat shading, else centroids.
+        import shapely
+        from raddb.aoi import _reproject_to_2056
+        if all(k in ds.variables for k in ("lon_edges", "lat_edges")):
+            import pyproj
+            from raddb.aoi import _to_pyproj_crs
+            _tf = pyproj.Transformer.from_crs(
+                _to_pyproj_crs(4326), _to_pyproj_crs(2056), always_xy=True
+            )
+            lon_e = ds["lon_edges"].values
+            lat_e = ds["lat_edges"].values
+            xe, ye = _tf.transform(lon_e.ravel(), lat_e.ravel())
+            mx = np.asarray(xe).reshape(lon_e.shape)
+            my = np.asarray(ye).reshape(lat_e.shape)
+            mshade = "flat"
+        else:
+            mx, my = ds["x_2056"].values, ds["y_2056"].values
+            mshade = "auto"
+        site = _reproject_to_2056(
+            shapely.Point(float(ds["site_longitude"]), float(ds["site_latitude"])), 4326
+        )
+
+        if ax is None:
+            fig, ax = plt.subplots(figsize=figsize)
+        # Data range now, so borders drawn afterwards don't expand the view.
+        data_xlim = xlim if xlim is not None else (float(np.nanmin(mx)), float(np.nanmax(mx)))
+        data_ylim = ylim if ylim is not None else (float(np.nanmin(my)), float(np.nanmax(my)))
+
+        p = ax.pcolormesh(mx, my, da.values, shading=mshade, **plot_kwargs)
+        # cartopy country-border basemap (reprojected to LV95, plain-axis clipped)
+        if use_cartopy:
+            _draw_lv95_borders(ax)
+        ax.set_aspect("equal")
+        ax.plot(site.x, site.y, "kx", markersize=7, markeredgewidth=2, zorder=5)
+        if add_range_rings:
+            theta = np.linspace(0, 2 * np.pi, 361)
+            for d_km in (50, 100, 150):
+                ax.plot(site.x + d_km * 1e3 * np.cos(theta),
+                        site.y + d_km * 1e3 * np.sin(theta),
+                        "k--", linewidth=0.5)
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(data_xlim)
+        ax.set_ylim(data_ylim)
+
+        # LV95 km tick labels (same convention as the AOI quicklook).
+        ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{(v - 2e6) / 1e3:.0f}"))
+        ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{(v - 1e6) / 1e3:.0f}"))
+        ax.set_xlabel("East [km]")
+        ax.set_ylabel("North [km]")
     else:
-        raise ValueError(f"coords must be 'geo' or 'cartesian', got {coords!r}")
+        raise ValueError(f"coords must be 'geo', 'cartesian', or 'swiss', got {coords!r}")
 
     if add_colorbar:
         _add_colorbar(p, ax, is_discrete, class_labels, cbar_label)

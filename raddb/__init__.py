@@ -14,8 +14,13 @@ import contextlib
 import os
 from importlib.metadata import PackageNotFoundError, version
 
-# High-level API
-from raddb.api import RadDB
+# PROJ data directory — MUST stay the first raddb import: it repairs a
+# PROJ_DATA/PROJ_LIB inherited from another environment before pyproj is
+# imported (by geopandas, cartopy, raddb.lut, ...).
+from raddb._proj import PROJ_DATA
+
+# High-level interface
+from raddb.main import RadDB
 
 # Helper functions
 from raddb.helper import (
@@ -34,6 +39,8 @@ from raddb.io_core import (
     open_any_datatree,
     parquet_to_dataframe,
     parquet_to_datatree,
+    scan_polar_parquet,
+    dataframe_to_datatree,
     labels_to_dataframe,
     join_labels_with_lut,
     reconstruct_sweep_dataset,
@@ -85,6 +92,8 @@ from raddb.viz.profiling import (
 __all__ = [
     # High-level API
     "RadDB",
+    # Environment
+    "PROJ_DATA",
     # Helper functions
     "read_parquet_files",
     "check_dataframe",
@@ -98,6 +107,8 @@ __all__ = [
     "open_any_datatree",
     "parquet_to_dataframe",
     "parquet_to_datatree",
+    "scan_polar_parquet",
+    "dataframe_to_datatree",
     "labels_to_dataframe",
     "join_labels_with_lut",
     "reconstruct_sweep_dataset",

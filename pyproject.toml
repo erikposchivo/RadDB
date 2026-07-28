@@ -39,6 +39,8 @@ keywords = ["Weather", "Radar", "Precipitation", "Parquet", "DataTree", "Archive
 dependencies = [
     "numpy",
     "pandas",
+    "polars",
+    "geopandas",
     "xarray",
     "pyyaml",
     "pyarrow",

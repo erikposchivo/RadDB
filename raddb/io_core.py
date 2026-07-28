@@ -30,7 +30,7 @@ from raddb.helper import (
     normalize_radar_name,
     resolve_filter_logic,
 )
-from raddb.discovery import _find_polar_files_in_range
+from raddb.discovery import _find_polar_files_in_range, _parse_pol_time
 
 logger = logging.getLogger(__name__)
 
@@ -573,6 +573,9 @@ def parquet_to_dataframe(
     Returns
     -------
     pd.DataFrame
+        Includes a ``volume_time`` column (the volume timestamp parsed from each
+        source filename) so a multi-volume frame can be split back into single
+        volumes — used by :func:`dataframe_to_datatree` / PPI plotting.
     """
     radar_path = Path(base_path) / radar
     if not radar_path.exists():
@@ -588,10 +591,21 @@ def parquet_to_dataframe(
         )
         return pd.DataFrame()
 
+    if columns is not None:
+        # ``volume_time`` / ``radar`` are derived below (and in RadDB.open), not
+        # stored in the POL files; asking pyarrow for them raises and would drop
+        # every volume.
+        columns = [c for c in columns if c not in _NON_GATE_METADATA_COLS]
+
     dfs = []
     for f in polar_files:
         try:
             df = pd.read_parquet(f, columns=columns, engine="pyarrow")
+            # Tag each row with its volume timestamp (from the filename) so a
+            # multi-volume DataFrame can later be split back into single volumes
+            # (per-gate `time` spans the whole ~5 min scan and cannot separate
+            # back-to-back volumes reliably).
+            df["volume_time"] = _parse_pol_time(f)
             dfs.append(df)
         except Exception as e:
             logger.warning(f"Error reading {f}: {e}")
@@ -631,6 +645,87 @@ def parquet_to_dataframe(
             )
 
     return df_all
+
+
+def scan_polar_parquet(
+    radar: str,
+    base_path: str | Path,
+    start_time: str | pd.Timestamp | None = None,
+    end_time: str | pd.Timestamp | None = None,
+    columns: list[str] | None = None,
+) -> "pl.LazyFrame | None":
+    """Scan archived POLAR parquet files as a single polars LazyFrame.
+
+    The polars counterpart of :func:`parquet_to_dataframe`, used by
+    :meth:`raddb.RadDB.open`.  Scanning (rather than reading) lets polars push the
+    column projection into the parquet reader, and avoids the pandas
+    intermediate frames and the ``pd.concat`` copy of the full result.
+
+    Unlike :func:`parquet_to_dataframe` this never merges the LUT: the static
+    geometry stays in its own table and is joined only by the ``to_*``
+    converters.
+
+    Parameters
+    ----------
+    radar : str
+        Single-letter radar identifier.
+    base_path : str or Path
+        RadDB base directory.
+    start_time, end_time : optional
+        Filter by volume timestamp.
+    columns : list of str, optional
+        Columns to project.  ``volume_time`` / ``radar`` are added here rather
+        than read, so they are dropped from the parquet projection.
+
+    Returns
+    -------
+    pl.LazyFrame or None
+        ``None`` when no volume matches — callers decide what an empty result
+        means.  The frame carries a ``volume_time`` and a ``radar`` column.
+    """
+    import polars as pl
+
+    radar_path = Path(base_path) / radar
+    if not radar_path.exists():
+        logger.warning(f"Radar directory not found: {radar_path}")
+        return None
+
+    polar_files = _find_polar_files_in_range(radar_path, start_time, end_time)
+    if not polar_files:
+        logger.warning(
+            f"No POLAR data found for radar {radar} "
+            f"between {start_time} and {end_time}"
+        )
+        return None
+
+    if columns is not None:
+        columns = [c for c in columns if c not in _NON_GATE_METADATA_COLS]
+
+    scans = []
+    for f in polar_files:
+        try:
+            lf = pl.scan_parquet(f)
+            if columns is not None:
+                lf = lf.select(columns)
+            # Tag each row with its volume timestamp (from the filename) so a
+            # multi-volume frame can later be split back into single volumes
+            # (per-gate `time` spans the whole ~5 min scan and cannot separate
+            # back-to-back volumes reliably).  The dtype is pinned so files with
+            # an unparseable name still concatenate with the rest.  Microsecond
+            # resolution matches what :func:`parquet_to_dataframe` produces.
+            ts = _parse_pol_time(f)
+            scans.append(lf.with_columns(
+                pl.lit(ts.to_pydatetime() if ts is not None else None,
+                       dtype=pl.Datetime("us", "UTC")).alias("volume_time"),
+                pl.lit(radar).alias("radar"),
+            ))
+        except Exception as e:
+            logger.warning(f"Error scanning {f}: {e}")
+            continue
+
+    if not scans:
+        return None
+    return pl.concat(scans, how="vertical_relaxed")
 
 
 def parquet_to_datatree(
@@ -704,37 +799,108 @@ def parquet_to_datatree(
 
     df_polar = pd.concat(dfs, ignore_index=True)
 
-    # Join with LUT — include "sweep" since it is no longer stored in the
-    # POL parquet (removed from POLAR_COLUMNS to avoid redundancy with gate_id),
-    # plus per-gate spatial coords (latitude, longitude, altitude, x, y, z and
-    # any x_<epsg> / y_<epsg> projection columns) so the reconstructed DataTree
-    # is plot-ready.
-    lut_df = pd.read_parquet(lut_path, engine="pyarrow")
-    _spatial_cols = ["latitude", "longitude", "altitude", "x", "y", "z"]
-    _proj_cols = _projection_columns(lut_df)
-    _join_cols = ["gate_id", "sweep", "azimuth", "range"] + _spatial_cols + _proj_cols
-    _join_cols = [c for c in _join_cols if c in lut_df.columns]
-    df_joined = df_polar.merge(
-        lut_df[_join_cols],
-        on="gate_id",
-        how="left",
+    return dataframe_to_datatree(
+        df=df_polar,
+        radar=radar,
+        base_path=base_path,
+        label_column=label_column,
+        max_workers=max_workers,
     )
+
+
+# Columns the LUT owns; a DataFrame's own copies of these are replaced by the
+# LUT's on reconstruction so geometry is always authoritative and never collides.
+_LUT_GEOMETRY_COLS = (
+    "sweep", "azimuth", "range",
+    "latitude", "longitude", "altitude", "x", "y", "z",
+)
+# Pure per-volume metadata that must not become gridded data_vars.
+_NON_GATE_METADATA_COLS = ("radar", "volume_time")
+
+
+def dataframe_to_datatree(
+    df: pd.DataFrame,
+    radar: str,
+    base_path: str | Path,
+    label_column: str = "DBZH",
+    max_workers: int = 1,
+) -> xr.DataTree:
+    """Reconstruct a DataTree from an in-memory per-gate DataFrame.
+
+    The df→DataTree core shared by :func:`parquet_to_datatree` and by DataFrame
+    plotting: it joins ``df`` with the radar LUT on ``gate_id`` to recover
+    geometry (sweep/azimuth/range + lat/lon/alt/x/y/z and any projection cols),
+    fills the full ``(azimuth × range)`` grid, and NaN-fills gates absent from
+    ``df`` — so a **cropped/filtered** DataFrame reconstructs to a DataTree that
+    carries the correct geometry but only the rows present in ``df``, with
+    **the DataFrame's own values** (honouring crops or added feature columns).
+
+    ``df`` must be a **single radar and a single volume** already (see
+    :meth:`raddb.RadDB.datatree_from_df` for the radar/volume selection helper).
+    Any of the LUT's geometry columns already on ``df`` are dropped and taken
+    from the LUT instead, so a ``crop_bbox`` frame (which carries
+    ``sweep``/``x_2056``/``y_2056``/``z``/``altitude``) reconstructs cleanly.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Per-gate rows with a ``gate_id`` column (+ measurement columns).
+    radar : str
+        Radar identifier whose LUT to join against.
+    base_path : str or Path
+        RadDB archive base directory.
+    label_column : str
+        Feature used for reconstruction (default ``"DBZH"``).
+    max_workers : int
+        Parallel workers for sweep reconstruction.
+
+    Returns
+    -------
+    xr.DataTree
+
+    Raises
+    ------
+    FileNotFoundError
+        If the LUT or radar info files are missing.
+    ValueError
+        If ``df`` is empty or no gates match the LUT.
+    """
+    base = Path(base_path)
+    radar_path = base / radar
+    lut_path = radar_path / "LUT" / f"{radar}_LUT.parquet"
+    info_path = radar_path / "LUT" / f"{radar}_info.yaml"
+    if not lut_path.exists():
+        raise FileNotFoundError(f"LUT not found at {lut_path}. Run generate_lut() first.")
+    if not info_path.exists():
+        raise FileNotFoundError(f"Radar info not found at {info_path}.")
+    if df.empty:
+        raise ValueError("dataframe_to_datatree: input DataFrame is empty.")
+
+    lut_df = pd.read_parquet(lut_path, engine="pyarrow")
+    join_cols = ["gate_id", *(_LUT_GEOMETRY_COLS), *_projection_columns(lut_df)]
+    join_cols = [c for c in join_cols if c in lut_df.columns]
+
+    # Drop the df's own copies of LUT/metadata columns so geometry comes solely
+    # from the LUT (authoritative, no _x/_y merge collisions) and constant
+    # metadata doesn't turn into gridded variables.
+    drop = [
+        c for c in (*_LUT_GEOMETRY_COLS, *_projection_columns(lut_df), *_NON_GATE_METADATA_COLS)
+        if c != "gate_id" and c in df.columns
+    ]
+    df_meas = df.drop(columns=drop)
+
+    df_joined = df_meas.merge(lut_df[join_cols], on="gate_id", how="left")
     df_joined = df_joined.dropna(subset=["azimuth", "range"])
 
-    # When multiple volumes are loaded, keep only the latest observation
-    # per gate to avoid duplicate (azimuth, range) entries in reconstruction.
+    # If several volumes slipped through, keep the latest obs per gate so each
+    # (sweep, azimuth, range) cell is unique before gridding.
     if "time" in df_joined.columns:
         df_joined = df_joined.sort_values("time")
-    df_joined = df_joined.drop_duplicates(
-        subset=["sweep", "azimuth", "range"], keep="last"
-    )
+    df_joined = df_joined.drop_duplicates(subset=["sweep", "azimuth", "range"], keep="last")
 
     if df_joined.empty:
-        raise ValueError(
-            "No matching gates found between POLAR data and LUT."
-        )
+        raise ValueError("No matching gates found between the DataFrame and the LUT.")
 
-    # Reconstruct DataTree
     return reconstruct_datatree(
         df_joined=df_joined,
         lut_path=lut_path,

@@ -166,6 +166,22 @@ def find_datatree_files(
 # Archived POL parquet search  (output side)
 # ============================================================================
 
+def _parse_pol_time(path: str | Path) -> pd.Timestamp | None:
+    """UTC volume timestamp from a ``{radar}_{YYYYMMDD}_{HHMMSS}_POL.parquet`` name.
+
+    Returns ``None`` when the stem does not match the archive POL layout.
+    """
+    stem = Path(path).stem.replace("_POL", "")
+    parts = stem.split("_")
+    if len(parts) < 3:
+        return None
+    try:
+        ts = pd.to_datetime(parts[-2] + "_" + parts[-1], format="%Y%m%d_%H%M%S")
+    except Exception:
+        return None
+    return ensure_utc(ts)
+
+
 def _find_polar_files_in_range(
     radar_path: Path,
     start_time: str | pd.Timestamp | None = None,
@@ -181,16 +197,9 @@ def _find_polar_files_in_range(
 
     valid = []
     for f in polar_files:
-        # Filename: {radar}_{YYYYMMDD}_{HHMMSS}_POL.parquet
-        stem = f.stem.replace("_POL", "")
-        parts = stem.split("_")
-        if len(parts) < 3:
+        ts = _parse_pol_time(f)  # {radar}_{YYYYMMDD}_{HHMMSS}_POL.parquet
+        if ts is None:
             continue
-        try:
-            ts = pd.to_datetime(parts[-2] + "_" + parts[-1], format="%Y%m%d_%H%M%S")
-        except Exception:
-            continue
-        ts = ensure_utc(ts)
         if start_dt and ts < start_dt:
             continue
         if end_dt and ts > end_dt:
