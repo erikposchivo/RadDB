@@ -9,14 +9,15 @@ name = "raddb"
 description = "Generic radar data archiving library — archive xarray DataTree volumes as Parquet"
 readme = "README.md"
 authors = [
+	{ name = "Andrea Giacobbi" },
 	{ name = "Gionata Ghiggi" },
 ]
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Science/Research",
     "Intended Audience :: Education",
-    "License :: OSI Approved :: MIT License",
     "Natural Language :: English",
     "Operating System :: OS Independent",
     "Operating System :: Unix",
@@ -25,15 +26,12 @@ classifiers = [
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+     "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering",
     "Topic :: Scientific/Engineering :: Atmospheric Science",
-    "Topic :: Scientific/Engineering :: GIS",
-    "Topic :: Scientific/Engineering :: Hydrology",
-    "Topic :: Scientific/Engineering :: Image Processing",
 ]
 keywords = ["Weather", "Radar", "Precipitation", "Parquet", "DataTree", "Archive"]
 dependencies = [
@@ -50,11 +48,9 @@ dependencies = [
     "s3fs",
     "matplotlib",
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
+# version="0.0.1"
 dynamic = ["version"]
-
-[tool.setuptools]
-license-files = ["LICENSE"]
 
 [tool.setuptools.packages.find]
 include = ["raddb*"]
@@ -77,12 +73,12 @@ dev = ["pre-commit", "loghub",
        "sphinx", "sphinx-gallery", "sphinx-book-theme", "nbsphinx", "sphinx_mdinclude"]
 
 [project.urls]
-homepage = "https://github.com/erikposchivo/raddb"
-repository = "https://github.com/erikposchivo/raddb"
-source = "https://github.com/erikposchivo/raddb"
-tracker = "https://github.com/erikposchivo/raddb/issues"
-documentation = "https://radar-api.readthedocs.io"
-changelog = "https://github.com/erikposchivo/raddb/blob/main/CHANGELOG.md"
+homepage = "https://github.com/ltelab/raddb"
+repository = "https://github.com/ltelab/raddb"
+source = "https://github.com/ltelab/raddb"
+tracker = "https://github.com/ltelab/raddb/issues"
+documentation = "https://raddb.readthedocs.io"
+changelog = "https://github.com/ltelab/raddb/blob/main/CHANGELOG.md"
 
 [tool.pytest.ini_options]
 minversion = "7"
