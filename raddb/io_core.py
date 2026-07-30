@@ -19,6 +19,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import polars as pl
 import xarray as xr
 import yaml
 
@@ -52,9 +53,35 @@ _POLAR_FLOAT32_COLS: frozenset = frozenset({"DBZH", "DBZH_raw", "ZDR", "ZDR_raw"
 _LAPSE_RATE: float = -0.0065  # °C/m (standard environmental lapse rate, -6.5 °C/km)
 
 
-def _projection_columns(df: pd.DataFrame) -> list[str]:
+def _projection_columns(df: "pl.DataFrame | pd.DataFrame") -> list[str]:
     """Columns added by :func:`raddb.lut.add_lut_projection` (e.g. x_2056 / y_2056)."""
     return [c for c in df.columns if re.match(r"^[xy]_\w+$", c)]
+
+
+def _col(df: "pl.DataFrame | pd.DataFrame", name: str, dtype=None) -> np.ndarray:
+    """Column ``name`` of ``df`` as a numpy array, for polars **or** pandas.
+
+    ``polars.Series.to_numpy`` takes no ``dtype`` argument (pandas' does), so the
+    cast is applied afterwards.  Used by the write path, which is numpy-based
+    internally and therefore backend-agnostic.
+    """
+    arr = df[name].to_numpy()
+    return arr if dtype is None else arr.astype(dtype)
+
+
+def _to_polars_frame(df: "pl.DataFrame | pd.DataFrame") -> "pl.DataFrame":
+    """Coerce a pandas frame to polars; pass polars frames straight through."""
+    return df if isinstance(df, pl.DataFrame) else pl.from_pandas(df)
+
+
+def _to_pandas_frame(df: "pl.DataFrame | pd.DataFrame") -> pd.DataFrame:
+    """Coerce a polars frame to pandas; pass pandas frames straight through.
+
+    Used only at the **xarray seam**: DataTree reconstruction needs
+    ``set_index().reindex(MultiIndex)`` and ``to_xarray()``, which have no
+    polars equivalent.  Everywhere else the backend stays polars.
+    """
+    return df.to_pandas() if isinstance(df, pl.DataFrame) else df
 
 
 # ============================================================================
@@ -117,11 +144,16 @@ def datatree_to_dataset(dt: xr.DataTree, sweep: str | int) -> xr.Dataset:
 
 def datatree_to_dataframe(
     dt: xr.DataTree, max_workers: int = 1
-) -> pd.DataFrame:
-    """Flatten a DataTree into a single pandas DataFrame.
+) -> "pl.DataFrame":
+    """Flatten a DataTree into a single **polars** DataFrame.
 
     Each sweep is converted independently and concatenated, with a ``sweep``
     column indicating the source sweep number.
+
+    ``xarray.Dataset.to_dataframe`` only emits pandas, so each sweep is
+    flattened through pandas and the whole volume is handed to polars in a
+    single conversion at the end — the xarray seam is the one place pandas is
+    unavoidable.
     """
     names = list_sweep_names(dt)
 
@@ -136,13 +168,17 @@ def datatree_to_dataframe(
         with concurrent.futures.ThreadPoolExecutor(max_workers) as ex:
             list_df = list(ex.map(_flatten, names))
 
-    return pd.concat(list_df, ignore_index=True)
+    return pl.from_pandas(pd.concat(list_df, ignore_index=True))
 
 
 def _save_polar_parquet(
-    df_polar: pd.DataFrame, radar: str, base_path: str
+    df_polar: "pl.DataFrame | pd.DataFrame", radar: str, base_path: str
 ) -> str:
-    """Save a POLAR DataFrame to the standard directory layout."""
+    """Save a POLAR DataFrame to the standard directory layout.
+
+    Accepts polars (the native write-path format) or pandas.
+    """
+    df_polar = _to_polars_frame(df_polar)
     vol_time = pd.to_datetime(df_polar["time"].min())
     save_dir = (
         Path(base_path)
@@ -154,7 +190,7 @@ def _save_polar_parquet(
     save_dir.mkdir(parents=True, exist_ok=True)
     ts = vol_time.strftime("%Y%m%d_%H%M%S")
     pp = save_dir / f"{radar}_{ts}_POL.parquet"
-    df_polar.to_parquet(pp, index=False, engine="pyarrow")
+    df_polar.write_parquet(pp)
     return str(pp)
 
 
@@ -172,7 +208,9 @@ def _cast_hc_column(arr, shift: int = 0) -> np.ndarray:
     return arr_f.astype(np.float32)
 
 
-def _compute_gate_temperature(df: pd.DataFrame, mask: np.ndarray) -> np.ndarray | None:
+def _compute_gate_temperature(
+    df: "pl.DataFrame | pd.DataFrame", mask: np.ndarray
+) -> np.ndarray | None:
     """Compute temperature (°C) at surviving gates using standard lapse rate.
 
     TEMP = _LAPSE_RATE x (gate_altitude - HZT)
@@ -184,25 +222,25 @@ def _compute_gate_temperature(df: pd.DataFrame, mask: np.ndarray) -> np.ndarray 
     if not geom_required.issubset(df.columns):
         return None
     n        = int(mask.sum())
-    r        = df["range"].to_numpy()[mask]
-    el_rad   = np.deg2rad(df["elevation"].to_numpy()[mask])
-    site_alt = df["altitude"].to_numpy()[mask]
+    r        = _col(df, "range")[mask]
+    el_rad   = np.deg2rad(_col(df, "elevation")[mask])
+    site_alt = _col(df, "altitude")[mask]
     ke, Re   = 4.0 / 3.0, 6_371_000.0
     z_gate   = np.sqrt(r**2 + (ke * Re)**2 + 2 * r * ke * Re * np.sin(el_rad)) - ke * Re
     gate_alt = site_alt + z_gate
     if "HZT" not in df.columns:
         return np.full(n, np.nan, dtype=np.float32)
-    hzt = df["HZT"].to_numpy()[mask]
+    hzt = _col(df, "HZT")[mask]
     return (_LAPSE_RATE * (gate_alt - hzt)).astype(np.float32)
 
 
 def _build_polar_dataframe(
-    df: pd.DataFrame,
+    df: "pl.DataFrame | pd.DataFrame",
     radar: str,
     filter_feature: str,
     filter_threshold: float,
     filter_logic: str,
-) -> tuple[pd.DataFrame, np.ndarray]:
+) -> tuple["pl.DataFrame", np.ndarray]:
     """Filter a flattened volume DataFrame and attach gate_ids.
 
     Rows that do not satisfy ``filter_feature [filter_logic] filter_threshold``
@@ -220,7 +258,7 @@ def _build_polar_dataframe(
     fn = resolve_filter_logic(filter_logic)
 
     if filter_feature in df.columns:
-        mask = fn(df[filter_feature].to_numpy(), filter_threshold)
+        mask = fn(_col(df, filter_feature), filter_threshold)
     else:
         logger.warning(
             "filter_feature '%s' not found in DataFrame; keeping all gates.",
@@ -230,9 +268,9 @@ def _build_polar_dataframe(
 
     gate_ids = encode_gate_ids(
         radar,
-        df["sweep"].to_numpy(dtype=np.int64)[mask],
-        df["azimuth"].to_numpy(dtype=np.float64)[mask],
-        df["range"].to_numpy()[mask],
+        _col(df, "sweep", np.int64)[mask],
+        _col(df, "azimuth", np.float64)[mask],
+        _col(df, "range")[mask],
     )
 
     hzt_available = "HZT" in df.columns
@@ -242,8 +280,8 @@ def _build_polar_dataframe(
         and c != "gate_id"
         and not (c == "HC_PYART" and not hzt_available)
     ]
-    df_polar = pd.DataFrame(
-        {"gate_id": gate_ids, **{c: df[c].to_numpy()[mask] for c in polar_cols}},
+    df_polar = pl.DataFrame(
+        {"gate_id": gate_ids, **{c: _col(df, c)[mask] for c in polar_cols}},
     )
     return df_polar, mask
 
@@ -496,21 +534,29 @@ def archive_volumes_multi_radar(
 
 
 def _finalize_polar_dtypes(
-    df_polar: pd.DataFrame, df: pd.DataFrame, mask: np.ndarray
-) -> pd.DataFrame:
+    df_polar: "pl.DataFrame | pd.DataFrame",
+    df: "pl.DataFrame | pd.DataFrame",
+    mask: np.ndarray,
+) -> "pl.DataFrame":
     """Apply dtype optimisations and add the TEMP column.
 
     HC columns are shifted +1 to the 1-based parquet scale; all polar
     variables are cast to float32; TEMP is computed from gate geometry + HZT.
     """
-    for col in list(df_polar.columns):
+    df_polar = _to_polars_frame(df_polar)
+
+    updates = []
+    for col in df_polar.columns:
         if col in ("HC_MCH", "HC_PYART"):
-            df_polar[col] = _cast_hc_column(df_polar[col], shift=1)
+            updates.append(pl.Series(col, _cast_hc_column(df_polar[col].to_numpy(), shift=1)))
         elif col in _POLAR_FLOAT32_COLS:
-            df_polar[col] = df_polar[col].astype(np.float32)
+            updates.append(pl.col(col).cast(pl.Float32))
+    if updates:
+        df_polar = df_polar.with_columns(updates)
+
     temp = _compute_gate_temperature(df, mask)
     if temp is not None:
-        df_polar["TEMP"] = temp
+        df_polar = df_polar.with_columns(pl.Series("TEMP", temp))
     return df_polar
 
 
@@ -553,8 +599,8 @@ def parquet_to_dataframe(
     end_time: str | pd.Timestamp | None = None,
     columns: list[str] | None = None,
     merge_lut: bool = False,
-) -> pd.DataFrame:
-    """Load archived POLAR parquet files as a single DataFrame.
+) -> "pl.DataFrame":
+    """Load archived POLAR parquet files as a single **polars** DataFrame.
 
     Parameters
     ----------
@@ -572,7 +618,7 @@ def parquet_to_dataframe(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         Includes a ``volume_time`` column (the volume timestamp parsed from each
         source filename) so a multi-volume frame can be split back into single
         volumes — used by :func:`dataframe_to_datatree` / PPI plotting.
@@ -580,7 +626,7 @@ def parquet_to_dataframe(
     radar_path = Path(base_path) / radar
     if not radar_path.exists():
         logger.warning(f"Radar directory not found: {radar_path}")
-        return pd.DataFrame()
+        return pl.DataFrame()
 
     polar_files = _find_polar_files_in_range(radar_path, start_time, end_time)
 
@@ -589,7 +635,7 @@ def parquet_to_dataframe(
             f"No POLAR data found for radar {radar} "
             f"between {start_time} and {end_time}"
         )
-        return pd.DataFrame()
+        return pl.DataFrame()
 
     if columns is not None:
         # ``volume_time`` / ``radar`` are derived below (and in RadDB.open), not
@@ -600,26 +646,31 @@ def parquet_to_dataframe(
     dfs = []
     for f in polar_files:
         try:
-            df = pd.read_parquet(f, columns=columns, engine="pyarrow")
+            df = pl.read_parquet(f, columns=columns)
             # Tag each row with its volume timestamp (from the filename) so a
             # multi-volume DataFrame can later be split back into single volumes
             # (per-gate `time` spans the whole ~5 min scan and cannot separate
             # back-to-back volumes reliably).
-            df["volume_time"] = _parse_pol_time(f)
+            vt = _parse_pol_time(f)
+            df = df.with_columns(
+                pl.lit(vt.tz_localize(None) if vt is not None else None)
+                .cast(pl.Datetime("ns"))
+                .alias("volume_time")
+            )
             dfs.append(df)
         except Exception as e:
             logger.warning(f"Error reading {f}: {e}")
             continue
 
     if not dfs:
-        return pd.DataFrame()
+        return pl.DataFrame()
 
-    df_all = pd.concat(dfs, ignore_index=True)
+    df_all = pl.concat(dfs, how="vertical_relaxed")
 
     if merge_lut:
         lut_path = radar_path / "LUT" / f"{radar}_LUT.parquet"
         if lut_path.exists():
-            lut_df = pd.read_parquet(lut_path, engine="pyarrow")
+            lut_df = pl.read_parquet(lut_path)
             lut_cols = [
                 "gate_id",
                 "sweep",
@@ -637,7 +688,10 @@ def parquet_to_dataframe(
             # (e.g. x_2056, y_2056 for Swiss LV95 / EPSG:2056)
             lut_cols += _projection_columns(lut_df)
             lut_cols = [c for c in lut_cols if c in lut_df.columns]
-            df_all = df_all.merge(lut_df[lut_cols], on="gate_id", how="left")
+            # maintain_order="left" reproduces pandas' left-merge row order.
+            df_all = df_all.join(
+                lut_df.select(lut_cols), on="gate_id", how="left", maintain_order="left"
+            )
         else:
             logger.warning(
                 f"LUT not found at {lut_path}. "
@@ -683,8 +737,6 @@ def scan_polar_parquet(
         ``None`` when no volume matches — callers decide what an empty result
         means.  The frame carries a ``volume_time`` and a ``radar`` column.
     """
-    import polars as pl
-
     radar_path = Path(base_path) / radar
     if not radar_path.exists():
         logger.warning(f"Radar directory not found: {radar_path}")
@@ -819,7 +871,7 @@ _NON_GATE_METADATA_COLS = ("radar", "volume_time")
 
 
 def dataframe_to_datatree(
-    df: pd.DataFrame,
+    df: "pl.DataFrame | pd.DataFrame",
     radar: str,
     base_path: str | Path,
     label_column: str = "DBZH",
@@ -873,6 +925,9 @@ def dataframe_to_datatree(
         raise FileNotFoundError(f"LUT not found at {lut_path}. Run generate_lut() first.")
     if not info_path.exists():
         raise FileNotFoundError(f"Radar info not found at {info_path}.")
+
+    # xarray seam: reconstruction below needs pandas indexing/reindexing.
+    df = _to_pandas_frame(df)
     if df.empty:
         raise ValueError("dataframe_to_datatree: input DataFrame is empty.")
 
@@ -918,23 +973,28 @@ def labels_to_dataframe(
     labels: np.ndarray,
     gate_ids,
     extra_columns: dict | None = None,
-) -> pd.DataFrame:
-    """Create a DataFrame from prediction labels and gate IDs."""
-    df = pd.DataFrame({"gate_id": gate_ids, "hydrometeor_class": labels})
+) -> "pl.DataFrame":
+    """Create a **polars** DataFrame from prediction labels and gate IDs."""
+    data = {"gate_id": np.asarray(gate_ids), "hydrometeor_class": np.asarray(labels)}
     if extra_columns:
-        for k, v in extra_columns.items():
-            df[k] = v
-    return df
+        data.update(extra_columns)
+    return pl.DataFrame(data)
 
 
 def join_labels_with_lut(
-    df_labels: pd.DataFrame, lut_path: str | Path
-) -> pd.DataFrame:
-    """Join label data with the LUT to recover spatial coordinates."""
-    df_lut = pd.read_parquet(str(lut_path), engine="pyarrow")
+    df_labels: "pl.DataFrame | pd.DataFrame", lut_path: str | Path
+) -> "pl.DataFrame":
+    """Join label data with the LUT to recover spatial coordinates.
+
+    Accepts a polars or pandas label frame; always returns polars.
+    """
+    df_labels = _to_polars_frame(df_labels)
+    df_lut = pl.read_parquet(str(lut_path))
     cols = [c for c in df_labels.columns if c != "gate_id"]
-    return df_lut.merge(
-        df_labels[["gate_id"] + cols], on="gate_id", how="left"
+    # maintain_order="left" reproduces pandas' left-merge row order.
+    return df_lut.join(
+        df_labels.select(["gate_id", *cols]), on="gate_id", how="left",
+        maintain_order="left",
     )
 
 
@@ -955,9 +1015,9 @@ def _get_sweep_coords(sweep, radar_info):
 
 
 def reconstruct_sweep_dataset(
-    df_joined: pd.DataFrame,
+    df_joined: "pl.DataFrame | pd.DataFrame",
     sweep: int,
-    lut_df: pd.DataFrame,
+    lut_df: "pl.DataFrame | pd.DataFrame",
     radar_info: dict,
     label_column: str = "hydrometeor_class",
     sweep_corners: dict | None = None,
@@ -974,6 +1034,10 @@ def reconstruct_sweep_dataset(
     shape ``(n_az+1, n_range+1)`` are attached as data_vars for pcolormesh
     rendering with ``shading="flat"``.
     """
+    # xarray seam: MultiIndex reindexing + to_xarray() are pandas-only.
+    df_joined = _to_pandas_frame(df_joined)
+    lut_df = _to_pandas_frame(lut_df)
+
     df_sweep = df_joined[df_joined["sweep"] == sweep].copy()
 
     # Identify spatial columns that should come from the LUT (always populated)
@@ -1017,13 +1081,18 @@ def reconstruct_sweep_dataset(
 
 
 def reconstruct_datatree(
-    df_joined: pd.DataFrame,
+    df_joined: "pl.DataFrame | pd.DataFrame",
     lut_path: str | Path,
     radar_info_path: str | Path,
     label_column: str = "hydrometeor_class",
     max_workers: int = 1,
 ) -> xr.DataTree:
-    """Reconstruct a full DataTree from joined data + LUT + radar info."""
+    """Reconstruct a full DataTree from joined data + LUT + radar info.
+
+    Accepts a polars or pandas ``df_joined``; pandas is used internally because
+    this is the xarray seam (see :func:`_to_pandas_frame`).
+    """
+    df_joined = _to_pandas_frame(df_joined)
     lut_df = pd.read_parquet(str(lut_path), engine="pyarrow")
     with open(str(radar_info_path)) as f:
         radar_info = yaml.safe_load(f)
@@ -1085,15 +1154,18 @@ def reconstruct_datatree(
 # ============================================================================
 
 def add_feature_to_df(
-    df: pd.DataFrame,
+    df: "pl.DataFrame | pd.DataFrame",
     feature_name: str,
     compute_fn: callable,
-) -> pd.DataFrame:
+) -> "pl.DataFrame | pd.DataFrame":
     """Add a new column to a DataFrame computed from existing columns.
+
+    Accepts polars or pandas and returns the **same kind**, so ``compute_fn``
+    receives the frame flavour the caller passed in.
 
     Parameters
     ----------
-    df : pd.DataFrame
+    df : pl.DataFrame or pd.DataFrame
         Input DataFrame (e.g. from :func:`parquet_to_dataframe`).
     feature_name : str
         Name of the new column to add.
@@ -1106,9 +1178,11 @@ def add_feature_to_df(
 
     Returns
     -------
-    pd.DataFrame
-        Copy of ``df`` with the new column appended.
+    pl.DataFrame or pd.DataFrame
+        Copy of ``df`` (same kind) with the new column appended.
     """
+    if isinstance(df, pl.DataFrame):
+        return df.with_columns(pl.Series(feature_name, np.asarray(compute_fn(df))))
     df = df.copy()
     df[feature_name] = compute_fn(df)
     return df

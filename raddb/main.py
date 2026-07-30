@@ -61,9 +61,12 @@ from raddb.aoi import (
 from raddb.lut import (
     RADAR_TO_IDX,
     generate_lut_from_datatree,
+    gate_corner_table,
+    load_plane_nodes,
     load_radar_lut,
     load_radar_info,
     add_lut_projection,
+    cartesian_to_geographic,
 )
 
 logger = logging.getLogger(__name__)
@@ -134,6 +137,128 @@ def _filter_expr(var: str, logic: str, threshold) -> "pl.Expr":
             f"Unknown filter logic {logic!r}; use one of {sorted(ops)}."
         )
     return ops[logic]
+
+
+# ---------------------------------------------------------------------------
+# .sel() support — xarray-style label selection
+# ---------------------------------------------------------------------------
+
+#: Convenience aliases accepted by :meth:`RadDB.sel`.  Resolved only *after* the
+#: literal name fails to match a data or LUT column, so a real column always wins.
+_SEL_ALIASES: dict[str, str] = {
+    "radars": "radar",
+    "lat": "latitude",
+    "lats": "latitude",
+    "lon": "longitude",
+    "long": "longitude",
+    "lons": "longitude",
+    "alt": "altitude",
+    "altitudes": "altitude",
+    "sweeps": "sweep",
+    "azimuths": "azimuth",
+    "ranges": "range",
+    "elevation": "elevation_angle",
+    "elevations": "elevation_angle",
+    "times": "time",
+}
+
+#: Columns that carry a timestamp — selection on these accepts partial strings.
+_TIME_COLUMNS = frozenset({"time", "volume_time"})
+
+
+def _is_time_dtype(dtype) -> bool:
+    return dtype in (pl.Datetime, pl.Date) or isinstance(dtype, (pl.Datetime, pl.Date))
+
+
+def _time_bound(value, dtype, *, upper: bool):
+    """Coerce ``value`` to a timestamp comparable with a column of ``dtype``.
+
+    A *partial* string expands to the edge of the period it names, matching
+    pandas/xarray partial-string indexing: ``"2022-01"`` becomes
+    ``2022-01-01 00:00:00`` as a lower bound and ``2022-01-31 23:59:59.999…``
+    as an upper bound.  The result's tz-awareness is matched to the column.
+    """
+    if isinstance(value, (datetime.datetime, datetime.date, np.datetime64, pd.Timestamp)):
+        ts = pd.Timestamp(value)
+    else:
+        s = str(value).strip()
+        if upper:
+            try:
+                ts = pd.Period(s).end_time
+            except Exception:
+                ts = pd.Timestamp(s)
+        else:
+            try:
+                ts = pd.Period(s).start_time
+            except Exception:
+                ts = pd.Timestamp(s)
+
+    tz = getattr(dtype, "time_zone", None)
+    if tz:
+        ts = ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert(tz)
+    elif ts.tzinfo is not None:
+        ts = ts.tz_convert("UTC").tz_localize(None)
+    return ts
+
+
+def _sel_expr(name: str, value, dtype) -> "pl.Expr":
+    """Build the boolean expression selecting ``value`` on column ``name``.
+
+    ``value`` may be a ``slice`` (inclusive on both ends, as in xarray), a
+    list/tuple/set (membership), or a scalar (equality — or the enclosing period
+    for a timestamp column, so ``time="2024-08-26 02:46:08"`` still matches a
+    row stored as ``02:46:08.050``).
+    """
+    col = pl.col(name)
+    is_time = _is_time_dtype(dtype)
+
+    def bound(v, upper):
+        return _time_bound(v, dtype, upper=upper) if is_time else v
+
+    if isinstance(value, slice):
+        if value.step is not None:
+            raise ValueError(
+                f"sel({name}=...): a step is not supported (got step={value.step!r}); "
+                "use a plain slice(start, stop)."
+            )
+        parts = []
+        if value.start is not None:
+            parts.append(col >= bound(value.start, False))
+        if value.stop is not None:
+            parts.append(col <= bound(value.stop, True))
+        if not parts:
+            return pl.lit(True)
+        expr = parts[0]
+        for p in parts[1:]:
+            expr = expr & p
+        return expr
+
+    if isinstance(value, (list, tuple, set, frozenset, np.ndarray, pl.Series)):
+        vals = [v for v in (value.to_list() if isinstance(value, pl.Series) else list(value))]
+        if is_time:
+            # a list of timestamps/partial strings -> union of their periods
+            expr = None
+            for v in vals:
+                one = (col >= bound(v, False)) & (col <= bound(v, True))
+                expr = one if expr is None else (expr | one)
+            return pl.lit(False) if expr is None else expr
+        return col.is_in(vals)
+
+    if is_time:
+        return (col >= bound(value, False)) & (col <= bound(value, True))
+    return col == value
+
+
+def _ccw_polygons(polys: np.ndarray) -> np.ndarray:
+    """Force counter-clockwise exterior rings, as GeoParquet/GeoArrow prefer.
+
+    The gate corner order is deterministically clockwise (inherited from the
+    reference prototype), so serialised output needs flipping.
+    """
+    if hasattr(shapely, "orient_polygons"):        # shapely >= 2.1
+        return shapely.orient_polygons(polys)
+    ccw = shapely.is_ccw(shapely.get_exterior_ring(polys))
+    return np.where(ccw, polys, shapely.reverse(polys))
 
 
 def _resolve_filters(filters) -> list[tuple[str, str, float]]:
@@ -597,6 +722,158 @@ class RadDB:
         lut_df = load_radar_lut(normalize_radar_name(radar), self._require_archive_dir())
         return add_lut_projection(lut_df, epsg=epsg, crs=crs)
 
+    def get_h_plane(
+        self, radar: str, sweep: int | None = None, per_gate: bool = False
+    ) -> "pl.DataFrame":
+        """Horizontal-face geometry of each gate — the precise PPI footprint.
+
+        ``per_gate=False`` (default) returns the compact **node lattice** as
+        stored: ``sweep, az_idx, rng_idx, x, y`` (+ ``x_<epsg>, y_<epsg>`` when
+        the LUT was generated with a projection).  Neighbouring gates share
+        nodes, which is why the file is ~4x smaller than per-gate corners.
+
+        ``per_gate=True`` expands it to **4 corners per gate**, keyed by
+        ``gate_id``: ``x_1..x_4``, ``y_1..y_4`` in ring order.  Feed straight to
+        ``matplotlib.collections.PolyCollection`` or ``shapely.polygons``.
+
+        Note the first range bin is degenerate: its inner edge falls at the radar
+        (range_start ~= dR), so its footprint is a triangle rather than a
+        trapezoid.
+        """
+        radar = normalize_radar_name(radar)
+        base = self._require_archive_dir()
+        if per_gate:
+            return gate_corner_table(radar, base, kind="h_plane", sweep=sweep)
+        return load_plane_nodes(radar, base, "h_plane", sweep=sweep)
+
+    def get_v_plane(
+        self,
+        radar: str,
+        sweep: int | None = None,
+        azimuth: float | None = None,
+        per_gate: bool = False,
+    ) -> "pl.DataFrame":
+        """Vertical-face geometry of each gate — the precise RHI footprint.
+
+        Coordinates are ``(d, z)``: ``d`` is the ground distance from the radar
+        [m] and altitude is given **both ways** — ``z_asl`` (absolute, m above sea
+        level) and ``z_rel`` (relative to the radar).  They differ by the site
+        altitude in ``{radar}_info.yaml``.
+
+        ``per_gate=True`` returns 4 corners per gate ordered
+        (near-bottom, far-bottom, far-top, near-top): ``d_1..d_4``,
+        ``z_asl_1..z_asl_4``, ``z_rel_1..z_rel_4``.
+
+        ``azimuth`` keeps only the ray nearest that azimuth (requires
+        ``per_gate=True``), which is exactly the slice an RHI plots.
+        """
+        radar = normalize_radar_name(radar)
+        base = self._require_archive_dir()
+        if not per_gate:
+            if azimuth is not None:
+                raise ValueError("azimuth= selection requires per_gate=True.")
+            return load_plane_nodes(radar, base, "v_plane", sweep=sweep)
+
+        tbl = gate_corner_table(radar, base, kind="v_plane", sweep=sweep)
+        if azimuth is None:
+            return tbl
+        # Pick the nearest stored ray, comparing on the circle.
+        lut = load_radar_lut(radar, base).select(["gate_id", "azimuth"])
+        az = lut["azimuth"].to_numpy()
+        target = float(azimuth) % 360.0
+        diff = np.abs((az - target + 180.0) % 360.0 - 180.0)
+        nearest = float(az[np.argmin(diff)])
+        keep = lut.filter(pl.col("azimuth") == nearest).select("gate_id")
+        return tbl.join(keep, on="gate_id", how="semi")
+
+    def get_corners(
+        self, radar: str, sweep: int | None = None, per_gate: bool = False
+    ) -> "pl.DataFrame":
+        """Full 3-D gate corners — 8 per gate, for volume reconstruction.
+
+        ``per_gate=True`` returns ``x_1..x_8``, ``y_1..y_8``, ``z_rel_1..z_rel_8``
+        where **1-4 are the near face** (towards the radar) and **5-8 the far
+        face**; within a face the order is (az-, el-), (az+, el-), (az+, el+),
+        (az-, el+).
+
+        Because the beam's angular extent grows with range, the far face is
+        strictly larger than the near face — a useful invariant to assert.  The
+        one exception is the first range bin, whose near face collapses onto the
+        radar itself.
+
+        Add the site altitude from :meth:`get_radar_info` to ``z_rel`` for metres
+        above sea level.
+        """
+        radar = normalize_radar_name(radar)
+        base = self._require_archive_dir()
+        if per_gate:
+            return gate_corner_table(radar, base, kind="corners", sweep=sweep)
+        return load_plane_nodes(radar, base, "corners", sweep=sweep)
+
+    def export_h_plane_geoparquet(
+        self,
+        radar: str,
+        path: str | Path,
+        sweep: int | None = None,
+        epsg: int | None = None,
+    ) -> str:
+        """Write the horizontal gate footprints as **GeoParquet** (CRS embedded).
+
+        The archive keeps plain parquet — small and uniform.  This is the opt-in
+        interoperability path: the output opens directly in QGIS or
+        ``geopandas.read_parquet``.
+
+        ``epsg`` selects the output CRS: the LUT's projected columns when they
+        exist and match, otherwise WGS-84 (4326) derived from the radar-relative
+        ``x``/``y``.  Exterior rings are normalised counter-clockwise, as the
+        GeoParquet spec prefers.
+        """
+        import geopandas as gpd
+
+        radar = normalize_radar_name(radar)
+        base = self._require_archive_dir()
+        tbl = gate_corner_table(radar, base, kind="h_plane", sweep=sweep)
+
+        if epsg is None:
+            epsg = int(self._crs) if isinstance(self._crs, int) else None
+
+        xs = [f"x_{epsg}_{k}" for k in range(1, 5)] if epsg else []
+        if xs and all(c in tbl.columns for c in xs):
+            xcols = xs
+            ycols = [f"y_{epsg}_{k}" for k in range(1, 5)]
+            out_crs = f"EPSG:{epsg}"
+        else:
+            # Fall back to WGS-84 from the radar-relative metres.
+            info = load_radar_info(radar, base)
+            ring = np.stack([
+                np.stack([tbl[f"x_{k}"].to_numpy(), tbl[f"y_{k}"].to_numpy()], axis=1)
+                for k in range(1, 5)
+            ], axis=1)
+            lat, lon, _ = cartesian_to_geographic(
+                ring[:, :, 0], ring[:, :, 1], np.zeros(ring.shape[:2]),
+                info["latitude"], info["longitude"], info["altitude"],
+            )
+            ring = np.concatenate([np.stack([lon, lat], axis=2),
+                                   np.stack([lon[:, :1], lat[:, :1]], axis=2)], axis=1)
+            gdf = gpd.GeoDataFrame(
+                {"gate_id": tbl["gate_id"].to_numpy(), "sweep": tbl["sweep"].to_numpy()},
+                geometry=_ccw_polygons(shapely.polygons(ring)), crs="EPSG:4326",
+            )
+            gdf.to_parquet(path)
+            return str(path)
+
+        ring = np.stack([
+            np.stack([tbl[xc].to_numpy(), tbl[yc].to_numpy()], axis=1)
+            for xc, yc in zip(xcols, ycols)
+        ], axis=1)
+        ring = np.concatenate([ring, ring[:, :1, :]], axis=1)   # close the ring
+        gdf = gpd.GeoDataFrame(
+            {"gate_id": tbl["gate_id"].to_numpy(), "sweep": tbl["sweep"].to_numpy()},
+            geometry=_ccw_polygons(shapely.polygons(ring)), crs=out_crs,
+        )
+        gdf.to_parquet(path)
+        return str(path)
+
     def list_radars(self) -> list[str]:
         """List radar identifiers that have data in the archive."""
         return _list_archive_radars(self._require_archive_dir())
@@ -821,6 +1098,166 @@ class RadDB:
             data = data.drop(borrowed)
         return self._derive(data)
 
+    def _lut_paths(self) -> dict[str, Path]:
+        """``{radar: LUT parquet path}`` for the radars present in the data."""
+        archive_dir = self._require_archive_dir()
+        out = {}
+        for r in self.radars():
+            rr = normalize_radar_name(r)
+            p = Path(archive_dir) / rr / "LUT" / f"{rr}_LUT.parquet"
+            if p.exists():
+                out[rr] = p
+        return out
+
+    def _lut_column_names(self) -> list[str]:
+        """LUT column names, read from the parquet **schema** (no data loaded)."""
+        for p in self._lut_paths().values():
+            return list(pl.scan_parquet(p).collect_schema().names())
+        return []
+
+    def _borrow_lut_columns(self, cols: list[str]) -> "pl.DataFrame":
+        """Load ``cols`` from the LUT for the gates present, keyed by ``gate_id``.
+
+        The general form of :meth:`_gate_geometry` (which exposes only
+        lon/lat/alt/sweep): this can borrow **any** LUT column — ``range``,
+        ``azimuth``, ``elevation_angle``, ``x``/``y``/``z`` … .  Column
+        projection is pushed into the parquet reader, and the result is
+        restricted to the gates currently in ``.data``, so the geometry stays
+        synchronised with the (possibly already filtered) values.
+        """
+        paths = self._lut_paths()
+        if not paths:
+            raise ValueError(
+                "no LUT found for the radars in this data; cannot select on "
+                f"static columns {cols}."
+            )
+        present = self._require_data().select("gate_id").unique()
+        parts = []
+        for p in paths.values():
+            names = pl.scan_parquet(p).collect_schema().names()
+            keep = ["gate_id", *[c for c in cols if c in names and c != "gate_id"]]
+            parts.append(
+                pl.scan_parquet(p).select(keep).join(present.lazy(), on="gate_id", how="semi")
+            )
+        return pl.concat(parts, how="vertical_relaxed").collect().unique(
+            subset="gate_id", maintain_order=True
+        )
+
+    def sel(self, **indexers) -> "RadDB":
+        """Select gates by label, xarray-style; returns a **new** ``RadDB``.
+
+        Each keyword names a column and gives what to keep:
+
+        * ``slice(start, stop)`` — a range, **inclusive of both ends** (as in
+          ``xarray.Dataset.sel``, not like Python list slicing).  Either end may
+          be ``None`` to leave it open.  A ``step`` is rejected.
+        * a list / tuple / set — membership, e.g. ``radars=["A", "L"]``.
+        * a scalar — equality.  For a timestamp column a scalar (or a *partial*
+          string) selects the whole period it names, so
+          ``time="2024-08-26 02:46:08"`` still matches a row stored as
+          ``02:46:08.050``, and ``time="2024-08"`` selects that month.
+
+        Dynamic columns (``DBZH``, ``ZDR``, ``time`` …) are matched directly.
+        **Static/geometry columns come from the LUT** (``latitude``,
+        ``longitude``, ``altitude``, ``range``, ``azimuth``, ``sweep``,
+        ``elevation_angle``, ``x``/``y``/``z``, ``x_<epsg>``/``y_<epsg>``): they
+        are borrowed from the LUT only for as long as the predicate needs them
+        and then dropped, so the returned object still carries **dynamic values
+        only** — the LUT is never concatenated onto the data.  Because the LUT is
+        always re-derived for the gates currently present, it stays in sync
+        automatically after any number of chained selections.
+
+        Aliases are accepted when they do not collide with a real column:
+        ``radars``→``radar``, ``lat``→``latitude``, ``lon``→``longitude``,
+        ``alt``→``altitude``, ``ranges``→``range``, ``sweeps``→``sweep``,
+        ``elevation``→``elevation_angle``.
+
+        All keywords are combined with **AND**.  The original object is never
+        modified.
+
+        Examples
+        --------
+        >>> rdf.sel(time=slice("2021-02", "2022-03"), DBZH=slice(0, 10))
+        >>> rdf.sel(time="2022-01-03 14:00:00")
+        >>> rdf.sel(radars=["A", "L"])
+        >>> rdf.sel(range=slice(10_000, 50_000))
+        >>> rdf.sel(lon=slice(8.0, 9.0), lat=slice(46.0, 47.0))
+
+        Raises
+        ------
+        KeyError
+            If a keyword matches neither a data column nor a LUT column.
+        """
+        if not indexers:
+            return self._derive(self._require_data())
+
+        data = self._require_data()
+        lut_names = None  # loaded lazily, only if a static column is requested
+
+        resolved: list[tuple[str, object]] = []   # (column, value)
+        static: list[str] = []
+        radar_from_gate_id = None
+
+        for key, value in indexers.items():
+            name = key
+            if name not in data.columns:
+                if lut_names is None:
+                    lut_names = self._lut_column_names()
+                if name not in lut_names:
+                    alias = _SEL_ALIASES.get(name)
+                    if alias and (alias in data.columns or alias in lut_names):
+                        name = alias
+                    elif alias == "radar" or name in ("radar", "radars"):
+                        # no radar column stored -> select via the gate_id prefix
+                        radar_from_gate_id = value
+                        continue
+                    elif name in _TIME_COLUMNS or _SEL_ALIASES.get(name) in _TIME_COLUMNS:
+                        try:
+                            name = self._time_column()
+                        except KeyError:
+                            raise KeyError(
+                                f"sel({key}=...): data has no time column."
+                            ) from None
+                    else:
+                        raise KeyError(
+                            f"sel({key}=...): {name!r} is neither a data column "
+                            f"{sorted(data.columns)} nor a LUT column {sorted(lut_names)}."
+                        )
+            if name not in data.columns:
+                static.append(name)
+            resolved.append((name, value))
+
+        # Borrow the static columns just long enough to evaluate their predicates.
+        borrowed: list[str] = []
+        if static:
+            lut_tbl = self._borrow_lut_columns(sorted(set(static)))
+            borrowed = [c for c in dict.fromkeys(static) if c in lut_tbl.columns]
+            still_missing = [c for c in static if c not in borrowed]
+            if still_missing:
+                raise KeyError(
+                    f"sel(): LUT has no column(s) {still_missing}; "
+                    f"available: {sorted(lut_tbl.columns)}."
+                )
+            data = data.join(
+                lut_tbl.select(["gate_id", *borrowed]), on="gate_id", how="left",
+                maintain_order="left",
+            )
+
+        for name, value in resolved:
+            data = data.filter(_sel_expr(name, value, data.schema[name]))
+
+        if radar_from_gate_id is not None:
+            wanted = (
+                [radar_from_gate_id] if isinstance(radar_from_gate_id, str)
+                else list(radar_from_gate_id)
+            )
+            idx = [RADAR_TO_IDX[normalize_radar_name(r)] for r in wanted]
+            data = data.filter((pl.col("gate_id") // 1_000_000_000_000).is_in(idx))
+
+        if borrowed:
+            data = data.drop(borrowed)
+        return self._derive(data)
+
     def add_feature(self, name: str, compute_fn) -> "RadDB":
         """Add a computed column ``name`` and return a new RadDB.
 
@@ -956,36 +1393,45 @@ class RadDB:
         - ``radar`` — inferred when the data covers exactly one radar, else required.
         - ``timestep`` — nearest ``volume_time``; required only when several volumes.
         """
-        df = self.to_pandas()
-        if "gate_id" not in df.columns:
+        # Radar/volume selection runs on the polars frame, so only the single
+        # selected volume crosses into pandas (inside dataframe_to_datatree),
+        # not the whole loaded dataset.
+        data = self._require_data()
+        if "gate_id" not in data.columns:
             raise KeyError("data has no 'gate_id' column; cannot reconstruct a DataTree.")
 
-        present = _radars_from_gate_ids(df["gate_id"])
+        present = _radars_from_gate_ids(data["gate_id"].to_numpy())
         if radar is None:
             if len(present) != 1:
                 raise ValueError(f"data spans radars {present}; pass radar= to pick one.")
             radar = present[0]
         radar = normalize_radar_name(radar)
 
-        if "radar" in df.columns:
-            df_r = df[df["radar"] == radar]
+        if "radar" in data.columns:
+            df_r = data.filter(pl.col("radar") == radar)
         else:
-            df_r = df[df["gate_id"].to_numpy() // 1_000_000_000_000 == RADAR_TO_IDX[radar]]
-        if df_r.empty:
+            df_r = data.filter(
+                (pl.col("gate_id") // 1_000_000_000_000) == RADAR_TO_IDX[radar]
+            )
+        if df_r.is_empty():
             raise ValueError(f"No rows for radar {radar!r} in data.")
 
-        if "volume_time" in df_r.columns and df_r["volume_time"].notna().any():
-            vols = pd.to_datetime(df_r["volume_time"]).dropna().unique()
+        if "volume_time" in df_r.columns and df_r["volume_time"].is_not_null().any():
+            vols = df_r["volume_time"].drop_nulls().unique().sort().to_list()
             if timestep is None:
                 if len(vols) != 1:
                     raise ValueError(f"data holds {len(vols)} volumes; pass timestep= to pick one.")
-                chosen = pd.Timestamp(vols[0])
+                chosen = vols[0]
             else:
                 ts = pd.to_datetime(timestep)
-                if ts.tzinfo is None:
+                # Match the tz-awareness of the stored volume_time before comparing.
+                aware = getattr(vols[0], "tzinfo", None) is not None
+                if aware and ts.tzinfo is None:
                     ts = ts.tz_localize("UTC")
-                chosen = min((pd.Timestamp(v) for v in vols), key=lambda v: abs(v - ts))
-            df_vol = df_r[pd.to_datetime(df_r["volume_time"]) == chosen]
+                elif not aware and ts.tzinfo is not None:
+                    ts = ts.tz_convert("UTC").tz_localize(None)
+                chosen = min(vols, key=lambda v: abs(pd.Timestamp(v) - ts))
+            df_vol = df_r.filter(pl.col("volume_time") == chosen)
         else:
             df_vol = df_r
 

@@ -168,3 +168,6 @@ log.txt
 raddb/mch/
 
 pyproject.toml
+
+# Local AI-assistant working notes (machine-local paths — not for the public repo)
+CLAUDE.md

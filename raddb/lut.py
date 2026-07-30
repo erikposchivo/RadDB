@@ -14,6 +14,7 @@ No pyart or radar_api dependency.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 import numpy as np
@@ -29,6 +30,45 @@ logger = logging.getLogger(__name__)
 # Maps single-letter radar identifiers to integer indices for numeric gate_id.
 # A=0, B=1, ..., Z=25  (26 radars supported)
 RADAR_TO_IDX: dict[str, int] = {chr(ord("A") + i): i for i in range(26)}
+
+#: Antenna 3 dB beamwidth in degrees, used for the gate's angular extent.
+#: 1.0 deg matches the MeteoSwiss Rad4Alp radars and the reference prototype
+#: (which hardcoded ``beta = deg2rad(0.5)`` as the *half* beamwidth).
+DEFAULT_BEAMWIDTH_DEG: float = 1.0
+
+#: The five files that make up a complete LUT directory for one radar.
+#: ``{radar}`` is substituted with the single-letter radar name.
+LUT_FILES: dict[str, str] = {
+    "lut": "{radar}_LUT.parquet",
+    "h_plane": "{radar}_h_plane_LUT.parquet",
+    "v_plane": "{radar}_v_plane_LUT.parquet",
+    "corners": "{radar}_corners_LUT.parquet",
+    "info": "{radar}_info.yaml",
+}
+
+
+def _projection_column_names(df) -> list[str]:
+    """``[x_<suffix>, y_<suffix>]`` present on a LUT frame, else ``[]``.
+
+    Local to this module: ``io_core._projection_columns`` does the same job but
+    importing it here would be circular (``io_core`` imports ``lut``).
+    """
+    xs = [c for c in df.columns if re.match(r"^x_\w+$", c)]
+    out: list[str] = []
+    for xc in xs:
+        yc = "y_" + xc[2:]
+        if yc in df.columns:
+            out += [xc, yc]
+    return out
+
+
+def lut_file_path(radar: str, kind: str, lut_base_path: str | Path) -> Path:
+    """Path of one of the five LUT files (see :data:`LUT_FILES`)."""
+    if kind not in LUT_FILES:
+        raise KeyError(f"unknown LUT file kind {kind!r}; use one of {sorted(LUT_FILES)}.")
+    return (
+        Path(lut_base_path) / radar / "LUT" / LUT_FILES[kind].format(radar=radar)
+    )
 
 
 # ============================================================================
@@ -186,7 +226,7 @@ def compute_gate_xyz(
     ranges: np.ndarray,
     azimuths: np.ndarray,
     elevations: np.ndarray,
-    ke: float = 1.25,
+    ke: float = 4.0 / 3.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Compute gate Cartesian coordinates from polar coordinates.
 
@@ -255,16 +295,40 @@ def generate_gate_id(
 # Generic LUT generation from DataTree
 # ============================================================================
 
+def _beamwidth_from_datatree(dt: xr.DataTree) -> float:
+    """Antenna beamwidth [deg] from the DataTree, else the package default.
+
+    Looks for the CfRadial/xradar attribute names on the root and on each sweep.
+    """
+    names = ("radar_beam_width_h", "beam_width_h", "beamwidth", "beamwidth_deg")
+    candidates = [dt.attrs, *(dt[s].attrs for s in list_sweep_names(dt))]
+    for attrs in candidates:
+        for nm in names:
+            if nm in attrs:
+                try:
+                    val = float(np.asarray(attrs[nm]).ravel()[0])
+                except (TypeError, ValueError):
+                    continue
+                if 0.0 < val < 20.0:      # sanity: a real antenna beamwidth
+                    return val
+    return DEFAULT_BEAMWIDTH_DEG
+
+
 def generate_lut_from_datatree(
     dt: xr.DataTree,
     radar: str,
     output_base_path: str,
-    ke: float = 1.25,
+    ke: float = 4.0 / 3.0,
     network: str = "",
     projection_epsg: int | None = None,
     projection_crs=None,
+    beamwidth_deg: float | None = None,
 ) -> str:
     """Generate a LUT from an xarray DataTree.
+
+    Writes the **five** files that make up a complete LUT directory
+    (see :data:`LUT_FILES`): the gate-centroid LUT, the horizontal-face and
+    vertical-face node lattices, the 3-D corner lattice, and the info YAML.
 
     This is the **generic** LUT generator — it works with any DataTree
     that has the standard xradar coordinate layout (azimuth, range,
@@ -283,7 +347,8 @@ def generate_lut_from_datatree(
     output_base_path : str
         Base directory for LUT storage.
     ke : float
-        Effective Earth radius scale factor (default 1.25 for Switzerland).
+        Effective Earth radius scale factor (default 4/3, the standard
+        atmosphere model — matches every other ``ke`` in the package).
     network : str, optional
         Network identifier stored in radar info YAML.
     projection_epsg : int, optional
@@ -292,6 +357,11 @@ def generate_lut_from_datatree(
         ``x_{epsg}`` / ``y_{epsg}`` columns via :func:`add_lut_projection`.
     projection_crs : pyproj.CRS or CRS-coercible, optional
         Alternative to ``projection_epsg``.
+    beamwidth_deg : float, optional
+        Antenna 3 dB beamwidth in degrees, defining the gate's angular extent.
+        Read from the DataTree's ``radar_beam_width_h`` / ``beamwidth`` attribute
+        when present, else :data:`DEFAULT_BEAMWIDTH_DEG` (1.0, the MeteoSwiss
+        value).
 
     Returns
     -------
@@ -302,9 +372,18 @@ def generate_lut_from_datatree(
     lut_path = lut_dir / f"{radar}_LUT.parquet"
     info_path = lut_dir / f"{radar}_info.yaml"
 
-    if lut_path.exists() and info_path.exists():
+    if beamwidth_deg is None:
+        beamwidth_deg = _beamwidth_from_datatree(dt)
+
+    # Skip only when *all five* files are present. An archive written before the
+    # geometry lattices existed has the LUT parquet + info YAML but not the three
+    # plane files, and must still be able to fill them in.
+    if all(
+        (lut_dir / tmpl.format(radar=radar)).exists() for tmpl in LUT_FILES.values()
+    ):
         logger.info(
-            "LUT already exists at %s -- skipping generation.", lut_path
+            "All %d LUT files already exist at %s -- skipping generation.",
+            len(LUT_FILES), lut_dir,
         )
         return str(lut_path)
 
@@ -314,6 +393,7 @@ def generate_lut_from_datatree(
 
     lut_dfs = []
     sweep_meta = {}
+    sweep_grids: dict[int, dict] = {}
     radar_lat, radar_lon, radar_alt = None, None, None
 
     for sweep_name in sweep_names:
@@ -352,7 +432,7 @@ def generate_lut_from_datatree(
         gate_rng = np.tile(ranges, n_az)
         gate_ids = encode_gate_ids(radar, sweep_idx, gate_az, gate_rng)
 
-        lut_dfs.append(pd.DataFrame({
+        lut_dfs.append(pl.DataFrame({
             "gate_id":         gate_ids,
             "sweep":           np.full(n_az * n_rng, sweep_idx, dtype=np.int32),
             "azimuth":         gate_az,
@@ -366,13 +446,30 @@ def generate_lut_from_datatree(
             "z":               z_raw.ravel(),
         }))
 
+        # Radial spacing from the sweep's own range grid -> dR = spacing / 2.
+        rng_res = (
+            float(np.median(np.diff(np.sort(ranges).astype(np.float64))))
+            if n_rng > 1 else float("nan")
+        )
         sweep_meta[sweep_idx] = {
             "n_azimuths": n_az,
             "n_ranges": n_rng,
+            "n_gates": int(n_az * n_rng),
             "elevation": round(elevation_angle, 2),
+            "range_resolution": round(rng_res, 3),
+            "range_start": round(float(np.min(ranges)), 3),
+            "dR": round(rng_res / 2.0, 3),
+        }
+        # Grids needed later for the corner/plane lattices — keep them so the
+        # lattices are built from the same arrays the centroids came from,
+        # rather than re-derived from the written parquet.
+        sweep_grids[sweep_idx] = {
+            "ranges": np.asarray(ranges, dtype=np.float64),
+            "azimuths": np.asarray(azimuths, dtype=np.float64),
+            "elevations": np.asarray(elevations, dtype=np.float64),
         }
 
-    df_lut = pd.concat(lut_dfs, ignore_index=True)
+    df_lut = pl.concat(lut_dfs, how="vertical")
     logger.info(
         "LUT built: %d total gates, %d sweeps.", len(df_lut), len(sweep_meta)
     )
@@ -383,37 +480,105 @@ def generate_lut_from_datatree(
             df_lut, epsg=projection_epsg, crs=projection_crs
         )
 
+    crs_info = None
+    proj_cols = _projection_column_names(df_lut)
+    if proj_cols:
+        epsg = None
+        if projection_epsg is not None:
+            epsg = int(projection_epsg)
+        else:
+            # suffix of x_<suffix> is the EPSG code when pyproj could detect one
+            suffix = proj_cols[0].split("_", 1)[1]
+            epsg = int(suffix) if suffix.isdigit() else None
+        crs_info = {"epsg": epsg, "columns": proj_cols}
+
     radar_info = {
         "radar": radar,
         "network": network,
         "latitude": radar_lat,
         "longitude": radar_lon,
         "altitude": radar_alt,
+        "crs": crs_info,
+        # Recorded for reproducibility: archives built before the ke 1.25 -> 4/3
+        # fix carry incompatible geometry, so the file must say which model
+        # produced it.
+        "ke": float(ke),
+        "beamwidth_deg": float(beamwidth_deg),
+        "n_sweeps": len(sweep_meta),
+        "n_gates": int(len(df_lut)),
         "sweeps": sweep_meta,
     }
 
-    return _save_lut_outputs(lut_dir, radar, df_lut, radar_info)
+    # ---- the three geometry lattices -------------------------------------
+    corners_by_sweep: dict[int, dict] = {}
+    for sweep_idx, g in sweep_grids.items():
+        corners_by_sweep[sweep_idx] = compute_sweep_corners(
+            ranges=g["ranges"], azimuths=g["azimuths"], elevations=g["elevations"],
+            radar_lat=radar_lat, radar_lon=radar_lon, radar_alt=radar_alt,
+            ke=ke, beamwidth_deg=beamwidth_deg,
+        )
+    planes = build_gate_planes(
+        corners_by_sweep,
+        radar_alt=radar_alt,
+        projection_epsg=projection_epsg,
+        projection_crs=projection_crs,
+    )
+
+    return _save_lut_outputs(lut_dir, radar, df_lut, radar_info, planes)
 
 
 # ============================================================================
 # LUT storage helpers
 # ============================================================================
 
-def _save_lut_outputs(lut_dir, radar, df_lut, radar_info):
-    """Save LUT parquet and radar info YAML to disk."""
+def _save_lut_outputs(lut_dir, radar, df_lut, radar_info, planes=None):
+    """Save the five LUT files to disk (see :data:`LUT_FILES`).
+
+    ``df_lut`` may be a polars frame (the native format since the LUT layer is
+    polars) or a pandas frame (accepted so external callers keep working).
+
+    ``planes`` is the :func:`build_gate_planes` output.  When ``None`` only the
+    LUT parquet and the info YAML are written (legacy two-file behaviour).
+
+    The idempotence gate checks **all** expected files: an archive written before
+    the geometry lattices existed still has its LUT parquet and info YAML, so the
+    three new files get filled in without rebuilding the centroids.
+    """
     lut_dir = Path(lut_dir)
     lut_dir.mkdir(parents=True, exist_ok=True)
-    lut_path = lut_dir / f"{radar}_LUT.parquet"
-    info_path = lut_dir / f"{radar}_info.yaml"
+    lut_path = lut_dir / LUT_FILES["lut"].format(radar=radar)
+    info_path = lut_dir / LUT_FILES["info"].format(radar=radar)
 
-    if lut_path.exists() and info_path.exists():
+    plane_paths = {
+        kind: lut_dir / LUT_FILES[kind].format(radar=radar)
+        for kind in ("h_plane", "v_plane", "corners")
+    }
+    expected = [lut_path, info_path]
+    if planes is not None:
+        expected += list(plane_paths.values())
+
+    if all(p.exists() for p in expected):
         logger.info(
-            "LUT and radar info already exist at %s -- skipping creation.",
-            lut_dir,
+            "All %d LUT files already exist at %s -- skipping creation.",
+            len(expected), lut_dir,
         )
         return str(lut_path)
 
-    df_lut.to_parquet(lut_path, index=False, engine="pyarrow")
+    if planes is not None:
+        for kind, path in plane_paths.items():
+            if path.exists():
+                continue
+            planes[kind].write_parquet(path)
+            logger.info("%s lattice saved -> %s", kind, path)
+
+    if lut_path.exists() and info_path.exists():
+        # Only the geometry lattices were missing; centroids stay as they are.
+        return str(lut_path)
+
+    if isinstance(df_lut, pl.DataFrame):
+        df_lut.write_parquet(lut_path)
+    else:
+        df_lut.to_parquet(lut_path, index=False, engine="pyarrow")
     logger.info("LUT saved -> %s", lut_path)
 
     with open(info_path, "w") as f:
@@ -426,6 +591,12 @@ def _save_lut_outputs(lut_dir, radar, df_lut, radar_info):
 # Loaders
 # ============================================================================
 
+#: Elevation levels of a gate, as offsets in units of the half beamwidth.
+#: ``-1`` = bottom of the beam, ``0`` = beam centre, ``+1`` = top.
+#: Follows the reference prototype's ``En`` / ``Eo`` / ``Ep`` face naming.
+EL_LEVELS: tuple[int, ...] = (-1, 0, 1)
+
+
 def compute_sweep_corners(
     ranges: np.ndarray,
     azimuths: np.ndarray,
@@ -434,33 +605,332 @@ def compute_sweep_corners(
     radar_lon: float,
     radar_alt: float,
     ke: float = 4.0 / 3.0,
+    beamwidth_deg: float | None = None,
 ) -> dict:
     """Compute per-sweep gate corner arrays for pcolormesh rendering.
 
     Uses PyART's edge-interpolation (complex-plane for azimuth wrap-around)
     plus the standard 4/3 Earth beam propagation.
 
+    Parameters
+    ----------
+    beamwidth_deg : float, optional
+        When given, the beam's **vertical extent** is resolved as well: the edge
+        mesh is computed at three elevation levels
+        (``elevation - beamwidth/2``, ``elevation``, ``elevation + beamwidth/2``)
+        and returned under the extra ``levels`` key.  Without it only the
+        centre-elevation mesh is produced, which has *no* vertical extent — that
+        is the legacy behaviour and cannot describe a gate's 8 corners.
+
     Returns
     -------
-    dict with keys ``x_edges``, ``y_edges``, ``z_edges``, ``lon_edges``,
-    ``lat_edges``, each shape ``(n_az+1, n_range+1)``.
+    dict
+        Always contains ``x_edges``, ``y_edges``, ``z_edges``, ``lon_edges``,
+        ``lat_edges``, each shape ``(n_az+1, n_range+1)`` — the beam-centre mesh,
+        kept for backwards compatibility.
+
+        When ``beamwidth_deg`` is given, also contains
+        ``levels``: ``{-1: {...}, 0: {...}, 1: {...}}`` with the same five keys
+        per level, where the integer is the offset in half-beamwidths
+        (see :data:`EL_LEVELS`).
     """
-    x_e, y_e, z_e = antenna_vectors_to_cartesian(
-        ranges, azimuths, elevations, ke=ke, edges=True,
-    )
-    lat_e, lon_e, _ = cartesian_to_geographic(
-        x_e, y_e, z_e, radar_lat=radar_lat, radar_lon=radar_lon, radar_alt=radar_alt,
-    )
-    # float64 throughout: these edges are the gate polygon vertices, and gate
-    # position precision is a hard requirement (float32 costs ~20 cm, and the
-    # error does not shrink with range).
-    return {
-        "x_edges":   x_e.astype(np.float64),
-        "y_edges":   y_e.astype(np.float64),
-        "z_edges":   z_e.astype(np.float64),
-        "lon_edges": lon_e.astype(np.float64),
-        "lat_edges": lat_e.astype(np.float64),
+    elevations = np.atleast_1d(np.asarray(elevations, dtype=np.float64))
+
+    def _mesh(el: np.ndarray) -> dict:
+        x_e, y_e, z_e = antenna_vectors_to_cartesian(
+            ranges, azimuths, el, ke=ke, edges=True,
+        )
+        lat_e, lon_e, _ = cartesian_to_geographic(
+            x_e, y_e, z_e, radar_lat=radar_lat, radar_lon=radar_lon, radar_alt=radar_alt,
+        )
+        # float64 throughout: these edges are the gate polygon vertices, and gate
+        # position precision is a hard requirement (float32 costs ~20 cm, and the
+        # error does not shrink with range).
+        return {
+            "x_edges":   x_e.astype(np.float64),
+            "y_edges":   y_e.astype(np.float64),
+            "z_edges":   z_e.astype(np.float64),
+            "lon_edges": lon_e.astype(np.float64),
+            "lat_edges": lat_e.astype(np.float64),
+        }
+
+    centre = _mesh(elevations)
+    if beamwidth_deg is None:
+        return centre
+
+    half_bw = float(beamwidth_deg) / 2.0
+    # dict(centre) for level 0 so the `levels` key added below cannot make the
+    # structure self-referential.
+    levels = {
+        lvl: dict(centre) if lvl == 0 else _mesh(elevations + lvl * half_bw)
+        for lvl in EL_LEVELS
     }
+    return {**centre, "levels": levels}
+
+
+# ============================================================================
+# Gate plane / corner node lattices  (the h_plane / v_plane / corners files)
+# ============================================================================
+
+#: Node-index offsets of a gate's 4 corners within the edge lattice, in ring
+#: order. Matches the ring built by :func:`gate_polygons_geoarrow`.
+GATE_RING_OFFSETS: tuple[tuple[int, int], ...] = ((0, 0), (0, 1), (1, 1), (1, 0))
+
+
+def _project_nodes(x: np.ndarray, y: np.ndarray, lon: np.ndarray, lat: np.ndarray,
+                   epsg: int | None, crs=None):
+    """Projected easting/northing for lattice nodes, or ``(None, None, None)``."""
+    if epsg is None and crs is None:
+        return None, None, None
+    import pyproj
+
+    if epsg is not None:
+        target = pyproj.CRS.from_epsg(epsg)
+        suffix = str(epsg)
+    else:
+        target = crs if isinstance(crs, pyproj.CRS) else pyproj.CRS(crs)
+        detected = target.to_epsg()
+        suffix = str(detected) if detected is not None else "custom"
+    wgs84 = pyproj.CRS.from_proj4("+proj=longlat +datum=WGS84 +no_defs")
+    tf = pyproj.Transformer.from_crs(wgs84, target, always_xy=True)
+    px, py = tf.transform(lon, lat)
+    return np.asarray(px), np.asarray(py), suffix
+
+
+def build_gate_planes(
+    corners_by_sweep: dict[int, dict],
+    radar_alt: float,
+    projection_epsg: int | None = None,
+    projection_crs=None,
+) -> dict[str, "pl.DataFrame"]:
+    """Build the h_plane / v_plane / corners **node lattices** as polars frames.
+
+    Input is the output of :func:`compute_sweep_corners` called with
+    ``beamwidth_deg`` (so each sweep carries a ``levels`` dict).
+
+    The lattices store *nodes*, not per-gate corners: neighbouring gates share
+    corner nodes, so a lattice is ~4x smaller for the horizontal face and ~8x
+    smaller for the 3-D corners than materialising every gate's corners, and is
+    exactly equivalent.  A gate's corners are recovered by indexing
+    ``(az_idx + i, rng_idx + j)`` over :data:`GATE_RING_OFFSETS` — see
+    :meth:`raddb.RadDB.get_h_plane` / :meth:`raddb.RadDB.get_corners`.
+
+    Returns
+    -------
+    dict
+        ``{"h_plane": pl.DataFrame, "v_plane": pl.DataFrame, "corners": pl.DataFrame}``
+
+        * ``h_plane`` — beam-centre level only: ``sweep, az_idx, rng_idx, x, y,
+          lon, lat`` (+ ``x_<epsg>, y_<epsg>``).
+        * ``v_plane`` — bottom/top levels in the RHI plane: ``sweep, el_level,
+          az_idx, rng_idx, d, z_asl, z_rel``.
+        * ``corners`` — bottom/top levels in 3-D: ``sweep, el_level, az_idx,
+          rng_idx, x, y, z_rel, z_asl, lon, lat``.
+    """
+    h_parts, v_parts, c_parts = [], [], []
+
+    for sweep_num in sorted(corners_by_sweep):
+        entry = corners_by_sweep[sweep_num]
+        levels = entry.get("levels")
+        if levels is None:
+            raise ValueError(
+                f"sweep {sweep_num}: compute_sweep_corners must be called with "
+                "beamwidth_deg so the vertical levels are available."
+            )
+
+        for lvl in sorted(levels):
+            m = levels[lvl]
+            xe, ye, ze = m["x_edges"], m["y_edges"], m["z_edges"]
+            lone, late = m["lon_edges"], m["lat_edges"]
+            n_az_n, n_rng_n = xe.shape           # (n_az+1, n_rng+1) node counts
+
+            az_idx = np.repeat(np.arange(n_az_n, dtype=np.int16), n_rng_n)
+            rng_idx = np.tile(np.arange(n_rng_n, dtype=np.int16), n_az_n)
+            xf, yf, zf = xe.ravel(), ye.ravel(), ze.ravel()
+            lonf, latf = lone.ravel(), late.ravel()
+            n = xf.size
+            sweep_col = np.full(n, sweep_num, dtype=np.int16)
+
+            if lvl == 0:
+                # --- horizontal face (PPI) -----------------------------------
+                # lon/lat are deliberately NOT stored: cartesian_to_geographic is
+                # a closed form of (x, y) + the site, so storing them would cost
+                # 8 B/node for zero information. The accessors derive them.
+                cols = {
+                    "sweep": sweep_col,
+                    "az_idx": az_idx,
+                    "rng_idx": rng_idx,
+                    "x": xf.astype(np.float32),
+                    "y": yf.astype(np.float32),
+                }
+                px, py, suffix = _project_nodes(
+                    xf, yf, lonf, latf, projection_epsg, projection_crs
+                )
+                if suffix is not None:
+                    cols[f"x_{suffix}"] = px.astype(np.float32)
+                    cols[f"y_{suffix}"] = py.astype(np.float32)
+                h_parts.append(pl.DataFrame(cols))
+                continue
+
+            # --- bottom / top levels: v_plane + 3-D corners ------------------
+            lvl_col = np.full(n, lvl, dtype=np.int8)
+            z_asl = (zf + radar_alt).astype(np.float32)
+            v_parts.append(pl.DataFrame({
+                "sweep": sweep_col,
+                "el_level": lvl_col,
+                "az_idx": az_idx,
+                "rng_idx": rng_idx,
+                # ground distance from the radar: the beam's arc length, which is
+                # exactly hypot(x, y) in this equidistant frame.
+                "d": np.hypot(xf, yf).astype(np.float32),
+                "z_asl": z_asl,
+                "z_rel": zf.astype(np.float32),
+            }))
+            # z_asl and lon/lat omitted here for the same reason as in h_plane:
+            # z_asl = z_rel + site altitude (a constant), and lon/lat are a
+            # closed form of (x, y). Both are derived by the accessors.
+            c_parts.append(pl.DataFrame({
+                "sweep": sweep_col,
+                "el_level": lvl_col,
+                "az_idx": az_idx,
+                "rng_idx": rng_idx,
+                "x": xf.astype(np.float32),
+                "y": yf.astype(np.float32),
+                "z_rel": zf.astype(np.float32),
+            }))
+
+    return {
+        "h_plane": pl.concat(h_parts, how="vertical_relaxed"),
+        "v_plane": pl.concat(v_parts, how="vertical_relaxed"),
+        "corners": pl.concat(c_parts, how="vertical_relaxed"),
+    }
+
+
+def load_plane_nodes(
+    radar: str,
+    lut_base_path: str | Path,
+    kind: str,
+    sweep: int | None = None,
+) -> "pl.DataFrame":
+    """Load one of the node-lattice files (``h_plane`` / ``v_plane`` / ``corners``).
+
+    ``sweep`` pushes a row filter into the parquet scan.
+    """
+    path = lut_file_path(radar, kind, lut_base_path)
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{kind} lattice not found at {path}. Regenerate the LUT "
+            "(generate_lut_from_datatree) to create the geometry files."
+        )
+    lf = pl.scan_parquet(path)
+    if sweep is not None:
+        lf = lf.filter(pl.col("sweep") == int(sweep))
+    return lf.collect()
+
+
+def _node_grids(
+    nodes: "pl.DataFrame", value_cols: list[str], level: int | None = None
+) -> dict[int, dict[str, np.ndarray]]:
+    """Reshape flat lattice rows into ``{sweep: {col: (n_az+1, n_rng+1) array}}``."""
+    if level is not None and "el_level" in nodes.columns:
+        nodes = nodes.filter(pl.col("el_level") == level)
+    out: dict[int, dict[str, np.ndarray]] = {}
+    for (sweep_num,), sub in nodes.group_by(["sweep"], maintain_order=True):
+        sub = sub.sort(["az_idx", "rng_idx"])
+        n_az_n = int(sub["az_idx"].max()) + 1
+        n_rng_n = int(sub["rng_idx"].max()) + 1
+        out[int(sweep_num)] = {
+            c: sub[c].to_numpy().reshape(n_az_n, n_rng_n) for c in value_cols
+        }
+    return out
+
+
+def gate_corner_table(
+    radar: str,
+    lut_base_path: str | Path,
+    kind: str = "h_plane",
+    sweep: int | None = None,
+) -> "pl.DataFrame":
+    """Materialise per-gate corners from a node lattice, keyed by ``gate_id``.
+
+    This is the "hybrid" read side: the archive stores compact node lattices, and
+    this expands them to explicit per-gate corners on demand.
+
+    Corner counts and column names by ``kind``:
+
+    * ``h_plane`` — **4** corners, ring order (see :data:`GATE_RING_OFFSETS`):
+      ``x_1..x_4``, ``y_1..y_4`` (+ ``x_<epsg>_1..4`` when the lattice is
+      projected).
+    * ``v_plane`` — **4** corners in the RHI plane: ``d_1..d_4``,
+      ``z_asl_1..z_asl_4``, ``z_rel_1..z_rel_4``, ordered
+      (near-bottom, far-bottom, far-top, near-top).
+    * ``corners`` — **8** corners in 3-D: ``x_1..x_8``, ``y_1..y_8``,
+      ``z_rel_1..z_rel_8``.  **1-4 are the near face** (towards the radar),
+      **5-8 the far face**; within each face the order is
+      (az-, el-), (az+, el-), (az+, el+), (az-, el+).  Because the angular extent
+      grows with range, the far face is strictly larger than the near face.
+
+    The join onto ``gate_id`` reuses :func:`_gate_grid_index`, so it inherits the
+    same ``searchsorted`` node indexing the lattices were written with.
+    """
+    if kind not in ("h_plane", "v_plane", "corners"):
+        raise ValueError(
+            f"kind must be 'h_plane', 'v_plane' or 'corners'; got {kind!r}."
+        )
+
+    idx = _gate_grid_index(radar, lut_base_path)
+    if sweep is not None:
+        idx = idx.filter(pl.col("sweep") == int(sweep))
+    if idx.is_empty():
+        return pl.DataFrame(schema={"gate_id": pl.Int64, "sweep": pl.Int32})
+
+    nodes = load_plane_nodes(radar, lut_base_path, kind, sweep=sweep)
+
+    if kind == "h_plane":
+        value_cols = [c for c in nodes.columns
+                      if c not in ("sweep", "az_idx", "rng_idx", "el_level")]
+        grids = {0: _node_grids(nodes, value_cols)}
+        # 4 corners, one level, ring order
+        picks = [(0, i, j) for (i, j) in GATE_RING_OFFSETS]
+    elif kind == "v_plane":
+        value_cols = ["d", "z_asl", "z_rel"]
+        grids = {lvl: _node_grids(nodes, value_cols, level=lvl) for lvl in (-1, 1)}
+        # near-bottom, far-bottom, far-top, near-top
+        picks = [(-1, 0, 0), (-1, 0, 1), (1, 0, 1), (1, 0, 0)]
+    else:
+        value_cols = ["x", "y", "z_rel"]
+        grids = {lvl: _node_grids(nodes, value_cols, level=lvl) for lvl in (-1, 1)}
+        # near face (rng+0) then far face (rng+1); within a face:
+        # (az-, el-), (az+, el-), (az+, el+), (az-, el+)
+        picks = [
+            (-1, 0, 0), (-1, 1, 0), (1, 1, 0), (1, 0, 0),      # near face
+            (-1, 0, 1), (-1, 1, 1), (1, 1, 1), (1, 0, 1),      # far face
+        ]
+
+    n = idx.height
+    sweeps = idx["sweep"].to_numpy()
+    az_i = idx["az_idx"].to_numpy().astype(np.int64)
+    rng_i = idx["rng_idx"].to_numpy().astype(np.int64)
+
+    out: dict[str, np.ndarray] = {}
+    for k, (lvl, di, dj) in enumerate(picks, start=1):
+        for col in value_cols:
+            out[f"{col}_{k}"] = np.full(n, np.nan, dtype=np.float64)
+        for sw in np.unique(sweeps):
+            g = grids[lvl].get(int(sw))
+            if g is None:
+                logger.warning("sweep %d missing from the %s lattice.", sw, kind)
+                continue
+            rows = np.flatnonzero(sweeps == sw)
+            for col in value_cols:
+                arr = g[col]
+                out[f"{col}_{k}"][rows] = arr[az_i[rows] + di, rng_i[rows] + dj]
+
+    return pl.DataFrame({
+        "gate_id": idx["gate_id"],
+        "sweep": idx["sweep"],
+        **{c: v.astype(np.float32) for c, v in out.items()},
+    })
 
 
 def save_sweep_corners(
@@ -485,10 +955,48 @@ def save_sweep_corners(
     return str(corners_path)
 
 
+def _sweep_grids_from_lut(
+    radar: str, lut_base_path: str | Path
+) -> dict[int, dict]:
+    """Per-sweep ``(azimuths, ranges, elevation)`` grids read from the LUT parquet.
+
+    Only the four columns needed are pulled, with the projection pushed into the
+    parquet reader — reading the whole 13-column LUT here would be ~8x the I/O.
+
+    The grids are ``np.sort(unique(...))``, matching :func:`_gate_grid_index`'s
+    ``searchsorted`` and the pandas ``to_xarray()`` MultiIndex order used by
+    ``io_core.reconstruct_sweep_dataset``, so node indices are consistent
+    everywhere.
+    """
+    lut_path = Path(lut_base_path) / radar / "LUT" / f"{radar}_LUT.parquet"
+    if not lut_path.exists():
+        raise FileNotFoundError(f"LUT not found at {lut_path}.")
+    lut = pl.scan_parquet(lut_path).select(
+        ["sweep", "azimuth", "range", "elevation_angle"]
+    ).collect()
+
+    grids: dict[int, dict] = {}
+    for sweep_num in sorted(lut["sweep"].unique().to_list()):
+        sub = lut.filter(pl.col("sweep") == sweep_num)
+        azimuths = np.sort(sub["azimuth"].unique().to_numpy()).astype(np.float64)
+        ranges = np.sort(sub["range"].unique().to_numpy()).astype(np.float64)
+        # elevation_angle is constant per sweep by construction (the fixed
+        # antenna angle); broadcast it to one value per ray.
+        el = float(sub["elevation_angle"][0])
+        grids[int(sweep_num)] = {
+            "azimuths": azimuths,
+            "ranges": ranges,
+            "elevations": np.full(len(azimuths), el, dtype=np.float64),
+            "elevation": el,
+        }
+    return grids
+
+
 def compute_corners_from_lut(
     radar: str,
     lut_base_path: str | Path,
     ke: float = 4.0 / 3.0,
+    beamwidth_deg: float | None = None,
 ) -> str:
     """Rebuild ``{radar}_corners.npz`` from an existing LUT parquet + info YAML.
 
@@ -497,31 +1005,34 @@ def compute_corners_from_lut(
     elevation) triples from the LUT, computes corner arrays via
     :func:`compute_sweep_corners`, and saves them.
 
+    ``beamwidth_deg`` defaults to the value recorded in ``{radar}_info.yaml``
+    (falling back to :data:`DEFAULT_BEAMWIDTH_DEG`), so the vertical extent of
+    the beam is resolved rather than collapsed.
+
     Returns
     -------
     str : path to the written ``.npz`` file.
     """
-    lut_df = load_radar_lut(radar, lut_base_path)
     info = load_radar_info(radar, lut_base_path)
+    if beamwidth_deg is None:
+        beamwidth_deg = float(info.get("beamwidth_deg") or DEFAULT_BEAMWIDTH_DEG)
+
     corners_by_sweep: dict[int, dict] = {}
-    for sweep_num in sorted(lut_df["sweep"].unique().to_list()):
-        sub = lut_df.filter(pl.col("sweep") == sweep_num)
-        azimuths = np.sort(sub["azimuth"].unique().to_numpy())
-        ranges   = np.sort(sub["range"].unique().to_numpy())
-        n_az, n_rng = len(azimuths), len(ranges)
-        # Rebuild per-ray elevation from the LUT (stored as constant per sweep
-        # in elevation_angle). If the per-ray elevation varies within a sweep,
-        # we'd need the raw antenna data; for Swiss radars the fixed-angle
-        # approximation is accurate to < 0.1°.
-        el_mean = float(sub["elevation_angle"][0])
-        elevations = np.full(n_az, el_mean, dtype=np.float64)
-        corners_by_sweep[int(sweep_num)] = compute_sweep_corners(
-            ranges=ranges, azimuths=azimuths, elevations=elevations,
+    for sweep_num, g in _sweep_grids_from_lut(radar, lut_base_path).items():
+        full = compute_sweep_corners(
+            ranges=g["ranges"], azimuths=g["azimuths"], elevations=g["elevations"],
             radar_lat=info["latitude"],
             radar_lon=info["longitude"],
             radar_alt=info["altitude"],
             ke=ke,
+            beamwidth_deg=beamwidth_deg,
         )
+        # The npz keeps only the beam-centre mesh (its consumers — plot_ppi and
+        # reconstruct_sweep_dataset — are 2-D). The vertical levels live in the
+        # *_corners_LUT.parquet / *_v_plane_LUT.parquet files.
+        corners_by_sweep[int(sweep_num)] = {
+            k: v for k, v in full.items() if k != "levels"
+        }
     corners_path = Path(lut_base_path) / radar / "LUT" / f"{radar}_corners.npz"
     save_sweep_corners(corners_by_sweep, corners_path)
     return str(corners_path)
@@ -771,9 +1282,25 @@ def load_radar_info(
 
 
 def get_full_sweep_index(
-    lut_df: pd.DataFrame, sweep: int
+    lut_df: "pl.DataFrame | pd.DataFrame", sweep: int
 ) -> pd.MultiIndex:
-    """Get the full (azimuth, range) MultiIndex for a sweep from the LUT."""
+    """Get the full (azimuth, range) MultiIndex for a sweep from the LUT.
+
+    Accepts a polars **or** a pandas LUT — :func:`load_radar_lut` returns polars,
+    so the polars form is the common one.  The return type stays a pandas
+    ``MultiIndex`` because its only consumer is the pandas/xarray reconstruction
+    bridge in :func:`raddb.io_core.reconstruct_sweep_dataset`, which reindexes
+    against it.
+    """
+    if isinstance(lut_df, pl.DataFrame):
+        sweep_lut = lut_df.filter(pl.col("sweep") == sweep).select(["azimuth", "range"])
+        if sweep_lut.is_empty():
+            raise ValueError(f"No LUT entries found for sweep={sweep}.")
+        return pd.MultiIndex.from_arrays(
+            [sweep_lut["azimuth"].to_numpy(), sweep_lut["range"].to_numpy()],
+            names=["azimuth", "range"],
+        )
+
     sweep_lut = lut_df[lut_df["sweep"] == sweep]
     if sweep_lut.empty:
         raise ValueError(f"No LUT entries found for sweep={sweep}.")
@@ -795,8 +1322,9 @@ def add_lut_projection(
     appends ``x_{suffix}`` / ``y_{suffix}`` columns, where ``suffix`` is the
     EPSG code (if available) or ``"custom"``.
 
-    Accepts either a polars or a pandas frame and returns the same kind — LUT
-    *loading* is polars, but LUT *generation* still builds pandas frames.
+    Accepts either a polars or a pandas frame and returns the same kind.  The
+    LUT layer is polars end to end (generation and loading), so the polars form
+    is the common one; pandas is accepted so external callers keep working.
 
     Requires **pyproj** (``pip install pyproj``).
 

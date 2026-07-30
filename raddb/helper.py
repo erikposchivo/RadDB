@@ -10,6 +10,7 @@ import datetime as _dt
 from pathlib import Path
 
 import pandas as pd
+import polars as pl
 import xarray as xr
 
 # --- DataTree Helpers ---
@@ -37,20 +38,30 @@ def read_parquet_files(
     pattern: str = "**/*POL.parquet",
     columns: list[str] | None = None,
     verbose: bool = True,
-) -> pd.DataFrame:
+) -> "pl.DataFrame":
+    """Read matching parquet files into a single **polars** DataFrame."""
     files = sorted(Path(base_path).rglob(pattern))
     if not files:
         if verbose: print(f"[RadDB] No files found matching '{pattern}' in {base_path}")
-        return pd.DataFrame()
+        return pl.DataFrame()
     if verbose: print(f"[RadDB] Found {len(files)} file(s) — loading...")
-    return pd.concat([pd.read_parquet(f, columns=columns, engine="pyarrow") for f in files], ignore_index=True)
+    return pl.concat(
+        [pl.read_parquet(f, columns=columns) for f in files], how="vertical_relaxed"
+    )
 
-def check_dataframe(df: pd.DataFrame) -> None:
+def check_dataframe(df: "pl.DataFrame | pd.DataFrame") -> None:
+    """Print a quick structural summary; accepts polars or pandas."""
     print("-" * 50)
     print(f"Shape:   {df.shape}")
-    print(f"Columns: {df.columns.tolist()}")
+    print(f"Columns: {list(df.columns)}")
     print("-" * 50)
-    print(f"Missing values:\n{df.isnull().sum()}")
+    if isinstance(df, pl.DataFrame):
+        nulls = df.null_count().to_dicts()[0] if len(df.columns) else {}
+        print("Missing values:")
+        for k, v in nulls.items():
+            print(f"{k}    {v}")
+    else:
+        print(f"Missing values:\n{df.isnull().sum()}")
     print("-" * 50)
     print(df.head())
     print("-" * 50)
@@ -122,16 +133,19 @@ def resolve_filter_logic(logic: str):
 
 
 def filter_df(
-    df: pd.DataFrame,
+    df: "pl.DataFrame | pd.DataFrame",
     feature: str = "DBZH",
     threshold: float = 0.0,
     logic: str = ">",
-) -> pd.DataFrame:
+) -> "pl.DataFrame | pd.DataFrame":
     """Filter a DataFrame, keeping rows where ``feature [logic] threshold``.
+
+    Accepts polars or pandas and returns the **same kind**, so an existing
+    pandas caller keeps getting pandas back.
 
     Parameters
     ----------
-    df : pd.DataFrame
+    df : pl.DataFrame or pd.DataFrame
         Input DataFrame.
     feature : str
         Column name to filter on (default ``"DBZH"``).
@@ -143,8 +157,8 @@ def filter_df(
 
     Returns
     -------
-    pd.DataFrame
-        Filtered DataFrame with non-matching rows dropped (index reset).
+    pl.DataFrame or pd.DataFrame
+        Filtered DataFrame with non-matching rows dropped (pandas index reset).
 
     Raises
     ------
@@ -157,6 +171,8 @@ def filter_df(
     if feature not in df.columns:
         raise KeyError(f"Feature '{feature}' not found in DataFrame columns.")
     mask = fn(df[feature].to_numpy(), threshold)
+    if isinstance(df, pl.DataFrame):
+        return df.filter(pl.Series(mask))
     return df[mask].reset_index(drop=True)
 
 

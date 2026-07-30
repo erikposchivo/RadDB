@@ -167,7 +167,7 @@ class TestSweepColumnInDataFrame:
             merge_lut=True,
         )
 
-        assert not df.empty, "DataFrame should not be empty"
+        assert not df.is_empty(), "DataFrame should not be empty"
         assert "sweep" in df.columns, "sweep column must be present after LUT merge"
         assert "azimuth" in df.columns
         assert "range" in df.columns

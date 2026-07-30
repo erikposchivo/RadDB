@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import polars as pl
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import matplotlib.ticker as mticker
@@ -1182,7 +1183,7 @@ def plot_rhi(
 # ============================================================================
 
 def plot_latent_scatter(
-    df: "pd.DataFrame",
+    df: "pl.DataFrame | pd.DataFrame",
     config: list[dict],
     figsize: tuple[float, float] | None = None,
     fig_height: float = 4.6,
@@ -1200,7 +1201,7 @@ def plot_latent_scatter(
 
     Parameters
     ----------
-    df : pd.DataFrame
+    df : pl.DataFrame or pd.DataFrame
         Must contain columns ``"L1"``, ``"L2"``, and the variable column
         named in each panel's ``"var"`` key.
     config : list of dict
@@ -1266,8 +1267,8 @@ def plot_latent_scatter(
         panel_scatter_kw = {**scatter_kwargs, **panel.get("scatter_kwargs", {})}
 
         m = ax.scatter(
-            df["L1"], df["L2"],
-            c=df[var],
+            df["L1"].to_numpy(), df["L2"].to_numpy(),
+            c=df[var].to_numpy(),
             cmap=cmap,
             norm=norm,
             **panel_scatter_kw,

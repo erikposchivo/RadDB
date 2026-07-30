@@ -535,7 +535,9 @@ _CS_LUT_COLS = [
 _CS_CACHE: dict = {}
 
 
-def _lut_cs_table(base_path: str | Path, radars: list[str], beamwidth_deg: float = 1.0) -> pd.DataFrame:
+def _lut_cs_table(
+    base_path: str | Path, radars: list[str], beamwidth_deg: float = 1.0
+) -> "pl.DataFrame":
     """Static per-gate geometry for cross-sections: centers + half-dimensions.
 
     Half-dimensions (prototype convention):
@@ -554,21 +556,35 @@ def _lut_cs_table(base_path: str | Path, radars: list[str], beamwidth_deg: float
                 raise FileNotFoundError(
                     f"LUT not found at {lut_path}. Cannot build cross-section for radar {radar!r}."
                 )
-            t = pd.read_parquet(lut_path, columns=_CS_LUT_COLS, engine="pyarrow")
+            t = pl.read_parquet(lut_path, columns=_CS_LUT_COLS)
             # Radial spacing per sweep from the unique range grid -> dR = spacing/2.
-            ur = t[["sweep", "range"]].drop_duplicates().sort_values(["sweep", "range"])
-            spacing = ur.groupby("sweep")["range"].apply(
-                lambda r: float(np.median(np.diff(r.to_numpy(dtype=np.float64))))
+            # `range` is cast to Float64 first so the median-of-diffs matches the
+            # float64 arithmetic the pandas implementation used.
+            spacing = (
+                t.select(["sweep", "range"])
+                .unique()
+                .sort(["sweep", "range"])
+                .group_by("sweep")
+                .agg(
+                    pl.col("range").cast(pl.Float64).diff().drop_nulls()
+                    .median().alias("_spacing")
+                )
             )
-            t = t.copy()
-            t["dR"] = (t["sweep"].map(spacing) / 2.0).astype(np.float64)
-            t["dA"] = t["range"].to_numpy(dtype=np.float64) * np.tan(np.deg2rad(beamwidth_deg / 2.0))
-            t["radar"] = radar
+            t = (
+                t.join(spacing, on="sweep", how="left")
+                .with_columns(
+                    (pl.col("_spacing") / 2.0).cast(pl.Float64).alias("dR"),
+                    (pl.col("range").cast(pl.Float64)
+                     * float(np.tan(np.deg2rad(beamwidth_deg / 2.0)))).alias("dA"),
+                    pl.lit(radar).alias("radar"),
+                )
+                .drop("_spacing")
+            )
             _CS_CACHE[key] = t
         frames.append(t)
     if not frames:
         raise ValueError("no radars given for cross-section geometry.")
-    return pd.concat(frames, ignore_index=True)
+    return pl.concat(frames, how="vertical_relaxed")
 
 
 def _gate_footprints(sub: pd.DataFrame, half_bw_tan: float) -> np.ndarray:
@@ -616,13 +632,19 @@ def _endpoint_d_z(pt_xy: np.ndarray, sub: pd.DataFrame, origin: tuple[float, flo
 
 
 def _cross_section_gates(
-    cs_t: pd.DataFrame,
+    cs_t: "pl.DataFrame | pd.DataFrame",
     p1: tuple[float, float],
     p2: tuple[float, float],
     beamwidth_deg: float = 1.0,
     min_chord_m: float = 0.5,
 ) -> pd.DataFrame:
     """Gates whose horizontal footprint crosses the line ``p1 -> p2``.
+
+    Accepts the polars geometry table from :func:`_lut_cs_table`.  The body
+    works in pandas because the result carries ``cs_polygon`` — a column of
+    shapely objects — for which pandas' object dtype is the natural carrier;
+    :meth:`raddb.RadDB.extract_cross_section` converts the geometry columns back
+    to polars when joining them onto the data frame.
 
     Returns one row per crossed gate with its cross-section geometry:
     chord endpoints ``(d_near, z_near) / (d_far, z_far)``, center
@@ -631,6 +653,9 @@ def _cross_section_gates(
     offsetting the chord perpendicularly by ±dA (the vertical half-beamwidth
     extent).  ``d`` is measured from ``p1``.
     """
+    if isinstance(cs_t, pl.DataFrame):
+        cs_t = cs_t.to_pandas()
+
     ox, oy = float(p1[0]), float(p1[1])
     ex, ey = float(p2[0]), float(p2[1])
     length = float(np.hypot(ex - ox, ey - oy))
