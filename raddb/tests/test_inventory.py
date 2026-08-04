@@ -55,7 +55,7 @@ class TestInventoryArchive:
         assert "volume(s)" in out
 
     def test_empty_archive_dir(self, tmp_path, capsys):
-        RadDB(archive_dir=str(tmp_path)).inventory()
+        RadDB(archive_dir=str(tmp_path), crs=2056).inventory()
         assert "nothing archived here yet" in capsys.readouterr().out
 
     def test_without_archive_dir_raises(self):
@@ -71,14 +71,24 @@ class TestInventoryDataTrees:
         assert "files     : 2" in out
         assert "2024-08-01 12:00:00 .. 2024-08-02 06:30:00" in out
 
-    def test_warns_on_non_letter_radar(self, tmp_path, capsys):
+    def test_four_letter_radar_not_warned(self, tmp_path, capsys):
+        """A NEXRAD-style name is archivable under gate_id v2 — no warning."""
         d = tmp_path / "nexrad"
         d.mkdir()
         _make_datatree(vol_time=VOL_TIMES[0]).to_netcdf(d / "KTLX_20240801_120000.nc")
         RadDB().inventory(datatree_dir=str(d), detailed=True)
         out = capsys.readouterr().out
         assert "KTLX" in out
-        assert "not a single letter" in out
+        assert "not a usable radar name" not in out
+
+    def test_warns_on_unusable_radar_name(self, tmp_path, capsys):
+        d = tmp_path / "odd"
+        d.mkdir()
+        _make_datatree(vol_time=VOL_TIMES[0]).to_netcdf(d / "OVERLONG_20240801_120000.nc")
+        RadDB().inventory(datatree_dir=str(d), detailed=True)
+        out = capsys.readouterr().out
+        assert "OVERLONG" in out
+        assert "not a usable radar name" in out
 
     def test_missing_directory_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):

@@ -62,7 +62,8 @@ exclude = ["raddb.mch*", "raddb.tests*"]
 write_to = "raddb/_version.py"
 
 [project.optional-dependencies]
-viz = ["cartopy>=0.22", "pyproj>=3.0", "shapely>=2.0"]
+viz = ["cartopy>=0.22", "pyproj>=3.0", "shapely>=2.0",
+       "lonboard>=0.10", "geoarrow-pyarrow>=0.2"]
 io = ["netcdf4", "zarr"]
 dev = ["pre-commit", "loghub",
        "black[jupyter]", "blackdoc", "codespell", "ruff",

@@ -80,7 +80,7 @@ class TestCropsSelectNotWiden:
         """The semi-join must select exactly what the old isin() filter did."""
         import shapely
 
-        from raddb.aoi import _lut_centroids, _reproject_to_2056, _resolve_aoi_centroids
+        from raddb.aoi import _lut_centroids, _reproject_to_aoi, _resolve_aoi_centroids
 
         rdf = archive.open()
         geo = rdf.to_pandas(with_geometry=True)
@@ -90,7 +90,7 @@ class TestCropsSelectNotWiden:
         crop = rdf.crop_by_bbox(bounds=bounds)
         cen = _resolve_aoi_centroids(
             _lut_centroids(archive.archive_dir, rdf.radars()),
-            _reproject_to_2056(shapely.box(*bounds), 2056),
+            _reproject_to_aoi(shapely.box(*bounds), 2056, 2056),
         )
         expected = set(np.intersect1d(
             rdf.data["gate_id"].to_numpy(), cen["gate_id"].to_numpy()

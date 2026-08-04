@@ -67,24 +67,53 @@ def check_dataframe(df: "pl.DataFrame | pd.DataFrame") -> None:
     print("-" * 50)
 
 # --- Radar Name Normalization ---
+
+#: Characters a radar name may be built from, in the order that gives each its
+#: numeric value in the base-36 ``gate_id`` radar code (see
+#: :func:`raddb.lut.encode_radar_code`).
+RADAR_ALPHABET: str = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+#: Maximum radar-name length.  Four base-36 characters is what the ``gate_id``
+#: layout can hold: ``36**4 = 1_679_616`` codes against the ``9_223_371`` slots
+#: int64 leaves above the ``10**12`` gate field, whereas ``36**5`` would need
+#: 60 million.  It fits every single-letter (MeteoSwiss) and four-letter
+#: (NEXRAD ``KTLX``) identifier; five-character ODIM NOD codes such as
+#: ``chlem`` must be aliased to four and kept in the info YAML's ``network``.
+RADAR_CODE_LEN: int = 4
+
+_RADAR_NAME_RE = re.compile(rf"^[{RADAR_ALPHABET}]{{1,{RADAR_CODE_LEN}}}$")
+
+
 def normalize_radar_name(radar: str) -> str:
     """
-    Normalize radar name to use only the single letter identifier.
+    Normalize a radar name to its canonical archive form.
 
-    Handles both formats:
-    - "MLA" -> "A"
-    - "A" -> "A"
-    - "MLW" -> "W"
+    The canonical form is upper-case, 1 to :data:`RADAR_CODE_LEN` characters
+    drawn from :data:`RADAR_ALPHABET`, with leading zeros stripped (they are
+    padding in the ``gate_id`` radar code, not part of the name, so ``"0A"``
+    and ``"A"`` are the same radar).
+
+    A three-character ``ML*`` name is the MeteoSwiss convention for a
+    single-letter radar and is reduced to that letter (``"MLA"`` -> ``"A"``).
+    Every other name is kept **whole** — ``"KTLX"`` stays ``"KTLX"``.
 
     Parameters
     ----------
     radar : str
-        Radar name (can be "ML*" format or just the letter)
+        Radar name, e.g. ``"A"``, ``"MLA"`` or ``"KTLX"``.
 
     Returns
     -------
     str
-        Normalized single-letter radar name (uppercase)
+        Canonical radar name.
+
+    Raises
+    ------
+    ValueError
+        If the name is empty, too long, or uses characters outside
+        :data:`RADAR_ALPHABET`.  It is raised rather than silently truncating:
+        two sites reduced to the same letter would overwrite each other's
+        archive.
 
     Examples
     --------
@@ -92,17 +121,40 @@ def normalize_radar_name(radar: str) -> str:
     'A'
     >>> normalize_radar_name("A")
     'A'
-    >>> normalize_radar_name("MLW")
-    'W'
+    >>> normalize_radar_name("KTLX")
+    'KTLX'
     """
-    radar_upper = radar.upper().strip()
+    if not isinstance(radar, str):
+        raise ValueError(f"radar name must be a string, got {type(radar).__name__}.")
 
-    # If it starts with "ML", extract the last character
-    if radar_upper.startswith("ML") and len(radar_upper) > 2:
-        return radar_upper[-1]
+    name = radar.upper().strip()
 
-    # Otherwise, return the last character (or the string if it's already a single char)
-    return radar_upper[-1] if len(radar_upper) > 0 else radar_upper
+    # MeteoSwiss "ML<letter>".  Restricted to exactly three characters so that a
+    # genuine four-character name beginning with "ML" is not mistaken for one.
+    if len(name) == 3 and name.startswith("ML"):
+        name = name[-1]
+
+    # Leading zeros are gate_id padding ("000A"), never part of the name.
+    stripped = name.lstrip("0")
+    if stripped:
+        name = stripped
+
+    if not _RADAR_NAME_RE.match(name):
+        raise ValueError(
+            f"radar name {radar!r} is not usable: a radar name must be 1 to "
+            f"{RADAR_CODE_LEN} characters from [0-9A-Z] (e.g. 'A', 'KTLX'). "
+            f"Longer identifiers must be aliased to {RADAR_CODE_LEN} characters."
+        )
+    return name
+
+
+def is_valid_radar_name(radar) -> bool:
+    """``True`` when :func:`normalize_radar_name` would accept *radar*."""
+    try:
+        normalize_radar_name(radar)
+    except ValueError:
+        return False
+    return True
 
 
 # --- Filter Logic Registry ---

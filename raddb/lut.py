@@ -23,13 +23,126 @@ import polars as pl
 import xarray as xr
 import yaml
 
-from raddb.helper import list_sweep_names
+from raddb.helper import (
+    RADAR_ALPHABET,
+    RADAR_CODE_LEN,
+    list_sweep_names,
+    normalize_radar_name,
+)
 
 logger = logging.getLogger(__name__)
 
-# Maps single-letter radar identifiers to integer indices for numeric gate_id.
-# A=0, B=1, ..., Z=25  (26 radars supported)
-RADAR_TO_IDX: dict[str, int] = {chr(ord("A") + i): i for i in range(26)}
+# ----------------------------------------------------------------------------
+# Radar code — the leading field of a gate_id
+# ----------------------------------------------------------------------------
+
+#: Multiplier of the radar field in a ``gate_id`` — everything below it is the
+#: gate's own ``sweep``/``azimuth``/``range`` (see :func:`encode_gate_ids`).
+GATE_ID_RADAR_BASE: int = 1_000_000_000_000
+
+#: Number of distinct radar codes: ``36**4 - 1`` is the largest, ``0`` the
+#: smallest.  ``radar_code * 10**12`` must stay inside int64, which allows
+#: ``9_223_371``; base-36 over four characters needs only ``1_679_615``.
+MAX_RADAR_CODE: int = 36 ** RADAR_CODE_LEN - 1
+
+#: Version of the ``gate_id`` encoding written into each radar's info YAML.
+#:
+#: 1. radar index ``A=0 … Z=25`` — 26 radars, single letters only.
+#: 2. radar code = base-36 of the zero-padded 4-character name (``"A"`` ->
+#:    ``"000A"`` -> 10, ``"KTLX"`` -> 971493) — 1,679,616 radars.
+#:
+#: The two disagree for every name (``"L"`` is 11 under v1, 21 under v2), so a
+#: v1 archive must be migrated before it is read; see
+#: ``raddb/tools/migrate_gate_id_v2.py``.
+GATE_ID_VERSION: int = 2
+
+#: The v1 radar index, kept only so the migration script can compute the offset
+#: between an archived ``gate_id`` and its v2 replacement.
+LEGACY_RADAR_TO_IDX: dict[str, int] = {chr(ord("A") + i): i for i in range(26)}
+
+
+def encode_radar_code(radar: str) -> int:
+    """Base-36 radar code for the leading ``gate_id`` field.
+
+    The name is normalised, right-aligned and zero-padded to
+    :data:`~raddb.helper.RADAR_CODE_LEN` characters, then read as a base-36
+    integer over :data:`~raddb.helper.RADAR_ALPHABET`.
+
+    Parameters
+    ----------
+    radar : str
+        Radar name, e.g. ``"A"``, ``"MLA"`` or ``"KTLX"``.
+
+    Returns
+    -------
+    int
+        A value in ``[0, MAX_RADAR_CODE]``.
+
+    Examples
+    --------
+    >>> encode_radar_code("A")
+    10
+    >>> encode_radar_code("KTLX")
+    971493
+    """
+    name = normalize_radar_name(radar).rjust(RADAR_CODE_LEN, "0")
+    code = 0
+    for char in name:
+        code = code * 36 + RADAR_ALPHABET.index(char)
+    return code
+
+
+def decode_radar_code(code: int) -> str:
+    """Inverse of :func:`encode_radar_code`.
+
+    Parameters
+    ----------
+    code : int
+        A radar code in ``[0, MAX_RADAR_CODE]``.
+
+    ``decode_radar_code(encode_radar_code(name)) == name`` for every canonical
+    name (all 1,679,580 of them).  The reverse holds for every code the encoder
+    can emit; the 36 codes spelling ``"ML0".."MLZ"`` are the exception, because
+    :func:`~raddb.helper.normalize_radar_name` resolves that MeteoSwiss spelling
+    to its final letter before encoding, so no ``gate_id`` ever carries one.
+
+    Returns
+    -------
+    str
+        The canonical radar name, without its zero padding.
+
+    Raises
+    ------
+    ValueError
+        If *code* is outside the representable range.
+
+    Examples
+    --------
+    >>> decode_radar_code(971493)
+    'KTLX'
+    """
+    value = int(code)
+    if not 0 <= value <= MAX_RADAR_CODE:
+        raise ValueError(
+            f"radar code {value} is outside [0, {MAX_RADAR_CODE}] and names no radar."
+        )
+    chars = []
+    for _ in range(RADAR_CODE_LEN):
+        value, rem = divmod(value, 36)
+        chars.append(RADAR_ALPHABET[rem])
+    return "".join(reversed(chars)).lstrip("0") or "0"
+
+
+#: Radar code of every single-letter name.
+#:
+#: .. deprecated::
+#:    Superseded by :func:`encode_radar_code`, which is not limited to A-Z.
+#:    Kept because it is part of the public API surface; do **not** use it as a
+#:    membership test for "is this a usable radar name" — see
+#:    :func:`raddb.helper.is_valid_radar_name`.
+RADAR_TO_IDX: dict[str, int] = {
+    chr(ord("A") + i): encode_radar_code(chr(ord("A") + i)) for i in range(26)
+}
 
 #: Antenna 3 dB beamwidth in degrees, used for the gate's angular extent.
 #: 1.0 deg matches the MeteoSwiss Rad4Alp radars and the reference prototype
@@ -37,7 +150,7 @@ RADAR_TO_IDX: dict[str, int] = {chr(ord("A") + i): i for i in range(26)}
 DEFAULT_BEAMWIDTH_DEG: float = 1.0
 
 #: The five files that make up a complete LUT directory for one radar.
-#: ``{radar}`` is substituted with the single-letter radar name.
+#: ``{radar}`` is substituted with the canonical radar name.
 LUT_FILES: dict[str, str] = {
     "lut": "{radar}_LUT.parquet",
     "h_plane": "{radar}_h_plane_LUT.parquet",
@@ -237,6 +350,173 @@ def compute_gate_xyz(
 
 
 # ============================================================================
+# The nominal azimuth grid
+# ============================================================================
+
+#: Azimuths are stored in ``gate_id`` as ``round(azimuth * 10)`` — tenths of a
+#: degree.  A full turn is therefore ``360 * 10`` steps.
+AZIMUTH_SCALE: int = 10
+AZIMUTH_STEPS: int = 360 * AZIMUTH_SCALE
+
+
+def _round_half_up(values) -> np.ndarray:
+    """``round`` that always breaks .5 upwards, unlike numpy's banker's rounding.
+
+    A nominal grid lands exactly on a half-step whenever the ray spacing is an
+    odd multiple of 0.05° — 720-ray NEXRAD sweeps put every ray centre on
+    ``x.x5``.  Banker's rounding would then alternate down/up and turn a uniform
+    0.5° grid into an irregular 0.4°/0.6° one.
+    """
+    return np.floor(np.asarray(values, dtype=np.float64) + 0.5)
+
+
+def nominal_azimuth_grid(azimuths) -> np.ndarray:
+    """The canonical ray azimuths of one sweep, as tenths of a degree.
+
+    A radar's scan strategy fixes how many rays a sweep has and how they are
+    spaced; what varies volume to volume is only where the antenna *reports*
+    itself, which drifts by a few hundredths of a degree.  Rounding those
+    measured angles to 0.1° therefore puts the same physical ray in different
+    ``gate_id`` bins on different volumes, and every gate whose bin moved has no
+    LUT row — 6% of gates per volume on Rad4Alp, 35% on WSR-88D.
+
+    So the grid is derived from the scan strategy rather than from one volume's
+    measurements: ``step = 360 / n_rays``, and the offset is the circular mean
+    of the measured residuals (circular because the offset is only defined
+    modulo one step).  That gives 1.0° for a 360-ray Rad4Alp sweep and 0.5° for
+    a 720-ray NEXRAD super-resolution sweep, from the same rule — which is why
+    no per-network resolution has to be configured.
+
+    Parameters
+    ----------
+    azimuths : array-like
+        One sweep's measured ray azimuths [deg], any order.
+
+    Returns
+    -------
+    np.ndarray of int64
+        ``n_rays`` sorted azimuths in tenths of a degree, in ``[0, 3600)``.
+
+    Raises
+    ------
+    ValueError
+        If the sweep has no rays, if the spacing is finer than the 0.1°
+        ``gate_id`` resolution, or if two grid points collide after rounding.
+    """
+    az = np.asarray(azimuths, dtype=np.float64).ravel() % 360.0
+    n = az.size
+    if n == 0:
+        raise ValueError("cannot derive an azimuth grid from a sweep with no rays.")
+
+    step = 360.0 / n
+    if step * AZIMUTH_SCALE < 1.0:
+        raise ValueError(
+            f"{n} rays give a {step:.4f}° ray spacing, finer than the "
+            f"{1 / AZIMUTH_SCALE}° azimuth resolution of gate_id; two rays would "
+            f"share one gate_id."
+        )
+
+    # Residual of each ray against a step grid anchored at 0.  It is defined
+    # only modulo one step, so it is averaged as an angle on that period —
+    # a plain mean would be wrong whenever the residuals straddle the wrap.
+    resid = np.sort(az) - np.arange(n) * step
+    phase = 2.0 * np.pi * resid / step
+    offset = step * np.arctan2(np.sin(phase).mean(), np.cos(phase).mean()) / (2.0 * np.pi)
+
+    grid = (np.arange(n) * step + offset) % 360.0
+    az_int = np.sort(_round_half_up(grid * AZIMUTH_SCALE).astype(np.int64) % AZIMUTH_STEPS)
+    if np.unique(az_int).size != n:
+        raise ValueError(
+            f"the {n}-ray azimuth grid collides after rounding to "
+            f"{1 / AZIMUTH_SCALE}°; this scan strategy cannot be stored in gate_id."
+        )
+
+    # The grid is only meaningful if it actually fits the rays it came from.
+    # It assumes a full rotation of evenly spaced rays, so a sector scan (or a
+    # sweep with a large gap) would otherwise be silently mangled: 90 rays over
+    # a 90° sector get a 4° grid and collapse onto 23 of its points.
+    snapped, dist = snap_azimuths_to_grid(az, az_int)
+    tol = azimuth_grid_tolerance(az_int)
+    if np.unique(snapped).size != n or (dist.size and dist.max() > tol):
+        raise ValueError(
+            f"these {n} rays do not form a full rotation of evenly spaced rays "
+            f"(they span {np.ptp(np.sort(az)):.1f}° with a derived spacing of "
+            f"{step:.4f}°), so they have no nominal azimuth grid. Sector scans and "
+            f"irregular sweeps are not supported."
+        )
+    return az_int
+
+
+def azimuth_grid_tolerance(grid) -> float:
+    """Largest snap distance accepted for *grid*, in tenths of a degree.
+
+    Half the ray spacing: beyond that a ray is closer to its neighbour than to
+    itself, so it is not antenna drift but a different scan strategy.
+    """
+    n = len(grid)
+    return (AZIMUTH_STEPS / n) / 2.0 if n else float("inf")
+
+
+def snap_azimuths_to_grid(azimuths, grid) -> tuple[np.ndarray, np.ndarray]:
+    """Match measured azimuths onto a sweep's canonical grid.
+
+    Nearest neighbour **on the circle** — a ray reported at 359.97° belongs to
+    the grid point at 0.0°, not to the one at 359.5°.
+
+    Parameters
+    ----------
+    azimuths : array-like
+        Measured ray azimuths [deg].
+    grid : array-like of int
+        The sweep's canonical azimuths in tenths of a degree
+        (:func:`nominal_azimuth_grid`).
+
+    Returns
+    -------
+    (snapped, distance) : np.ndarray
+        ``snapped`` is the matched azimuth in tenths of a degree (int64);
+        ``distance`` is how far each ray moved, in the same units (float).
+    """
+    # The comparison runs at full precision, *not* on the 0.1°-rounded azimuth:
+    # rounding first would make a ray at 0.02° equidistant from 0.5° and 359.5°
+    # and let the tie-break send it the wrong way across the seam.
+    az_t = np.asarray(azimuths, dtype=np.float64).ravel() % 360.0 * AZIMUTH_SCALE
+    g = np.unique(np.asarray(grid, dtype=np.int64))
+    if g.size == 0:
+        raise ValueError("cannot snap to an empty azimuth grid.")
+
+    # Wrap the grid once each way so the nearest neighbour of a ray near 0° or
+    # 360° is found across the seam.
+    ext = np.concatenate([g - AZIMUTH_STEPS, g, g + AZIMUTH_STEPS]).astype(np.float64)
+    idx = np.clip(np.searchsorted(ext, az_t), 1, ext.size - 1)
+    lo, hi = ext[idx - 1], ext[idx]
+    take_lo = (az_t - lo) <= (hi - az_t)
+    snapped = np.where(take_lo, lo, hi).astype(np.int64) % AZIMUTH_STEPS
+    distance = np.where(take_lo, az_t - lo, hi - az_t)
+    return snapped, distance
+
+
+def load_azimuth_grids(radar: str, base_path: str | Path) -> dict[int, np.ndarray] | None:
+    """``{sweep: canonical azimuths}`` from a radar's info YAML, or ``None``.
+
+    ``None`` means the archive predates the nominal grid, in which case the
+    caller must keep using the measured azimuths — snapping to a grid that was
+    never recorded would move gates off their own LUT rows.
+    """
+    try:
+        info = load_radar_info(radar, base_path)
+    except (FileNotFoundError, OutdatedGateIdError):
+        return None
+    sweeps = (info or {}).get("sweeps") or {}
+    grids = {
+        int(sweep): np.asarray(meta["azimuths"], dtype=np.int64)
+        for sweep, meta in sweeps.items()
+        if isinstance(meta, dict) and meta.get("azimuths")
+    }
+    return grids or None
+
+
+# ============================================================================
 # Gate ID generation
 # ============================================================================
 
@@ -248,16 +528,17 @@ def encode_gate_ids(
 ) -> np.ndarray:
     """Vectorised 64-bit gate identifier encoding.
 
-    Encoding: ``radar_idx * 10^12 + sweep * 10^10 + az_int * 10^6 + range_int``
+    Encoding: ``radar_code * 10^12 + sweep * 10^10 + az_int * 10^6 + range_int``
 
-    where ``az_int = round(azimuth * 10)`` (1 decimal place precision) and
+    where ``radar_code`` is :func:`encode_radar_code`,
+    ``az_int = round(azimuth * 10)`` (1 decimal place precision) and
     ``range_int = int(range_m)`` (integer metres).  This is the single
     canonical implementation, used by LUT generation and volume archiving.
 
     Parameters
     ----------
     radar : str
-        Radar identifier (single letter, e.g. ``"A"``).
+        Radar identifier, e.g. ``"A"`` or ``"KTLX"``.
     sweeps : int or array
         Sweep number(s) — a scalar (applied to all gates) or an array
         aligned with ``azimuths`` / ``ranges``.
@@ -268,12 +549,12 @@ def encode_gate_ids(
     -------
     np.ndarray of int64
     """
-    radar_idx = np.int64(RADAR_TO_IDX[radar.upper()])
+    radar_code = np.int64(encode_radar_code(radar))
     sweep_v = np.asarray(sweeps, dtype=np.int64)
     az_int  = np.round(np.asarray(azimuths, dtype=np.float64) * 10).astype(np.int64)
     rng_int = np.asarray(ranges).astype(np.int64)
     return (
-        radar_idx * np.int64(1_000_000_000_000)
+        radar_code * np.int64(GATE_ID_RADAR_BASE)
         + sweep_v  * np.int64(   10_000_000_000)
         + az_int   * np.int64(        1_000_000)
         + rng_int
@@ -314,6 +595,131 @@ def _beamwidth_from_datatree(dt: xr.DataTree) -> float:
     return DEFAULT_BEAMWIDTH_DEG
 
 
+#: Distance error above which a CRS is refused for a radar site, in percent.
+#: Every legitimate case measured sits under 0.06%; every wrong one over 20%.
+CRS_REFUSE_PCT: float = 1.0
+#: Above this, the CRS is accepted but warned about.
+CRS_WARN_PCT: float = 0.1
+
+
+def suggest_crs(longitude: float, latitude: float) -> int:
+    """EPSG code of the UTM zone covering a site — a safe default suggestion.
+
+    UTM is not always the best choice (a national grid may fit better, and a
+    long-range radar can reach past its zone), but it is defined worldwide and
+    accurate to well under a percent near its central meridian, so it is a sound
+    thing to put in an error message when the user has to pick one.
+    """
+    zone = int((float(longitude) + 180.0) // 6) + 1
+    return (32600 if float(latitude) >= 0 else 32700) + zone
+
+
+def crs_distance_error(crs, longitude: float, latitude: float,
+                       baseline_m: float = 100_000.0) -> float:
+    """Worst relative distance error of ``crs`` at a site, in percent.
+
+    Projects a ``baseline_m`` geodesic in eight directions from the site and
+    compares each projected length with the true one.  This is measured rather
+    than read from the CRS's declared ``area_of_use``, because that metadata is
+    both incomplete (a custom proj4 definition may declare none) and
+    insufficient (EPSG:3857 claims the whole world, then reports a 100 km
+    baseline as 145 km in Switzerland).
+    """
+    import pyproj
+    from raddb.aoi import _to_pyproj_crs
+
+    geod = pyproj.Geod(ellps="WGS84")
+    tf = pyproj.Transformer.from_crs(_to_pyproj_crs(4326), _to_pyproj_crs(crs),
+                                     always_xy=True)
+    x0, y0 = tf.transform(longitude, latitude)
+    worst = 0.0
+    for azimuth in range(0, 360, 45):
+        lon2, lat2, _ = geod.fwd(longitude, latitude, azimuth, baseline_m)
+        x1, y1 = tf.transform(lon2, lat2)
+        worst = max(worst, abs(np.hypot(x1 - x0, y1 - y0) - baseline_m) / baseline_m)
+    return worst * 100.0
+
+
+def _crs_label(crs) -> str:
+    """Human name for a CRS, for error messages.
+
+    ``aoi._to_pyproj_crs`` resolves the common EPSG codes through DB-free proj4
+    strings, which lose the name — so look the code up directly when we have one.
+    """
+    import pyproj
+
+    if isinstance(crs, (int, np.integer)):
+        try:
+            named = pyproj.CRS.from_epsg(int(crs))
+            return f"EPSG:{int(crs)} ({named.name})"
+        except Exception:                                          # noqa: BLE001
+            return f"EPSG:{int(crs)}"
+    name = getattr(crs, "name", None)
+    return str(name) if name and name != "unknown" else str(crs)
+
+
+def validate_crs_for_site(crs, longitude: float, latitude: float, radar: str = "") -> float:
+    """Check that ``crs`` can carry radar geometry at this site; return the error %.
+
+    Raises when the CRS is geographic (degrees cannot express a crop radius) or
+    when it distorts distance by more than :data:`CRS_REFUSE_PCT` — which is what
+    using EPSG:2056 outside Switzerland does, to the tune of 20%.
+
+    Parameters
+    ----------
+    crs : int or CRS-like
+        The CRS the LUT will store projected coordinates in.
+    longitude, latitude : float
+        Radar site, WGS-84 degrees.
+    radar : str, optional
+        Used only to make the message concrete.
+
+    Returns
+    -------
+    float
+        Worst distance error at this site, in percent.
+    """
+    import warnings as _warnings
+    import pyproj
+    from raddb.aoi import _to_pyproj_crs
+
+    who = f"radar {radar} " if radar else ""
+    resolved = _to_pyproj_crs(crs)
+    label = _crs_label(crs)
+    if not resolved.is_projected:
+        raise ValueError(
+            f"{label} is a geographic CRS — its units are "
+            f"degrees, so it cannot express gate geometry, a crop radius or a "
+            f"cross-section distance. Pass a projected CRS; for {who}at "
+            f"({longitude:.4f}, {latitude:.4f}) try "
+            f"EPSG:{suggest_crs(longitude, latitude)}."
+        )
+
+    err = crs_distance_error(resolved, longitude, latitude)
+    if err > CRS_REFUSE_PCT:
+        area = getattr(resolved.area_of_use, "name", None)
+        if area is None and isinstance(crs, (int, np.integer)):
+            import pyproj
+            try:
+                area = getattr(pyproj.CRS.from_epsg(int(crs)).area_of_use, "name", None)
+            except Exception:                                      # noqa: BLE001
+                area = None
+        where = f", valid for {area}" if area else ""
+        raise ValueError(
+            f"{label}{where} distorts distance by {err:.1f}% at "
+            f"{who}({longitude:.4f}, {latitude:.4f}) — gate geometry, crops and "
+            f"cross-sections would all be wrong by that much. Suggested for this "
+            f"site: EPSG:{suggest_crs(longitude, latitude)}."
+        )
+    if err > CRS_WARN_PCT:
+        _warnings.warn(
+            f"{label} distorts distance by {err:.2f}% at "
+            f"{who}({longitude:.4f}, {latitude:.4f}).",
+            stacklevel=3,
+        )
+    return err
+
+
 def generate_lut_from_datatree(
     dt: xr.DataTree,
     radar: str,
@@ -343,7 +749,7 @@ def generate_lut_from_datatree(
         DataTree with ``sweep_N`` groups, each containing ``azimuth``,
         ``range``, and ``elevation`` coordinates.
     radar : str
-        Radar identifier (single letter, e.g. ``"A"``).
+        Radar identifier, e.g. ``"A"`` or ``"KTLX"``.
     output_base_path : str
         Base directory for LUT storage.
     ke : float
@@ -400,10 +806,30 @@ def generate_lut_from_datatree(
         sweep_idx = int(sweep_name.split("_")[-1])
         ds = dt[sweep_name].to_dataset()
 
-        azimuths = ds["azimuth"].values
+        measured_az = np.asarray(ds["azimuth"].values, dtype=np.float64)
         ranges = ds["range"].values
         elevations = ds["elevation"].values
+
+        # The LUT is the radar's *nominal* scan geometry, not a snapshot of this
+        # one volume's antenna readings.  Every later volume snaps onto this same
+        # grid, so a gate keeps its gate_id for the life of the archive; keying
+        # off the measured angles instead loses 6% (Rad4Alp) to 35% (WSR-88D) of
+        # the gates of every volume after the first.
+        az_grid = nominal_azimuth_grid(measured_az)
+        snapped, snap_dist = snap_azimuths_to_grid(measured_az, az_grid)
+        if np.unique(snapped).size != measured_az.size:
+            raise ValueError(
+                f"radar {radar!r} sweep {sweep_idx}: the {measured_az.size} rays do "
+                f"not sit one-per-point on a regular {360 / measured_az.size:.4f}° "
+                f"grid (two rays snap together), so this sweep has no nominal "
+                f"azimuth grid."
+            )
+        azimuths = snapped.astype(np.float64) / AZIMUTH_SCALE
         n_az, n_rng = len(azimuths), len(ranges)
+        logger.debug(
+            "sweep %d: %d rays snapped to the nominal grid, max move %.3f°.",
+            sweep_idx, n_az, snap_dist.max() / AZIMUTH_SCALE,
+        )
 
         # Compute Cartesian coordinates
         x_raw, y_raw, z_raw = antenna_vectors_to_cartesian(
@@ -459,6 +885,11 @@ def generate_lut_from_datatree(
             "range_resolution": round(rng_res, 3),
             "range_start": round(float(np.min(ranges)), 3),
             "dR": round(rng_res / 2.0, 3),
+            # The canonical ray azimuths, in tenths of a degree — exactly the
+            # values gate_id carries.  Written so archiving a later volume need
+            # not re-read the (80 MB) LUT to recover them.
+            "azimuth_scale": AZIMUTH_SCALE,
+            "azimuths": [int(v) for v in az_grid],
         }
         # Grids needed later for the corner/plane lattices — keep them so the
         # lattices are built from the same arrays the centroids came from,
@@ -474,11 +905,23 @@ def generate_lut_from_datatree(
         "LUT built: %d total gates, %d sweeps.", len(df_lut), len(sweep_meta)
     )
 
-    # Add projected coordinates if requested
-    if projection_epsg is not None or projection_crs is not None:
-        df_lut = add_lut_projection(
-            df_lut, epsg=projection_epsg, crs=projection_crs
+    # A CRS is required, and must hold at this radar's site.  There is no
+    # default: a silently wrong projection corrupts every crop and cross-section
+    # downstream, and the archive is the only place to catch it.
+    if projection_epsg is None and projection_crs is None:
+        raise ValueError(
+            f"archiving radar {radar!r} requires a CRS: the LUT stores projected "
+            f"gate coordinates, and crops and cross-sections are computed in them. "
+            f"There is no default because a wrong one is silently wrong. Radar "
+            f"{radar!r} is at ({radar_lon:.4f}, {radar_lat:.4f}); suggested: "
+            f"RadDB(crs={suggest_crs(radar_lon, radar_lat)})  "
+            f"# UTM zone {int((radar_lon + 180) // 6) + 1}"
         )
+    validate_crs_for_site(
+        projection_epsg if projection_epsg is not None else projection_crs,
+        radar_lon, radar_lat, radar,
+    )
+    df_lut = add_lut_projection(df_lut, epsg=projection_epsg, crs=projection_crs)
 
     crs_info = None
     proj_cols = _projection_column_names(df_lut)
@@ -499,6 +942,10 @@ def generate_lut_from_datatree(
         "longitude": radar_lon,
         "altitude": radar_alt,
         "crs": crs_info,
+        # Which gate_id encoding the stored ids use.  v1 (A=0..Z=25) and v2
+        # (base-36 of the name) disagree for every radar, so the reader has to
+        # be told rather than guess.
+        "gate_id_version": GATE_ID_VERSION,
         # Recorded for reproducibility: archives built before the ke 1.25 -> 4/3
         # fix carry incompatible geometry, so the file must say which model
         # produced it.
@@ -815,12 +1262,17 @@ def load_plane_nodes(
     """Load one of the node-lattice files (``h_plane`` / ``v_plane`` / ``corners``).
 
     ``sweep`` pushes a row filter into the parquet scan.
+
+    A pre-geometry archive (centroid LUT only) is backfilled on first read via
+    :func:`ensure_gate_planes` rather than raising.
     """
     path = lut_file_path(radar, kind, lut_base_path)
     if not path.exists():
+        ensure_gate_planes(radar, lut_base_path)
+    if not path.exists():
         raise FileNotFoundError(
-            f"{kind} lattice not found at {path}. Regenerate the LUT "
-            "(generate_lut_from_datatree) to create the geometry files."
+            f"{kind} lattice not found at {path}, and it could not be rebuilt from "
+            f"{radar}_LUT.parquet. Regenerate the LUT (generate_lut_from_datatree)."
         )
     lf = pl.scan_parquet(path)
     if sweep is not None:
@@ -931,6 +1383,201 @@ def gate_corner_table(
         "sweep": idx["sweep"],
         **{c: v.astype(np.float32) for c, v in out.items()},
     })
+
+
+def ensure_gate_planes(
+    radar: str,
+    lut_base_path: str | Path,
+    ke: float = 4.0 / 3.0,
+    beamwidth_deg: float | None = None,
+) -> bool:
+    """Backfill the three geometry lattices from the centroid LUT if they are missing.
+
+    Archives written before the geometry files existed hold only
+    ``{radar}_LUT.parquet`` + ``{radar}_info.yaml``.  Everything the lattices need
+    is derivable from those two, so rather than failing, rebuild them in place —
+    the centroid LUT is never rewritten (see :func:`_save_lut_outputs`).
+
+    The projection is taken from the ``crs`` block recorded in the info YAML, so a
+    backfilled ``h_plane`` carries the same ``x_<epsg>`` / ``y_<epsg>`` columns a
+    freshly generated one would.
+
+    Returns
+    -------
+    bool
+        ``True`` if files were written, ``False`` if all three already existed.
+    """
+    missing = [
+        kind for kind in ("h_plane", "v_plane", "corners")
+        if not lut_file_path(radar, kind, lut_base_path).exists()
+    ]
+    if not missing:
+        return False
+
+    info = load_radar_info(radar, lut_base_path)
+    if beamwidth_deg is None:
+        beamwidth_deg = float(info.get("beamwidth_deg") or DEFAULT_BEAMWIDTH_DEG)
+    logger.info(
+        "radar %s: geometry lattices %s missing -- rebuilding from the centroid LUT.",
+        radar, missing,
+    )
+
+    corners_by_sweep: dict[int, dict] = {}
+    for sweep_num, g in _sweep_grids_from_lut(radar, lut_base_path).items():
+        corners_by_sweep[int(sweep_num)] = compute_sweep_corners(
+            ranges=g["ranges"], azimuths=g["azimuths"], elevations=g["elevations"],
+            radar_lat=info["latitude"],
+            radar_lon=info["longitude"],
+            radar_alt=info["altitude"],
+            ke=ke,
+            beamwidth_deg=beamwidth_deg,
+        )
+
+    # Pre-geometry info YAMLs have no ``crs`` block, but the centroid LUT still
+    # carries its x_<epsg>/y_<epsg> columns — recover the EPSG from those so a
+    # backfilled h_plane is projected exactly like a freshly generated one.
+    epsg = (info.get("crs") or {}).get("epsg")
+    if epsg is None:
+        lut_cols = pl.scan_parquet(
+            lut_file_path(radar, "lut", lut_base_path)
+        ).collect_schema().names()
+        for name in _projection_column_names(pl.DataFrame(schema={c: pl.Float64 for c in lut_cols})):
+            suffix = name.split("_", 1)[1]
+            if name.startswith("x_") and suffix.isdigit():
+                epsg = int(suffix)
+                logger.info("radar %s: EPSG:%d recovered from the LUT columns.", radar, epsg)
+                break
+
+    planes = build_gate_planes(
+        corners_by_sweep,
+        radar_alt=float(info["altitude"]),
+        projection_epsg=epsg,
+    )
+    lut_dir = Path(lut_base_path) / radar / "LUT"
+    for kind in ("h_plane", "v_plane", "corners"):
+        path = lut_dir / LUT_FILES[kind].format(radar=radar)
+        if not path.exists():
+            planes[kind].write_parquet(path)
+            logger.info("%s lattice backfilled -> %s", kind, path)
+    return True
+
+
+def cappi_chords(
+    radar: str,
+    lut_base_path: str | Path,
+    altitude: float,
+    height: str = "asl",
+) -> "pl.DataFrame":
+    """Where a constant-altitude surface cuts each range bin — the CAPPI slice.
+
+    A CAPPI is a horizontal slice through the volume, so the question it asks of
+    the geometry is *vertical*: which gates does the plane ``z = altitude`` pass
+    through, and where along the beam does it enter and leave each one.  That is
+    answered by the ``v_plane`` lattice, whose ``(d, z)`` quads are the gates'
+    vertical faces.  ``h_plane`` has no altitude column at all, so it cannot
+    answer it; its role comes afterwards, turning each chord into an ``(x, y)``
+    polygon (see :func:`raddb.viz.plot.plot_cappi`).
+
+    The whole computation is **per sweep and range bin, not per gate**: ``d`` and
+    ``z`` do not depend on azimuth (elevation is constant across a sweep), which
+    is why ``v_plane`` compresses to a fraction of ``h_plane``.  So a few
+    thousand rows here serve every azimuth of the volume.
+
+    Parameters
+    ----------
+    radar : str
+    lut_base_path : str or Path
+        Archive root (the directory holding ``{radar}/LUT/``).
+    altitude : float
+        Slice altitude in metres.
+    height : {"asl", "rel"}
+        Whether ``altitude`` is above sea level (default) or above the radar.
+
+    Returns
+    -------
+    pl.DataFrame
+        One row per ``(sweep, rng_idx)`` the surface intersects:
+
+        * ``d_near`` / ``d_far`` — ground distance [m] where the slice enters and
+          leaves the gate.  Interior bins of a band clip to the bin edges; only
+          the first and last bin of a band are genuinely trimmed.
+        * ``z_center`` — the gate's mid-face altitude, in the same reference as
+          ``altitude``.  Used to resolve overlapping sweeps by taking the beam
+          whose centre is closest to the slice.
+        * ``dz_center`` — ``abs(z_center - altitude)``.
+
+        Empty when no beam reaches that altitude.
+
+    Notes
+    -----
+    Beam thickness grows with range (~1.7 km at 100 km for a 1° beam) and far
+    exceeds the height gained across one range bin, so a sweep typically
+    intersects a **wide contiguous band** of bins rather than a thin ring, and
+    neighbouring sweeps overlap heavily.
+    """
+    if height not in ("asl", "rel"):
+        raise ValueError(f"height must be 'asl' or 'rel'; got {height!r}.")
+    z_col = "z_asl" if height == "asl" else "z_rel"
+    z0 = float(altitude)
+
+    nodes = load_plane_nodes(radar, lut_base_path, "v_plane")
+    # Azimuth-independent: one ray of nodes describes every azimuth.
+    nodes = nodes.filter(pl.col("az_idx") == pl.col("az_idx").min())
+
+    bottom = _node_grids(nodes, ["d", z_col], level=-1)
+    top = _node_grids(nodes, ["d", z_col], level=1)
+
+    parts = []
+    for sweep_num in sorted(bottom):
+        if sweep_num not in top:
+            logger.warning("sweep %d missing the top level of the v_plane lattice.", sweep_num)
+            continue
+        # Node rows are (n_az+1, n_rng+1); one azimuth was kept, so row 0 is it.
+        d_b, z_b = bottom[sweep_num]["d"][0], bottom[sweep_num][z_col][0]
+        d_t, z_t = top[sweep_num]["d"][0], top[sweep_num][z_col][0]
+        if d_b.size < 2:
+            continue
+
+        # Vertical face of bin j, clockwise:
+        # near-bottom, far-bottom, far-top, near-top.
+        ring_d = np.stack([d_b[:-1], d_b[1:], d_t[1:], d_t[:-1]], axis=1)
+        ring_z = np.stack([z_b[:-1], z_b[1:], z_t[1:], z_t[:-1]], axis=1)
+
+        # Clip the quad against z == z0, edge by edge.  Convex quad -> at most
+        # one entry and one exit, so min/max of the crossings is the chord.
+        za, zb = ring_z, np.roll(ring_z, -1, axis=1)
+        da, db = ring_d, np.roll(ring_d, -1, axis=1)
+        sa, sb = za - z0, zb - z0
+        crosses = ((sa <= 0) & (sb >= 0)) | ((sa >= 0) & (sb <= 0))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            t = np.where(zb != za, (z0 - za) / (zb - za), 0.0)
+        d_cross = np.where(crosses, da + np.clip(t, 0.0, 1.0) * (db - da), np.nan)
+
+        hit = np.isfinite(d_cross).any(axis=1)
+        if not hit.any():
+            continue
+        # Mask before reducing: non-intersecting rows are all-NaN by design.
+        d_hit = d_cross[hit]
+        d_near = np.nanmin(d_hit, axis=1)
+        d_far = np.nanmax(d_hit, axis=1)
+        z_center = ring_z.mean(axis=1)[hit]
+
+        parts.append(pl.DataFrame({
+            "sweep": np.full(hit.sum(), sweep_num, dtype=np.int32),
+            "rng_idx": np.flatnonzero(hit).astype(np.int32),
+            "d_near": d_near.astype(np.float32),
+            "d_far": d_far.astype(np.float32),
+            "z_center": z_center.astype(np.float32),
+            "dz_center": np.abs(z_center - z0).astype(np.float32),
+        }))
+
+    if not parts:
+        return pl.DataFrame(schema={
+            "sweep": pl.Int32, "rng_idx": pl.Int32,
+            "d_near": pl.Float32, "d_far": pl.Float32,
+            "z_center": pl.Float32, "dz_center": pl.Float32,
+        })
+    return pl.concat(parts, how="vertical")
 
 
 def save_sweep_corners(
@@ -1078,11 +1725,13 @@ def load_sweep_corners(
 # Per-radar cache of gate_id -> (sweep, azimuth index, range index) into the
 # corner arrays: {(base_path, radar): pl.DataFrame}.  ~27 MB per radar, built
 # once per session.
-_GRID_CACHE: dict[tuple[str, str], "pl.DataFrame"] = {}
+_GRID_CACHE: dict[tuple[str, str, int], "pl.DataFrame"] = {}
 
 
 def decode_gate_ids(gate_ids) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Inverse of :func:`encode_gate_ids` (radar index excluded).
+    """Inverse of :func:`encode_gate_ids` (radar code excluded).
+
+    Use :func:`decode_gate_radars` for the radar names.
 
     Returns
     -------
@@ -1097,6 +1746,36 @@ def decode_gate_ids(gate_ids) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return sweeps, az_int.astype(np.float64) / 10.0, rng_m.astype(np.float64)
 
 
+def decode_gate_radars(gate_ids) -> list[str]:
+    """Sorted distinct radar names encoded in a set of ``gate_id`` values.
+
+    The radar code is the leading field of the encoding
+    (``code = gate_id // 10**12``), so the radars a frame spans can be read off
+    without a separate ``radar`` column.  Codes that name no radar are skipped
+    with a warning rather than raising — a frame is still usable when one of
+    its radars cannot be identified.
+
+    Parameters
+    ----------
+    gate_ids : array-like of int64
+
+    Returns
+    -------
+    list of str
+        e.g. ``["KTLX", "L"]``.
+    """
+    ids = np.asarray(gate_ids, dtype=np.int64)
+    if ids.size == 0:
+        return []
+    names = []
+    for code in np.unique(ids // np.int64(GATE_ID_RADAR_BASE)):
+        try:
+            names.append(decode_radar_code(int(code)))
+        except ValueError:
+            logger.warning("gate_id radar code %d names no radar; skipped.", int(code))
+    return sorted(names)
+
+
 def _gate_grid_index(radar: str, lut_base_path: str | Path) -> "pl.DataFrame":
     """Map every ``gate_id`` to its position in the per-sweep corner arrays.
 
@@ -1109,14 +1788,17 @@ def _gate_grid_index(radar: str, lut_base_path: str | Path) -> "pl.DataFrame":
     because ``gate_id`` stores azimuth rounded to 0.1° while the LUT keeps the
     raw antenna azimuth (~0.03° jitter); matching the floats would fail.
     """
-    key = (str(lut_base_path), radar)
+    lut_path = Path(lut_base_path) / radar / "LUT" / f"{radar}_LUT.parquet"
+    if not lut_path.exists():
+        raise FileNotFoundError(f"LUT not found at {lut_path}.")
+
+    # mtime is part of the key: regenerating a LUT in a live session must not
+    # keep serving the geometry of the previous one.
+    key = (str(lut_base_path), radar, lut_path.stat().st_mtime_ns)
     cached = _GRID_CACHE.get(key)
     if cached is not None:
         return cached
 
-    lut_path = Path(lut_base_path) / radar / "LUT" / f"{radar}_LUT.parquet"
-    if not lut_path.exists():
-        raise FileNotFoundError(f"LUT not found at {lut_path}.")
     lut = pl.read_parquet(lut_path, columns=["gate_id", "sweep", "azimuth", "range"])
 
     parts = []
@@ -1271,14 +1953,51 @@ def load_radar_lut(
 def load_radar_info(
     radar: str, lut_base_path: str | Path
 ) -> dict:
-    """Load the radar info YAML for a radar."""
+    """Load the radar info YAML for a radar.
+
+    Raises
+    ------
+    OutdatedGateIdError
+        If the archive was written with the v1 ``gate_id`` encoding.
+    """
     info_path = (
         Path(lut_base_path) / radar / "LUT" / f"{radar}_info.yaml"
     )
     if not info_path.exists():
         raise FileNotFoundError(f"Info not found at {info_path}.")
     with open(info_path) as f:
-        return yaml.safe_load(f)
+        info = yaml.safe_load(f)
+    check_gate_id_version(info, radar=radar, base_path=lut_base_path)
+    return info
+
+
+class OutdatedGateIdError(RuntimeError):
+    """An archive still holds v1 ``gate_id`` values and must be migrated."""
+
+
+def check_gate_id_version(info: dict, radar: str, base_path: str | Path) -> int:
+    """Validate the ``gate_id`` encoding version recorded in a radar's info.
+
+    Archives written before the base-36 radar code carry no ``gate_id_version``
+    key at all, so a missing key means v1.  Reading one as v2 would silently
+    rename its radars (a v1 ``"L"`` prefix of 11 decodes to ``"B"`` under v2),
+    which is worse than refusing, hence the hard error.
+
+    Returns
+    -------
+    int
+        The archive's ``gate_id`` version, always :data:`GATE_ID_VERSION`.
+    """
+    version = int((info or {}).get("gate_id_version", 1))
+    if version != GATE_ID_VERSION:
+        raise OutdatedGateIdError(
+            f"radar {radar!r} in {base_path} uses gate_id encoding v{version}, "
+            f"but this version of RadDB writes and reads v{GATE_ID_VERSION} "
+            f"(radar codes are base-36 of the name, so v1 ids decode to the "
+            f"wrong radar). Migrate the archive in place with:\n"
+            f"    python -m raddb.tools.migrate_gate_id_v2 {base_path}"
+        )
+    return version
 
 
 def get_full_sweep_index(

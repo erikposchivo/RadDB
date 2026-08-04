@@ -87,7 +87,7 @@ class TestSelStaticLutColumns:
         assert "range" not in out.columns()
 
     def test_range_selection_matches_the_lut(self, rdf, tmp_path):
-        lut = RadDB(archive_dir=str(tmp_path)).get_lut(RADAR)
+        lut = RadDB(archive_dir=str(tmp_path), crs=2056).get_lut(RADAR)
         want = set(
             lut.filter((pl.col("range") >= 2_000) & (pl.col("range") <= 10_000))["gate_id"]
             .to_list()

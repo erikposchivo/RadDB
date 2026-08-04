@@ -19,6 +19,8 @@ import pandas as pd
 import pytest
 import xarray as xr
 
+from raddb.lut import generate_lut_from_datatree
+
 _PKG_ROOT = Path(__file__).resolve().parents[2]
 if str(_PKG_ROOT) not in sys.path:
     sys.path.insert(0, str(_PKG_ROOT))
@@ -87,7 +89,7 @@ class TestLoadDatatreeSingleVolume:
         base = str(tmp_path)
 
         # Generate LUT
-        generate_lut_from_datatree(dt, radar=RADAR, output_base_path=base)
+        generate_lut_from_datatree(dt, radar=RADAR, output_base_path=base, projection_epsg=2056)
 
         # Archive volume
         datatree_to_parquet(dt, radar=RADAR, base_output_path=base)
@@ -123,7 +125,7 @@ class TestLoadDatatreeMultiVolume:
         dt2 = _make_datatree(vol_time=pd.Timestamp("2024-08-01 12:05:00"))
 
         # Generate LUT from first volume
-        generate_lut_from_datatree(dt1, radar=RADAR, output_base_path=base)
+        generate_lut_from_datatree(dt1, radar=RADAR, output_base_path=base, projection_epsg=2056)
 
         # Archive both volumes
         datatree_to_parquet(dt1, radar=RADAR, base_output_path=base)
@@ -158,7 +160,7 @@ class TestSweepColumnInDataFrame:
         base = str(tmp_path)
         dt = _make_datatree(vol_time=pd.Timestamp("2024-08-01 12:00:00"))
 
-        generate_lut_from_datatree(dt, radar=RADAR, output_base_path=base)
+        generate_lut_from_datatree(dt, radar=RADAR, output_base_path=base, projection_epsg=2056)
         datatree_to_parquet(dt, radar=RADAR, base_output_path=base)
 
         df = parquet_to_dataframe(
@@ -191,10 +193,10 @@ class TestSweepColumnInDataFrame:
 
         # Set up two radars
         for r in ["A", "D"]:
-            generate_lut_from_datatree(dt, radar=r, output_base_path=base)
+            generate_lut_from_datatree(dt, radar=r, output_base_path=base, projection_epsg=2056)
             datatree_to_parquet(dt, radar=r, base_output_path=base)
 
-        db = RadDB(archive_dir=base)
+        db = RadDB(archive_dir=base, crs=2056)
         rdf = db.open(
             radars=["A", "D"],
             time_period=("2024-08-01 00:00", "2024-08-02 00:00"),
@@ -249,17 +251,31 @@ class TestGenerateLutProjection:
         assert len(proj_y_cols) == 1, f"Expected one y_ projection column, got {proj_y_cols}"
         assert lut[proj_x_cols[0]].is_not_null().any(), "Projected x values should not all be NaN"
 
-    def test_lut_without_projection_has_no_extra_cols(self, tmp_path):
-        from raddb.lut import generate_lut_from_datatree, load_radar_lut
+    def test_archiving_without_a_crs_is_refused(self, tmp_path):
+        """A CRS is mandatory: a wrong or absent one silently breaks every AOI."""
+        with pytest.raises(ValueError, match="requires a CRS"):
+            generate_lut_from_datatree(
+                _make_datatree(), radar=RADAR, output_base_path=str(tmp_path)
+            )
 
-        base = str(tmp_path)
-        dt = _make_datatree(vol_time=pd.Timestamp("2024-08-01 12:00:00"))
+    def test_refusal_names_a_usable_crs(self, tmp_path):
+        """The message must tell the user what to pass, not just complain."""
+        with pytest.raises(ValueError, match=r"RadDB\(crs=32632\)"):
+            generate_lut_from_datatree(
+                _make_datatree(), radar=RADAR, output_base_path=str(tmp_path)
+            )
 
-        generate_lut_from_datatree(dt, radar=RADAR, output_base_path=base)
-
-        lut = load_radar_lut(RADAR, base)
-        proj_cols = [c for c in lut.columns if c.startswith("x_") or c.startswith("y_")]
-        assert len(proj_cols) == 0, f"No projection columns expected, got {proj_cols}"
+    def test_a_crs_invalid_at_the_site_is_refused(self, tmp_path):
+        """EPSG:2056 outside Switzerland distorts distance ~20%."""
+        from raddb.tests.test_fixes import _make_datatree as mk
+        dt = mk()
+        for name in list(dt.children):
+            ds = dt[name].to_dataset().assign_coords(latitude=35.33, longitude=-97.28)
+            dt[name] = xr.DataTree(ds)
+        with pytest.raises(ValueError, match="distorts distance"):
+            generate_lut_from_datatree(
+                dt, radar=RADAR, output_base_path=str(tmp_path), projection_epsg=2056
+            )
 
     def test_api_archive_with_projection(self, tmp_path):
         """archive() auto-generates a LUT with projected columns when crs is set."""

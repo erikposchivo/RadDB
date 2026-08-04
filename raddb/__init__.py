@@ -24,8 +24,11 @@ from raddb.main import RadDB
 
 # Helper functions
 from raddb.helper import (
+    RADAR_ALPHABET,
+    RADAR_CODE_LEN,
     read_parquet_files,
     check_dataframe,
+    is_valid_radar_name,
     list_sweep_names,
     normalize_radar_name,
     StageTimer,
@@ -54,14 +57,28 @@ from raddb.discovery import find_datatree_files
 
 # LUT functions
 from raddb.lut import (
+    AZIMUTH_SCALE,
+    GATE_ID_RADAR_BASE,
+    azimuth_grid_tolerance,
+    load_azimuth_grids,
+    nominal_azimuth_grid,
+    snap_azimuths_to_grid,
+    GATE_ID_VERSION,
+    MAX_RADAR_CODE,
     RADAR_TO_IDX,
     DEFAULT_BEAMWIDTH_DEG,
+    OutdatedGateIdError,
+    decode_gate_radars,
+    decode_radar_code,
+    encode_radar_code,
     LUT_FILES,
     antenna_vectors_to_cartesian,
     build_gate_planes,
+    cappi_chords,
     cartesian_to_geographic,
     compute_gate_xyz,
     compute_sweep_corners,
+    ensure_gate_planes,
     gate_corner_table,
     generate_gate_id,
     generate_lut_from_datatree,
@@ -85,6 +102,9 @@ from raddb.io_core import (
 from raddb.viz.plot import (
     plot_ppi,
     plot_rhi,
+    plot_cappi,
+    plot_vcs,
+    plot_cross_section,
     plot_latent_scatter,
 )
 
@@ -106,6 +126,9 @@ __all__ = [
     "check_dataframe",
     "list_sweep_names",
     "normalize_radar_name",
+    "is_valid_radar_name",
+    "RADAR_ALPHABET",
+    "RADAR_CODE_LEN",
     "StageTimer",
     # I/O functions
     "datatree_to_dataset",
@@ -126,13 +149,27 @@ __all__ = [
     "find_datatree_files",
     # LUT functions
     "RADAR_TO_IDX",
+    "GATE_ID_RADAR_BASE",
+    "GATE_ID_VERSION",
+    "MAX_RADAR_CODE",
+    "AZIMUTH_SCALE",
+    "nominal_azimuth_grid",
+    "snap_azimuths_to_grid",
+    "azimuth_grid_tolerance",
+    "load_azimuth_grids",
+    "OutdatedGateIdError",
+    "encode_radar_code",
+    "decode_radar_code",
+    "decode_gate_radars",
     "DEFAULT_BEAMWIDTH_DEG",
     "LUT_FILES",
     "antenna_vectors_to_cartesian",
     "build_gate_planes",
+    "cappi_chords",
     "cartesian_to_geographic",
     "compute_gate_xyz",
     "compute_sweep_corners",
+    "ensure_gate_planes",
     "gate_corner_table",
     "generate_gate_id",
     "generate_lut_from_datatree",
@@ -152,6 +189,9 @@ __all__ = [
     # Plotting functions
     "plot_ppi",
     "plot_rhi",
+    "plot_cappi",
+    "plot_vcs",
+    "plot_cross_section",
     "plot_latent_scatter",
     # Profiling helpers
     "plot_stage_totals",

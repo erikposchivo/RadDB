@@ -23,7 +23,15 @@ import polars as pl
 import xarray as xr
 import yaml
 
-from raddb.lut import _parse_corners_npz, encode_gate_ids, get_full_sweep_index
+from raddb.lut import (
+    AZIMUTH_SCALE,
+    _parse_corners_npz,
+    azimuth_grid_tolerance,
+    encode_gate_ids,
+    get_full_sweep_index,
+    load_azimuth_grids,
+    snap_azimuths_to_grid,
+)
 from raddb.helper import (
     StageTimer,
     _vprint,
@@ -234,12 +242,64 @@ def _compute_gate_temperature(
     return (_LAPSE_RATE * (gate_alt - hzt)).astype(np.float32)
 
 
+def _snap_volume_azimuths(sweeps, azimuths, grids, radar):
+    """Move each ray onto its sweep's canonical azimuth, in place of the measured one.
+
+    The antenna reports where it actually pointed, which drifts by a few
+    hundredths of a degree between volumes; ``gate_id`` resolves 0.1°, so an
+    unsnapped ray lands in a neighbouring bin and its gates match no LUT row.
+    See :func:`raddb.lut.nominal_azimuth_grid`.
+
+    Returns
+    -------
+    (azimuths, worst_move_deg)
+
+    Raises
+    ------
+    ValueError
+        If a sweep is missing from the LUT, holds a different number of rays, or
+        a ray sits further than half a ray spacing from the grid — all of which
+        mean this volume was scanned with a different strategy than the LUT was
+        built for, and no snapping can reconcile them.
+    """
+    out = np.array(azimuths, dtype=np.float64, copy=True)
+    worst = 0.0
+    for sweep in np.unique(sweeps):
+        grid = grids.get(int(sweep))
+        if grid is None:
+            raise ValueError(
+                f"radar {radar!r}: the LUT has no sweep {int(sweep)}, but this "
+                f"volume does — it uses a different scan strategy."
+            )
+        sel = sweeps == sweep
+        n_rays = np.unique(out[sel]).size
+        if n_rays != len(grid):
+            raise ValueError(
+                f"radar {radar!r} sweep {int(sweep)}: volume has {n_rays} rays, "
+                f"the LUT was built for {len(grid)} — a different scan strategy. "
+                f"Archive it under its own radar name, or rebuild the LUT."
+            )
+        snapped, dist = snap_azimuths_to_grid(out[sel], grid)
+        tol = azimuth_grid_tolerance(grid)
+        if dist.size and dist.max() > tol:
+            raise ValueError(
+                f"radar {radar!r} sweep {int(sweep)}: a ray sits "
+                f"{dist.max() / AZIMUTH_SCALE:.3f}° from the nearest LUT azimuth, "
+                f"beyond the half-spacing tolerance of {tol / AZIMUTH_SCALE:.3f}° "
+                f"— this is not antenna drift."
+            )
+        out[sel] = snapped.astype(np.float64) / AZIMUTH_SCALE
+        worst = max(worst, float(dist.max()) if dist.size else 0.0)
+    return out, worst / AZIMUTH_SCALE
+
+
 def _build_polar_dataframe(
     df: "pl.DataFrame | pd.DataFrame",
     radar: str,
     filter_feature: str,
     filter_threshold: float,
     filter_logic: str,
+    azimuth_grids: dict | None = None,
 ) -> tuple["pl.DataFrame", np.ndarray]:
     """Filter a flattened volume DataFrame and attach gate_ids.
 
@@ -249,6 +309,11 @@ def _build_polar_dataframe(
 
     This is the single shared core of :func:`datatree_to_parquet` and
     :func:`archive_volume`.
+
+    ``azimuth_grids`` maps sweep -> canonical azimuths (tenths of a degree); when
+    given, every ray is snapped onto it before its ``gate_id`` is built, so the
+    volume joins its LUT exactly.  ``None`` — an archive predating the grid —
+    keeps the measured azimuths, i.e. the previous behaviour.
 
     Returns
     -------
@@ -266,10 +331,30 @@ def _build_polar_dataframe(
         )
         mask = np.ones(len(df), dtype=bool)
 
+    sweeps_all = _col(df, "sweep", np.int64)
+    azimuths_all = _col(df, "azimuth", np.float64)
+    if azimuth_grids:
+        # Snapped before the filter, so the scan-strategy check counts the
+        # volume's rays rather than only those that survived the filter.
+        azimuths_all, worst = _snap_volume_azimuths(
+            sweeps_all, azimuths_all, azimuth_grids, radar
+        )
+        logger.debug("radar %s: rays snapped, max move %.3f deg.", radar, worst)
+    else:
+        # The old, silent failure mode: without a grid the measured azimuths go
+        # straight into gate_id, and every ray whose 0.1° bin drifted since the
+        # LUT was built produces gates that match no LUT row and vanish from
+        # every join.  Say so rather than losing 6-35% of the volume quietly.
+        logger.warning(
+            "radar %s: the LUT records no nominal azimuth grid, so measured "
+            "azimuths are used as-is and some gates may not join it. Regenerate "
+            "the LUT to fix this.", radar,
+        )
+
     gate_ids = encode_gate_ids(
         radar,
-        _col(df, "sweep", np.int64)[mask],
-        _col(df, "azimuth", np.float64)[mask],
+        sweeps_all[mask],
+        azimuths_all[mask],
         _col(df, "range")[mask],
     )
 
@@ -316,7 +401,7 @@ def archive_volume(
     dt : xr.DataTree
         Processed volume (any radar network).
     radar : str
-        Radar identifier (single letter, e.g. ``"A"``).
+        Radar identifier, e.g. ``"A"`` or ``"KTLX"``.
     base_output_path : str
         Base output directory for parquet files.
     filter_feature : str
@@ -351,7 +436,8 @@ def archive_volume(
         else _nullctx()
     ):
         df_polar, _mask = _build_polar_dataframe(
-            df, radar, filter_feature, filter_threshold, filter_logic
+            df, radar, filter_feature, filter_threshold, filter_logic,
+            azimuth_grids=load_azimuth_grids(radar, base_output_path),
         )
 
     with (
@@ -582,7 +668,8 @@ def datatree_to_parquet(
 
     df = datatree_to_dataframe(dt, max_workers)
     df_polar, mask = _build_polar_dataframe(
-        df, radar, filter_feature, filter_threshold, filter_logic
+        df, radar, filter_feature, filter_threshold, filter_logic,
+        azimuth_grids=load_azimuth_grids(radar, base_output_path),
     )
     df_polar = _finalize_polar_dtypes(df_polar, df, mask)
     return _save_polar_parquet(df_polar, radar, base_output_path)

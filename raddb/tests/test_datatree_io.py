@@ -191,7 +191,7 @@ class TestArchiveFromDatatrees:
         out = tmp_path / "archive"
         _write_nc_volumes(src)
 
-        db = RadDB(archive_dir=str(out))
+        db = RadDB(archive_dir=str(out), crs=2056)
         res = db.archive(datatree_dir=src, radar=RADAR)
         assert (res["n_archived"], res["n_failed"]) == (3, 0)
 
@@ -217,7 +217,7 @@ class TestArchiveFromDatatrees:
         out = tmp_path / "archive"
         _write_nc_volumes(src)
 
-        db = RadDB(archive_dir=str(out))
+        db = RadDB(archive_dir=str(out), crs=2056)
         assert db.archive(datatree_dir=src, radar=RADAR)["n_archived"] == 3
         # second run: everything checkpointed
         assert db.archive(datatree_dir=src, radar=RADAR)["n_archived"] == 0
@@ -230,7 +230,7 @@ class TestArchiveFromDatatrees:
         out = tmp_path / "archive"
         _write_nc_volumes(src, minutes=(0, 5, 10))
 
-        db = RadDB(archive_dir=str(out))
+        db = RadDB(archive_dir=str(out), crs=2056)
         res = db.archive(
             datatree_dir=src, radar=RADAR,
             time_period=("2024-01-01 12:04", "2024-01-01 12:11"),
@@ -242,17 +242,41 @@ class TestArchiveFromDatatrees:
         from raddb.main import RadDB
 
         src = tmp_path / "input"
+        src.mkdir(parents=True)
         out = tmp_path / "archive"
-        _write_nc_volumes(src)  # files are named vol_* -> radar "vol" (not A-Z)
+        # "OVERLONG" is 8 characters -> not a usable radar name, so the file is
+        # skipped rather than silently archived under its last letter.
+        _make_datatree(n_sweeps=2, vol_time=pd.Timestamp("2024-01-01 12:00:00")).to_netcdf(
+            src / "OVERLONG_20240101_120000.nc"
+        )
 
-        db = RadDB(archive_dir=str(out))
-        res = db.archive(datatree_dir=src)  # radar=None -> infer per file; "vol" skipped
+        db = RadDB(archive_dir=str(out), crs=2056)
+        res = db.archive(datatree_dir=src)  # radar=None -> infer per file
         assert res["n_archived"] == 0
+        assert not (out / "N").exists()  # not filed under the last letter either
+
+    def test_four_letter_radar_archives(self, tmp_path):
+        """A NEXRAD-style 4-character name survives whole (gate_id v2)."""
+        pytest.importorskip("netCDF4")
+        from raddb.main import RadDB
+
+        src = tmp_path / "input"
+        src.mkdir(parents=True)
+        out = tmp_path / "archive"
+        _make_datatree(n_sweeps=2, vol_time=pd.Timestamp("2024-01-01 12:00:00")).to_netcdf(
+            src / "KTLX_20240101_120000.nc"
+        )
+
+        db = RadDB(archive_dir=str(out), crs=2056)
+        res = db.archive(datatree_dir=src)
+        assert (res["n_archived"], res["n_failed"]) == (1, 0)
+        assert (out / "KTLX" / "LUT" / "KTLX_LUT.parquet").exists()
+        assert db.list_radars() == ["KTLX"]
 
     def test_both_sources_raises(self, tmp_path):
         from raddb.main import RadDB
 
-        db = RadDB(archive_dir=str(tmp_path))
+        db = RadDB(archive_dir=str(tmp_path), crs=2056)
         with pytest.raises(ValueError, match="exactly one"):
             db.archive(datatree_dir=tmp_path, datatree=object())
 
@@ -261,5 +285,5 @@ class TestArchiveFromDatatrees:
 
         src = tmp_path / "empty"
         src.mkdir()
-        db = RadDB(archive_dir=str(tmp_path / "out"))
+        db = RadDB(archive_dir=str(tmp_path / "out"), crs=2056)
         assert db.archive(datatree_dir=src, radar=RADAR)["n_archived"] == 0

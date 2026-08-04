@@ -20,6 +20,8 @@ All tests use synthetic DataTrees in ``tmp_path``; no real radar files needed.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import polars as pl
 import pytest
@@ -94,6 +96,7 @@ def real_base_plain(tmp_path_factory):
     generate_lut_from_datatree(
         _make_datatree(n_az=REAL_N_AZ, n_rng=REAL_N_RNG, n_sweeps=REAL_N_SWEEPS),
         radar=RADAR, output_base_path=str(d),
+        projection_epsg=2056,
     )
     return str(d)
 
@@ -172,50 +175,49 @@ class TestInfoYaml:
         # both are rounded to mm in the YAML, so allow half a mm of slack
         assert s["dR"] == pytest.approx(s["range_resolution"] / 2.0, abs=1e-3)
 
-    def test_crs_is_null_without_projection(self, tmp_path):
-        generate_lut_from_datatree(
-            _make_datatree(), radar=RADAR, output_base_path=str(tmp_path)
-        )
+    def test_crs_block_records_what_was_used(self, real_base):
+        """A CRS is mandatory, so the block is always populated."""
         info = yaml.safe_load(
-            (tmp_path / RADAR / "LUT" / f"{RADAR}_info.yaml").read_text()
-        )
-        assert info["crs"] is None
+            (Path(real_base) / RADAR / "LUT" / f"{RADAR}_info.yaml").read_text())
+        assert info["crs"]["epsg"] == 2056
+        assert info["crs"]["columns"] == ["x_2056", "y_2056"]
+
 
 
 class TestLatticeShape:
     def test_h_plane_is_one_node_grid_per_sweep(self, base):
-        db = RadDB(archive_dir=base)
+        db = RadDB(archive_dir=base, crs=2056)
         nodes = db.get_h_plane(RADAR)
         assert nodes.height == N_SWEEPS * (N_AZ + 1) * (N_RNG + 1)
         assert "el_level" not in nodes.columns          # centre level only
 
     def test_corners_has_two_elevation_levels(self, base):
-        db = RadDB(archive_dir=base)
+        db = RadDB(archive_dir=base, crs=2056)
         nodes = db.get_corners(RADAR)
         assert sorted(nodes["el_level"].unique().to_list()) == [-1, 1]
         assert nodes.height == 2 * N_SWEEPS * (N_AZ + 1) * (N_RNG + 1)
 
     def test_sweep_filter(self, base):
-        db = RadDB(archive_dir=base)
+        db = RadDB(archive_dir=base, crs=2056)
         one = db.get_h_plane(RADAR, sweep=1)
         assert one["sweep"].unique().to_list() == [1]
         assert one.height == (N_AZ + 1) * (N_RNG + 1)
 
     def test_projected_columns_present(self, base):
-        db = RadDB(archive_dir=base)
+        db = RadDB(archive_dir=base, crs=2056)
         assert {"x_2056", "y_2056"} <= set(db.get_h_plane(RADAR).columns)
 
 
 class TestPerGateCorners:
     def test_h_plane_has_four_corners(self, base):
-        t = RadDB(archive_dir=base).get_h_plane(RADAR, per_gate=True)
+        t = RadDB(archive_dir=base, crs=2056).get_h_plane(RADAR, per_gate=True)
         assert t.height == N_GATES
         for k in range(1, 5):
             assert f"x_{k}" in t.columns and f"y_{k}" in t.columns
         assert "x_5" not in t.columns
 
     def test_corners_has_eight(self, base):
-        t = RadDB(archive_dir=base).get_corners(RADAR, per_gate=True)
+        t = RadDB(archive_dir=base, crs=2056).get_corners(RADAR, per_gate=True)
         assert t.height == N_GATES
         for k in range(1, 9):
             assert {f"x_{k}", f"y_{k}", f"z_rel_{k}"} <= set(t.columns)
@@ -223,7 +225,7 @@ class TestPerGateCorners:
 
     def test_eight_corners_are_distinct(self, base):
         """8 distinct corners, except the degenerate innermost range bin."""
-        db = RadDB(archive_dir=base)
+        db = RadDB(archive_dir=base, crs=2056)
         t = db.get_corners(RADAR, per_gate=True)
         pts = np.stack([
             np.stack([t[f"x_{k}"].to_numpy(), t[f"y_{k}"].to_numpy(),
@@ -238,7 +240,7 @@ class TestPerGateCorners:
         assert (n_distinct == 8).mean() > 0.9
 
     def test_gate_ids_match_the_lut(self, base):
-        db = RadDB(archive_dir=base)
+        db = RadDB(archive_dir=base, crs=2056)
         lut_ids = set(db.get_lut(RADAR)["gate_id"].to_list())
         assert set(db.get_corners(RADAR, per_gate=True)["gate_id"].to_list()) == lut_ids
 
@@ -247,7 +249,7 @@ class TestFrustumProperty:
     """The beam widens with range: the far face must exceed the near face."""
 
     def test_far_face_is_larger_than_near_face(self, base):
-        t = RadDB(archive_dir=base).get_corners(RADAR, per_gate=True)
+        t = RadDB(archive_dir=base, crs=2056).get_corners(RADAR, per_gate=True)
         near = _face_area(t, [1, 2, 3, 4])
         far = _face_area(t, [5, 6, 7, 8])
         assert np.all(far > near), (
@@ -257,7 +259,7 @@ class TestFrustumProperty:
 
     def test_ratio_is_physically_sane(self, base):
         """Excluding the degenerate innermost bin, the ratio stays bounded."""
-        t = RadDB(archive_dir=base).get_corners(RADAR, per_gate=True)
+        t = RadDB(archive_dir=base, crs=2056).get_corners(RADAR, per_gate=True)
         near = _face_area(t, [1, 2, 3, 4])
         far = _face_area(t, [5, 6, 7, 8])
         ok = near > 1.0                      # drop the r~0 near face
@@ -266,7 +268,7 @@ class TestFrustumProperty:
         assert ratio.max() < 100.0
 
     def test_faces_are_valid_polygons(self, base):
-        t = RadDB(archive_dir=base).get_h_plane(RADAR, per_gate=True)
+        t = RadDB(archive_dir=base, crs=2056).get_h_plane(RADAR, per_gate=True)
         ring = np.stack([
             np.stack([t[f"x_{k}"].to_numpy(), t[f"y_{k}"].to_numpy()], axis=1)
             for k in (1, 2, 3, 4, 1)
@@ -277,7 +279,7 @@ class TestFrustumProperty:
 class TestCentroidContainment:
     def test_centroid_inside_its_own_footprint(self, real_base):
         """Needs realistic (1 deg) azimuth sampling — see ``real_base``."""
-        db = RadDB(archive_dir=real_base)
+        db = RadDB(archive_dir=real_base, crs=2056)
         t = db.get_h_plane(RADAR, per_gate=True).sort("gate_id")
         lut = db.get_lut(RADAR).sort("gate_id")
         ring = np.stack([
@@ -291,7 +293,7 @@ class TestCentroidContainment:
         assert shapely.covers(polys, pts).all()
 
     def test_centroid_between_the_elevation_levels(self, base):
-        db = RadDB(archive_dir=base)
+        db = RadDB(archive_dir=base, crs=2056)
         t = db.get_corners(RADAR, per_gate=True).sort("gate_id")
         lut = db.get_lut(RADAR).sort("gate_id")
         zc = lut["z"].to_numpy()
@@ -304,33 +306,33 @@ class TestCentroidContainment:
 
 class TestVPlane:
     def test_altitude_references_differ_by_site_altitude(self, base):
-        db = RadDB(archive_dir=base)
+        db = RadDB(archive_dir=base, crs=2056)
         site_alt = db.get_radar_info(RADAR)["altitude"]
         nodes = db.get_v_plane(RADAR)
         d = nodes["z_asl"].to_numpy() - nodes["z_rel"].to_numpy()
         assert np.allclose(d, site_alt, atol=1e-3)
 
     def test_ground_distance_is_monotonic_in_range(self, base):
-        nodes = RadDB(archive_dir=base).get_v_plane(RADAR, sweep=1)
+        nodes = RadDB(archive_dir=base, crs=2056).get_v_plane(RADAR, sweep=1)
         sub = nodes.filter(pl.col("el_level") == 1).sort(["az_idx", "rng_idx"])
         d = sub.filter(pl.col("az_idx") == 0)["d"].to_numpy()
         assert np.all(np.diff(d) > 0)
 
     def test_per_gate_has_four_corners(self, base):
-        t = RadDB(archive_dir=base).get_v_plane(RADAR, per_gate=True)
+        t = RadDB(archive_dir=base, crs=2056).get_v_plane(RADAR, per_gate=True)
         assert t.height == N_GATES
         for k in range(1, 5):
             assert {f"d_{k}", f"z_asl_{k}", f"z_rel_{k}"} <= set(t.columns)
 
     def test_azimuth_selection_picks_one_ray(self, base):
-        db = RadDB(archive_dir=base)
+        db = RadDB(archive_dir=base, crs=2056)
         t = db.get_v_plane(RADAR, azimuth=0.0, per_gate=True)
         assert 0 < t.height < N_GATES
         assert t.height == N_RNG * N_SWEEPS
 
     def test_azimuth_without_per_gate_raises(self, base):
         with pytest.raises(ValueError):
-            RadDB(archive_dir=base).get_v_plane(RADAR, azimuth=90.0)
+            RadDB(archive_dir=base, crs=2056).get_v_plane(RADAR, azimuth=90.0)
 
 
 class TestGeoParquetExport:
@@ -347,7 +349,7 @@ class TestGeoParquetExport:
     def test_export_falls_back_to_wgs84(self, base, tmp_path):
         gpd = pytest.importorskip("geopandas")
         out = tmp_path / "h_plane_4326.parquet"
-        RadDB(archive_dir=base).export_h_plane_geoparquet(RADAR, out, epsg=9999)
+        RadDB(archive_dir=base, crs=2056).export_h_plane_geoparquet(RADAR, out, epsg=9999)
         g = gpd.read_parquet(out)
         assert g.crs.to_epsg() == 4326
         assert g.geometry.is_valid.all()
@@ -382,12 +384,6 @@ class TestFileSizeBudget:
                 f"{self.BUDGET_PROJECTED[kind]} B/gate budget"
             )
 
-    def test_unprojected_budget(self, real_base_plain):
-        for kind, bpg in self._sizes(real_base_plain).items():
-            assert bpg <= self.BUDGET_PLAIN[kind], (
-                f"{kind} is {bpg:.1f} B/gate, over the "
-                f"{self.BUDGET_PLAIN[kind]} B/gate budget"
-            )
 
     def test_geometry_stays_smaller_than_the_centroid_lut(self, real_base):
         """All three geometry files together must not dwarf the LUT itself."""
@@ -400,7 +396,7 @@ class TestFileSizeBudget:
 
     def test_lattice_beats_per_gate_materialisation(self, real_base):
         """The stored lattice must be smaller than expanding every gate's corners."""
-        db = RadDB(archive_dir=real_base)
+        db = RadDB(archive_dir=real_base, crs=2056)
         stored = lut_file_path(RADAR, "corners", real_base).stat().st_size
         per_gate = db.get_corners(RADAR, per_gate=True)
         # 8 corners x 3 coords x 4 bytes, the floor for a per-gate layout
@@ -416,6 +412,7 @@ class TestBeamwidth:
             generate_lut_from_datatree(
                 _make_datatree(), radar=RADAR, output_base_path=str(d),
                 beamwidth_deg=bw,
+                projection_epsg=2056,
             )
             t = gate_corner_table(RADAR, str(d), kind="corners", sweep=1)
             zs = np.stack([t[f"z_rel_{k}"].to_numpy() for k in range(1, 9)], axis=1)
@@ -426,6 +423,7 @@ class TestBeamwidth:
         generate_lut_from_datatree(
             _make_datatree(), radar=RADAR, output_base_path=str(tmp_path),
             beamwidth_deg=1.5,
+            projection_epsg=2056,
         )
         info = yaml.safe_load(
             (tmp_path / RADAR / "LUT" / f"{RADAR}_info.yaml").read_text()
