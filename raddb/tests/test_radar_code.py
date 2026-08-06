@@ -29,10 +29,8 @@ from raddb.helper import (  # noqa: E402
 )
 from raddb.lut import (  # noqa: E402
     GATE_ID_RADAR_BASE,
-    GATE_ID_VERSION,
     LEGACY_RADAR_TO_IDX,
     MAX_RADAR_CODE,
-    OutdatedGateIdError,
     decode_gate_ids,
     decode_gate_radars,
     decode_radar_code,
@@ -245,9 +243,10 @@ class TestArchiveWithLongNames:
         matched = pol.join(lut.select("gate_id"), on="gate_id", how="semi")
         assert matched.height == pol.height
 
-    def test_info_yaml_records_the_version(self, tmp_path):
+    def test_info_yaml_records_no_version(self, tmp_path):
+        """Only v2 is ever written, so the version key was dropped entirely."""
         db = _archive(tmp_path, "KTLX")
-        assert db.get_radar_info("KTLX")["gate_id_version"] == GATE_ID_VERSION
+        assert "gate_id_version" not in db.get_radar_info("KTLX")
 
     def test_sel_by_radar_uses_the_code(self, tmp_path):
         db = _archive(tmp_path, "KTLX")
@@ -272,29 +271,37 @@ class TestArchiveWithLongNames:
         assert codes == {encode_radar_code("KTLX"), encode_radar_code("KOUN")}
 
 
-class TestGateIdVersionGuard:
+class TestGateIdMigration:
+    """The v1 -> v2 migration, now that ``info.yaml`` records no version.
+
+    Nothing detects the encoding any more, so the tool is an unconditional
+    offset that the caller must vouch for.  These tests pin that contract,
+    including the part that is genuinely worse than before: running it twice
+    corrupts the archive, and only ``--assume-v1`` stands between the two.
+    """
 
     def _downgrade_to_v1(self, tmp_path, radar):
         """Rewrite an archive back to the v1 encoding, as if written long ago."""
         lut_dir = tmp_path / "archive" / radar / "LUT"
-        info_path = lut_dir / f"{radar}_info.yaml"
-        info = yaml.safe_load(info_path.read_text())
         delta = (LEGACY_RADAR_TO_IDX[radar] - encode_radar_code(radar)) * GATE_ID_RADAR_BASE
         for f in [lut_dir / f"{radar}_LUT.parquet",
                   *sorted((tmp_path / "archive" / radar).rglob("*_POL.parquet"))]:
             pl.read_parquet(f).with_columns(
                 (pl.col("gate_id") + delta).alias("gate_id")
             ).write_parquet(f)
-        info.pop("gate_id_version", None)          # v1 files carry no version key
-        info_path.write_text(yaml.dump(info, default_flow_style=False, sort_keys=False))
         return delta
 
-    def test_v1_archive_is_refused(self, tmp_path):
+    def test_v1_archive_is_read_without_complaint(self, tmp_path):
+        """The version guard is gone: a v1 archive now loads silently.
+
+        Its ids decode to the wrong radar — that is the cost of dropping the
+        key, and it is pinned here so the trade-off stays visible.
+        """
         db = _archive(tmp_path, "L")
         self._downgrade_to_v1(tmp_path, "L")
 
-        with pytest.raises(OutdatedGateIdError, match="migrate_gate_id_v2"):
-            db.get_radar_info("L")
+        assert "gate_id_version" not in db.get_radar_info("L")
+        assert decode_gate_radars(db.open(radars="L").data["gate_id"].to_numpy()) == ["B"]
 
     def test_migration_restores_the_archive(self, tmp_path):
         from raddb.tools.migrate_gate_id_v2 import migrate_radar
@@ -310,23 +317,31 @@ class TestGateIdVersionGuard:
         res = migrate_radar(tmp_path / "archive", "L")
         assert res["status"] == "migrated" and res["rows"] > 0
 
-        assert db.get_radar_info("L")["gate_id_version"] == GATE_ID_VERSION
         after = db.open(radars="L").data["gate_id"].to_numpy()
         assert np.array_equal(np.sort(after), np.sort(before))
         assert decode_gate_radars(after) == ["L"]
 
-    def test_migration_is_idempotent(self, tmp_path):
+    def test_migration_is_no_longer_idempotent(self, tmp_path):
+        """Without a recorded version there is nothing to short-circuit on."""
         from raddb.tools.migrate_gate_id_v2 import migrate_radar
 
         db = _archive(tmp_path, "L")
         self._downgrade_to_v1(tmp_path, "L")
         migrate_radar(tmp_path / "archive", "L")
         again = migrate_radar(tmp_path / "archive", "L")
-        assert again["status"] == "already v2"
-        assert db.open(radars="L").data.height > 0
 
-    def test_fresh_archive_needs_no_migration(self, tmp_path):
-        from raddb.tools.migrate_gate_id_v2 import migrate_radar
+        assert again["status"] == "migrated"       # it runs again, blindly
+        assert decode_gate_radars(db.open(radars="L").data["gate_id"].to_numpy()) != ["L"]
 
-        _archive(tmp_path, "KTLX")
-        assert migrate_radar(tmp_path / "archive", "KTLX")["status"] == "already v2"
+    def test_cli_refuses_to_write_without_assume_v1(self, tmp_path):
+        """The only guard left against a double migration."""
+        from raddb.tools.migrate_gate_id_v2 import main
+
+        db = _archive(tmp_path, "L")
+        before = db.open(radars="L").data["gate_id"].to_numpy().copy()
+
+        assert main([str(tmp_path / "archive")]) == 2
+        assert np.array_equal(db.open(radars="L").data["gate_id"].to_numpy(), before)
+
+        assert main([str(tmp_path / "archive"), "--dry-run"]) == 0
+        assert np.array_equal(db.open(radars="L").data["gate_id"].to_numpy(), before)

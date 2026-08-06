@@ -169,11 +169,13 @@ class TestInfoYaml:
         )
         s = info["sweeps"][1]
         for key in ("n_azimuths", "n_ranges", "n_gates", "elevation",
-                    "range_resolution", "range_start", "dR"):
+                    "range_resolution", "range_start"):
             assert key in s, f"missing per-sweep key {key!r}"
         assert s["n_gates"] == s["n_azimuths"] * s["n_ranges"]
-        # both are rounded to mm in the YAML, so allow half a mm of slack
-        assert s["dR"] == pytest.approx(s["range_resolution"] / 2.0, abs=1e-3)
+        # dR, azimuth_scale and azimuths were dropped: the first two were never
+        # read back, and the grid is recovered from the LUT parquet instead.
+        for key in ("dR", "azimuth_scale", "azimuths"):
+            assert key not in s, f"per-sweep key {key!r} should no longer be written"
 
     def test_crs_block_records_what_was_used(self, real_base):
         """A CRS is mandatory, so the block is always populated."""

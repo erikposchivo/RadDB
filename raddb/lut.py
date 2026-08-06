@@ -497,21 +497,37 @@ def snap_azimuths_to_grid(azimuths, grid) -> tuple[np.ndarray, np.ndarray]:
 
 
 def load_azimuth_grids(radar: str, base_path: str | Path) -> dict[int, np.ndarray] | None:
-    """``{sweep: canonical azimuths}`` from a radar's info YAML, or ``None``.
+    """``{sweep: canonical azimuths}`` for a radar, or ``None`` if it has no LUT.
 
-    ``None`` means the archive predates the nominal grid, in which case the
-    caller must keep using the measured azimuths — snapping to a grid that was
-    never recorded would move gates off their own LUT rows.
+    The grid is read back out of the LUT parquet itself: its ``azimuth`` column
+    already holds the snapped, canonical rays (``generate_lut_from_datatree``
+    writes ``snapped / AZIMUTH_SCALE``), so rounding to tenths of a degree
+    recovers exactly the values ``gate_id`` carries.  The LUT is therefore the
+    single source of the grid, and the info YAML does not restate it.
+
+    Only two of the LUT's thirteen columns are read, and parquet is columnar —
+    33-66 ms on radar L's 96 MB / 1.7M-gate LUT, against ~2 s to archive the
+    volume it is needed for.
+
+    ``None`` means there is no LUT to read, in which case the caller must keep
+    the measured azimuths: there is no grid to snap onto.
     """
-    try:
-        info = load_radar_info(radar, base_path)
-    except (FileNotFoundError, OutdatedGateIdError):
+    lut_path = lut_file_path(radar, "lut", base_path)
+    if not lut_path.exists():
         return None
-    sweeps = (info or {}).get("sweeps") or {}
+    az = (
+        pl.scan_parquet(lut_path)
+        .select(["sweep", "azimuth"])
+        .unique()
+        .collect()
+    )
     grids = {
-        int(sweep): np.asarray(meta["azimuths"], dtype=np.int64)
-        for sweep, meta in sweeps.items()
-        if isinstance(meta, dict) and meta.get("azimuths")
+        int(sweep): np.sort(
+            np.round(
+                az.filter(pl.col("sweep") == sweep)["azimuth"].to_numpy() * AZIMUTH_SCALE
+            ).astype(np.int64)
+        )
+        for sweep in sorted(az["sweep"].unique().to_list())
     }
     return grids or None
 
@@ -872,7 +888,6 @@ def generate_lut_from_datatree(
             "z":               z_raw.ravel(),
         }))
 
-        # Radial spacing from the sweep's own range grid -> dR = spacing / 2.
         rng_res = (
             float(np.median(np.diff(np.sort(ranges).astype(np.float64))))
             if n_rng > 1 else float("nan")
@@ -884,12 +899,6 @@ def generate_lut_from_datatree(
             "elevation": round(elevation_angle, 2),
             "range_resolution": round(rng_res, 3),
             "range_start": round(float(np.min(ranges)), 3),
-            "dR": round(rng_res / 2.0, 3),
-            # The canonical ray azimuths, in tenths of a degree — exactly the
-            # values gate_id carries.  Written so archiving a later volume need
-            # not re-read the (80 MB) LUT to recover them.
-            "azimuth_scale": AZIMUTH_SCALE,
-            "azimuths": [int(v) for v in az_grid],
         }
         # Grids needed later for the corner/plane lattices — keep them so the
         # lattices are built from the same arrays the centroids came from,
@@ -942,10 +951,6 @@ def generate_lut_from_datatree(
         "longitude": radar_lon,
         "altitude": radar_alt,
         "crs": crs_info,
-        # Which gate_id encoding the stored ids use.  v1 (A=0..Z=25) and v2
-        # (base-36 of the name) disagree for every radar, so the reader has to
-        # be told rather than guess.
-        "gate_id_version": GATE_ID_VERSION,
         # Recorded for reproducibility: archives built before the ke 1.25 -> 4/3
         # fix carry incompatible geometry, so the file must say which model
         # produced it.
@@ -1953,13 +1958,7 @@ def load_radar_lut(
 def load_radar_info(
     radar: str, lut_base_path: str | Path
 ) -> dict:
-    """Load the radar info YAML for a radar.
-
-    Raises
-    ------
-    OutdatedGateIdError
-        If the archive was written with the v1 ``gate_id`` encoding.
-    """
+    """Load the radar info YAML for a radar."""
     info_path = (
         Path(lut_base_path) / radar / "LUT" / f"{radar}_info.yaml"
     )
@@ -1967,37 +1966,7 @@ def load_radar_info(
         raise FileNotFoundError(f"Info not found at {info_path}.")
     with open(info_path) as f:
         info = yaml.safe_load(f)
-    check_gate_id_version(info, radar=radar, base_path=lut_base_path)
     return info
-
-
-class OutdatedGateIdError(RuntimeError):
-    """An archive still holds v1 ``gate_id`` values and must be migrated."""
-
-
-def check_gate_id_version(info: dict, radar: str, base_path: str | Path) -> int:
-    """Validate the ``gate_id`` encoding version recorded in a radar's info.
-
-    Archives written before the base-36 radar code carry no ``gate_id_version``
-    key at all, so a missing key means v1.  Reading one as v2 would silently
-    rename its radars (a v1 ``"L"`` prefix of 11 decodes to ``"B"`` under v2),
-    which is worse than refusing, hence the hard error.
-
-    Returns
-    -------
-    int
-        The archive's ``gate_id`` version, always :data:`GATE_ID_VERSION`.
-    """
-    version = int((info or {}).get("gate_id_version", 1))
-    if version != GATE_ID_VERSION:
-        raise OutdatedGateIdError(
-            f"radar {radar!r} in {base_path} uses gate_id encoding v{version}, "
-            f"but this version of RadDB writes and reads v{GATE_ID_VERSION} "
-            f"(radar codes are base-36 of the name, so v1 ids decode to the "
-            f"wrong radar). Migrate the archive in place with:\n"
-            f"    python -m raddb.tools.migrate_gate_id_v2 {base_path}"
-        )
-    return version
 
 
 def get_full_sweep_index(

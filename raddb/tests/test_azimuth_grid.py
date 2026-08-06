@@ -23,6 +23,7 @@ import pandas as pd
 import polars as pl
 import pytest
 import xarray as xr
+import yaml
 
 _PKG_ROOT = Path(__file__).resolve().parents[2]
 if str(_PKG_ROOT) not in sys.path:
@@ -218,11 +219,19 @@ class TestVolumesJoinTheirLut:
         sets = [set(pl.read_parquet(f, columns=["gate_id"])["gate_id"].to_list()) for f in pols]
         assert all(s == sets[0] for s in sets)
 
-    def test_grid_is_recorded_in_the_info_yaml(self, archive):
+    def test_grid_is_recovered_from_the_lut(self, archive):
+        """The info YAML no longer restates it; the LUT parquet is the source."""
         grids = load_azimuth_grids("A", archive)
         assert grids is not None and set(grids) == {1, 2, 3}
         for g in grids.values():
             assert g.size == 360 and np.all(np.diff(g) == 10)
+
+        info = yaml.safe_load((archive / "A" / "LUT" / "A_info.yaml").read_text())
+        assert "azimuths" not in info["sweeps"][1]
+
+    def test_no_lut_means_no_grid(self, tmp_path):
+        """Nothing to snap onto — the caller must keep the measured azimuths."""
+        assert load_azimuth_grids("A", tmp_path) is None
 
     def test_lut_azimuths_are_the_grid(self, archive):
         """The LUT holds nominal angles now, not one volume's measurements."""

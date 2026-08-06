@@ -16,13 +16,19 @@ on disk: the centroid LUT ``{radar}/LUT/{radar}_LUT.parquet`` and every volume
 No geometry is recomputed and nothing is re-ingested, which matters because the
 source volumes of an archive are often no longer around.
 
+``info.yaml`` no longer records a ``gate_id_version``, so this tool **cannot tell
+a v1 archive from a v2 one** — and re-running it on a migrated archive would
+shift every id a second time.  It therefore refuses to touch anything without an
+explicit ``--assume-v1``, which is the caller asserting that the archive really
+does predate the base-36 radar code.
+
 Usage
 -----
 ::
 
     python -m raddb.tools.migrate_gate_id_v2 <archive_dir> --dry-run
-    python -m raddb.tools.migrate_gate_id_v2 <archive_dir>
-    python -m raddb.tools.migrate_gate_id_v2 <archive_dir> --radar L --radar W
+    python -m raddb.tools.migrate_gate_id_v2 <archive_dir> --assume-v1
+    python -m raddb.tools.migrate_gate_id_v2 <archive_dir> --assume-v1 --radar L --radar W
 """
 from __future__ import annotations
 
@@ -36,7 +42,6 @@ import yaml
 from raddb.helper import is_valid_radar_name, normalize_radar_name
 from raddb.lut import (
     GATE_ID_RADAR_BASE,
-    GATE_ID_VERSION,
     LEGACY_RADAR_TO_IDX,
     encode_radar_code,
 )
@@ -84,13 +89,6 @@ def migrate_radar(archive_dir: Path, radar: str, dry_run: bool = False) -> dict:
         return {"radar": radar, "status": "no info.yaml", "files": 0, "rows": 0}
 
     info = yaml.safe_load(info_path.read_text()) or {}
-    version = int(info.get("gate_id_version", 1))
-    if version == GATE_ID_VERSION:
-        return {"radar": radar, "status": "already v2", "files": 0, "rows": 0}
-    if version != 1:
-        return {"radar": radar, "status": f"unknown v{version} — left alone",
-                "files": 0, "rows": 0}
-
     name = normalize_radar_name(info.get("radar") or radar)
     legacy = LEGACY_RADAR_TO_IDX.get(name)
     if legacy is None:
@@ -106,9 +104,6 @@ def migrate_radar(archive_dir: Path, radar: str, dry_run: bool = False) -> dict:
     if not dry_run:
         for f in files:
             rows += _shift_gate_ids(f, delta)
-        info["gate_id_version"] = GATE_ID_VERSION
-        with open(info_path, "w") as fh:
-            yaml.dump(info, fh, default_flow_style=False, sort_keys=False)
 
     return {
         "radar": radar,
@@ -127,11 +122,24 @@ def main(argv: list[str] | None = None) -> int:
                     help="restrict to this radar (repeatable); default is all")
     ap.add_argument("--dry-run", action="store_true",
                     help="report what would change without writing")
+    ap.add_argument("--assume-v1", action="store_true",
+                    help="confirm the archive really is v1 (required to write: "
+                         "info.yaml no longer records a version, so this cannot "
+                         "be detected, and migrating twice corrupts every gate_id)")
     args = ap.parse_args(argv)
 
     archive_dir: Path = args.archive_dir
     if not archive_dir.is_dir():
         print(f"error: {archive_dir} is not a directory", file=sys.stderr)
+        return 2
+
+    if not args.dry_run and not args.assume_v1:
+        print(
+            "error: pass --assume-v1 to write. info.yaml no longer records a "
+            "gate_id_version, so a v1 archive is indistinguishable from a v2 one, "
+            "and running this twice shifts every gate_id twice.",
+            file=sys.stderr,
+        )
         return 2
 
     radars = [normalize_radar_name(r) for r in args.radar] if args.radar \
