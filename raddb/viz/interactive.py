@@ -23,6 +23,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
+
 
 # ============================================================================
 # GeoJSON feature -> crop dispatch  (pure, unit-testable — no widgets)
@@ -158,9 +160,10 @@ class AOISelector:
         self.map.add(self.draw)
 
         # --- controls ---
-        self.radius = W.FloatText(value=float(point_radius_m), description="point r [m]",
+        self.radius = W.FloatText(value=float(point_radius_m),
+                                  description="if marker → radius [m]",
                                   style={"description_width": "initial"},
-                                  layout=W.Layout(width="180px"))
+                                  layout=W.Layout(width="320px"))
         self.apply_btn = W.Button(description="Apply crop", button_style="primary",
                                   icon="scissors")
         self.save_path = W.Text(value="aoi.geojson", description="save as",
@@ -173,7 +176,7 @@ class AOISelector:
         instructions = W.HTML(
             "<b>Draw an AOI</b> with the toolbar (top-left): "
             "▭ rectangle → <code>crop_by_bbox</code>, ⬠ polygon → <code>crop_by_polygone</code>, "
-            "📍 marker → <code>crop_around_point</code> (uses <i>point r</i>), "
+            "📍 marker → <code>crop_around_point</code> (uses the radius box below), "
             "／ line → <code>extract_cross_section</code>. Then <b>Apply crop</b>."
         )
         self._widget = W.VBox([
@@ -217,7 +220,13 @@ class AOISelector:
                 radars = r.radars() if len(r) else []
             except Exception:  # noqa: BLE001
                 radars = []
-            sweeps = r.data["sweep"].n_unique() if "sweep" in r.columns() else "?"
+            # `sweep` is a LUT column, never stored per gate, so reading it off
+            # r.columns() always missed and printed "?".  It is decoded from the
+            # gate_id instead, which every row carries.
+            sweeps = 0
+            if len(r):
+                from raddb.lut import decode_gate_ids
+                sweeps = int(np.unique(decode_gate_ids(r.data["gate_id"].to_numpy())[0]).size)
             print(f"{self.kind} -> {len(r):,} gates | radars {radars} | {sweeps} sweeps")
             print("result is available as  <selector>.result  (a cropped RadDB).")
 

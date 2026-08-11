@@ -1731,8 +1731,8 @@ class RadDB:
         """Extract a vertical cross-section along the line ``p1 -> p2``; returns a new RadDB.
 
         The line need not pass through a radar.  Each selected gate gets a polygon
-        in the (distance-along-line, altitude) plane (``cs_polygon``) plus
-        ``d_near/d_far/z_near/z_far`` and ``d_center/z_center``; visualize with
+        in the (distance-along-line, altitude) plane (``cs_polygon``) plus its
+        centre ``d_center``/``z_center``; visualize with
         :meth:`plot_cross_section`.  ``p1``/``p2`` are ``(x, y)`` or shapely Points
         in ``crs``; distance is measured from ``p1``.
         """
@@ -1769,11 +1769,17 @@ class RadDB:
         # Unlike an AOI crop these columns are *not* LUT data: they are the
         # per-gate geometry of this particular section line, computed here and
         # available nowhere else, so they travel with the rows.
+        # The geometry table computes in the projected frame under plain x/y.
+        # Publish it as x_<epsg>/y_<epsg>, and give x/y back to the LUT's
+        # radar-relative metres, so both meanings are unambiguous downstream.
+        cs_geom = cs_geom.rename(columns={
+            "x": f"x_{epsg}", "y": f"y_{epsg}", "x_rel": "x", "y_rel": "y",
+        })
         geom_cols = [
             c for c in (
                 "radar", "sweep", "azimuth", "range", "elevation_angle",
-                "x", "y", "altitude",
-                "d_near", "d_far", "z_near", "z_far", "d_center", "z_center",
+                "x", "y", f"x_{epsg}", f"y_{epsg}", "altitude",
+                "d_center", "z_center",
                 "cs_polygon",
             )
             if c in cs_geom.columns and (c == "cs_polygon" or c not in data_cs.columns)

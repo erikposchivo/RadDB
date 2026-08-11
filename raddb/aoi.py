@@ -632,17 +632,23 @@ def _lut_cs_table(
         if t is None:
             available = set(pq.read_schema(lut_path).names)
             xc, yc = f"x_{int(epsg)}", f"y_{int(epsg)}"
+            # The LUT stores two different x/y: metres from the radar, and the
+            # projected pair.  The section geometry works in the projected one,
+            # which is why it takes the plain `x`/`y` names here; the
+            # radar-relative pair rides along as x_rel/y_rel and is renamed back
+            # on output (see RadDB.extract_cross_section).
+            rel = [c for c in ("x", "y") if c in available]
             if {xc, yc}.issubset(available):
-                t = pl.read_parquet(
-                    lut_path, columns=[*_CS_LUT_BASE_COLS, xc, yc]
-                ).rename({xc: "x", yc: "y"})
+                t = pl.read_parquet(lut_path, columns=[*_CS_LUT_BASE_COLS, *rel, xc, yc])
             else:
                 t = add_lut_projection(
                     pl.read_parquet(
-                        lut_path, columns=[*_CS_LUT_BASE_COLS, "latitude", "longitude"]
+                        lut_path,
+                        columns=[*_CS_LUT_BASE_COLS, *rel, "latitude", "longitude"],
                     ),
                     epsg=int(epsg),
-                ).rename({xc: "x", yc: "y"}).select([*_CS_LUT_BASE_COLS, "x", "y"])
+                ).select([*_CS_LUT_BASE_COLS, *rel, xc, yc])
+            t = t.rename({c: f"{c}_rel" for c in rel}).rename({xc: "x", yc: "y"})
             # Radial spacing per sweep from the unique range grid -> dR = spacing/2.
             # `range` is cast to Float64 first so the median-of-diffs matches the
             # float64 arithmetic the pandas implementation used.
@@ -841,9 +847,8 @@ def _cross_section_gates(
     :meth:`raddb.RadDB.extract_cross_section` converts the geometry columns back
     to polars when joining them onto the data frame.
 
-    Returns one row per crossed gate with its cross-section geometry:
-    chord endpoints ``(d_near, z_near) / (d_far, z_far)``, center
-    ``(d_center, z_center)``, and ``cs_polygon`` — the 4-corner shapely polygon
+    Returns one row per crossed gate with its cross-section geometry: the gate
+    centre ``(d_center, z_center)`` and ``cs_polygon`` — the 4-corner shapely polygon
     in the (distance-along-line [m], altitude [m ASL]) plane, built by
     offsetting the chord perpendicularly by ±dA (the vertical half-beamwidth
     extent).  ``d`` is measured from ``p1``.
@@ -916,10 +921,9 @@ def _cross_section_gates(
     ], axis=1)
 
     out = sub.copy()
-    out["d_near"] = d_near
-    out["d_far"] = d_far
-    out["z_near"] = z_near
-    out["z_far"] = z_far
+    # Only the gate centre and its footprint are published.  The chord endpoints
+    # d_near/d_far and z_near/z_far are what the polygon is built from, so
+    # emitting them as well restated `cs_polygon` in scalar form.
     out["d_center"] = 0.5 * (d_near + d_far)
     out["z_center"] = 0.5 * (z_near + z_far)
     out["cs_polygon"] = shapely.polygons(ring)

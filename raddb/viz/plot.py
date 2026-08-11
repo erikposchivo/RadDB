@@ -1110,14 +1110,20 @@ def plot_aoi_quicklook(
             sites[r] = (pt.x, pt.y)
 
     # --- optional selected gate centroids ---
+    # A cross-sectioned frame carries both x/y (metres from the radar) and
+    # x_<epsg>/y_<epsg>; this map is drawn in the projected frame, so prefer
+    # those and fall back to plain x/y for a plain crop.
+    _xc, _yc = f"x_{frame_epsg}", f"y_{frame_epsg}"
+    if selected is not None and _xc not in getattr(selected, "columns", ()):
+        _xc, _yc = "x", "y"
     if (
         selected is not None
         and show_gates
         and len(selected)
-        and {"x", "y"}.issubset(selected.columns)
+        and {_xc, _yc}.issubset(selected.columns)
     ):
-        xs = selected["x"].to_numpy()
-        ys = selected["y"].to_numpy()
+        xs = selected[_xc].to_numpy()
+        ys = selected[_yc].to_numpy()
         if gate_sample and len(xs) > gate_sample:
             idx = np.random.default_rng(0).choice(len(xs), gate_sample, replace=False)
             xs, ys = xs[idx], ys[idx]

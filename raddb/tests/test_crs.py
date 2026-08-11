@@ -142,7 +142,10 @@ class TestAoiUsesTheArchiveCrs:
 
         cs = rdf.extract_cross_section(p1=p1, p2=p2, crs=4326)
         assert cs.data.height > 0, "the section selected no gates"
-        span = float(cs.data["d_far"].max())
+        # The far end of the section, read off the gate footprints: `d_center`
+        # alone would sit half a gate short and eat most of the tolerance.
+        polygons = cs.to_pandas()["cs_polygon"].to_numpy()
+        span = float(shapely.bounds(polygons)[:, 2].max())
         # UTM 14N at KTLX is accurate to ~0.03%; a hardcoded LV95 would be ~20% out.
         assert abs(span - truth) <= 0.005 * truth, (
             f"section spans {span:,.0f} m, true geodesic {truth:,.0f} m"
