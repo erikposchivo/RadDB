@@ -186,9 +186,9 @@ def _load_one_centroid_table(base: Path, radar: str, epsg: int) -> pl.DataFrame:
         cols = [c for c in (*_CENTROID_BASE_COLS, "latitude", "longitude")
                 if c in available]
         lut = add_lut_projection(pl.read_parquet(lut_path, columns=cols), epsg=int(epsg))
-        lut = lut.rename({xc: "x", yc: "y"}).select(
-            [c for c in (*_CENTROID_BASE_COLS, "x", "y") if c in lut.columns]
-        )
+        # Rename first: the select below must see the renamed columns, not x_<epsg>.
+        lut = lut.rename({xc: "x", yc: "y"})
+        lut = lut.select([c for c in (*_CENTROID_BASE_COLS, "x", "y") if c in lut.columns])
 
     return lut.with_columns(pl.lit(radar).alias("radar"))
 
