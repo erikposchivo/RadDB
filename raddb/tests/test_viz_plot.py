@@ -40,8 +40,8 @@ from raddb.tests.conftest import (
     build_datatree,
 )
 from raddb.viz.plot import (
-    _KmFormatter,
     _beamwidth,
+    _KmFormatter,
     _line_endpoints,
     _resolve_chord_overlap,
     plot_aoi_quicklook,
@@ -112,7 +112,7 @@ def test_a_multi_panel_figure_composes(plot_rdb):
     """One plot per Axes — the user builds the panel, not the plot function."""
     _, axes = plt.subplots(2, 2)
 
-    for ax, variable in zip(axes.ravel(), ["DBZH", "ZDR", "RHOHV", "PHIDP"]):
+    for ax, variable in zip(axes.ravel(), ["DBZH", "ZDR", "RHOHV", "PHIDP"], strict=False):
         plot_ppi(plot_rdb, sweep=1, variable=variable, ax=ax)
 
     assert all(len(ax.collections) == 1 for ax in axes.ravel())
@@ -124,7 +124,8 @@ def test_save_writes_a_file(plot_rdb, tmp_path):
 
     plot_ppi(plot_rdb, sweep=1, save=str(out))
 
-    assert out.exists() and out.stat().st_size > 0
+    assert out.exists()
+    assert out.stat().st_size > 0
 
 
 def test_the_title_and_colorbar_are_optional(plot_rdb):
@@ -248,7 +249,7 @@ def test_rhi_picks_a_ray_per_sweep_when_azimuths_jitter(tmp_path):
     jittered = {}
     for i, (name, node) in enumerate(dt.children.items()):
         ds = node.to_dataset()
-        jittered[name] = ds.assign_coords(azimuth=ds["azimuth"].values + 0.13 * i)
+        jittered[name] = ds.assign_coords(azimuth=ds["azimuth"].to_numpy() + 0.13 * i)
     dt = xr.DataTree.from_dict(jittered)
 
     db = RadDB(archive_dir=str(tmp_path), crs=SWISS_EPSG)
@@ -276,7 +277,7 @@ def test_a_higher_slice_draws_fewer_gates(plot_rdb):
 def test_overlap_nearest_draws_fewer_gates_than_all(plot_rdb):
     """``nearest`` resolves the double coverage that ``all`` keeps."""
     assert _n_polys(plot_cappi(plot_rdb, altitude=1200, overlap="nearest")) < _n_polys(
-        plot_cappi(plot_rdb, altitude=1200, overlap="all")
+        plot_cappi(plot_rdb, altitude=1200, overlap="all"),
     )
 
 
@@ -285,7 +286,8 @@ def test_resolve_chord_overlap_leaves_no_double_coverage(plot_archive_dir):
     resolved = _resolve_chord_overlap(cappi_chords(PLOT_RADAR, plot_archive_dir, 1200.0))
 
     intervals = np.sort(
-        np.stack([resolved["d_near"].to_numpy(), resolved["d_far"].to_numpy()], axis=1), axis=0
+        np.stack([resolved["d_near"].to_numpy(), resolved["d_far"].to_numpy()], axis=1),
+        axis=0,
     )
 
     assert (intervals[1:, 0] >= intervals[:-1, 1] - 1e-3).all()
@@ -294,7 +296,7 @@ def test_resolve_chord_overlap_leaves_no_double_coverage(plot_archive_dir):
 def test_fill_lowest_extends_the_far_field(plot_rdb):
     """Beyond the lowest beam's reach the slice is extended, never shrunk."""
     assert _n_polys(plot_cappi(plot_rdb, altitude=1200, fill_lowest=True)) >= _n_polys(
-        plot_cappi(plot_rdb, altitude=1200, fill_lowest=False)
+        plot_cappi(plot_rdb, altitude=1200, fill_lowest=False),
     )
 
 
@@ -315,7 +317,8 @@ def test_slice_polygons_sit_inside_the_full_footprints(plot_rdb, plot_archive_di
     drawn = np.array([path.vertices[:4] for path in plot_cappi(plot_rdb, altitude=1200, overlap="all").get_paths()])
     tbl = gate_corner_table(PLOT_RADAR, plot_archive_dir, kind="h_plane")
     full = np.stack(
-        [np.stack([tbl[f"x_{k}"].to_numpy(), tbl[f"y_{k}"].to_numpy()], axis=1) for k in range(1, 5)], axis=1
+        [np.stack([tbl[f"x_{k}"].to_numpy(), tbl[f"y_{k}"].to_numpy()], axis=1) for k in range(1, 5)],
+        axis=1,
     )
 
     assert shapely.area(shapely.polygons(drawn)).sum() <= shapely.area(shapely.polygons(full)).sum()
@@ -376,8 +379,10 @@ def test_vcs_refuses_a_datatree():
 
 
 def test_a_geojson_line_honours_its_own_crs(plot_rdb, plot_site, tmp_path):
-    """A GeoJSON is lon/lat by RFC 7946; reading those degrees as LV95 metres
-    would put the section about 2600 km away."""
+    """A GeoJSON is lon/lat by RFC 7946, not archive metres.
+
+    Reading those degrees as LV95 would put the section about 2600 km away.
+    """
     import pyproj
 
     from raddb.aoi import _to_pyproj_crs
@@ -396,7 +401,7 @@ def test_a_geojson_line_honours_its_own_crs(plot_rdb, plot_site, tmp_path):
 
 
 def test_a_shapefile_line_is_read(plot_rdb, plot_site, tmp_path):
-    """pyshp reads the ``.shp``; the ``.prj`` (absent here) would declare the CRS."""
+    """Pyshp reads the ``.shp``; the ``.prj`` (absent here) would declare the CRS."""
     shapefile = pytest.importorskip("shapefile")
 
     p1, p2 = _line_across(plot_site)
@@ -416,7 +421,7 @@ def test_a_line_works_from_a_bare_frame_with_an_archive(plot_rdb, plot_site, plo
     line = _line_across(plot_site)
 
     assert _n_polys(plot_vcs(data, line=line, archive_dir=plot_archive_dir)) == _n_polys(
-        plot_vcs(plot_rdb, line=line)
+        plot_vcs(plot_rdb, line=line),
     )
 
 
@@ -472,7 +477,8 @@ def test_plot_cross_section(plot_rdb, plot_site):
     fig, ax, artist = plot_cross_section(cs.to_pandas())
 
     assert _n_polys(artist) == len(cs)
-    assert artist.axes is ax and ax.figure is fig
+    assert artist.axes is ax
+    assert ax.figure is fig
 
 
 def test_plot_cross_section_honours_a_supplied_axes(plot_rdb, plot_site):
@@ -554,7 +560,8 @@ def test_the_quicklook_saves_to_a_file(plot_archive_dir, plot_site, tmp_path):
         save_path=str(out),
     )
 
-    assert out.exists() and out.stat().st_size > 0
+    assert out.exists()
+    assert out.stat().st_size > 0
 
 
 def test_the_quicklook_context_can_be_dropped(plot_archive_dir, plot_site):
@@ -575,8 +582,8 @@ def test_the_quicklook_context_can_be_dropped(plot_archive_dir, plot_site):
 # ---------------------------------------------------------------------------
 
 
+# The six panels of the AMT latent-space figure — the layout is fixed at 2 x 3.
 LATENT_VARS = ["DBZH", "ZDR", "KDP", "RHOHV", "PHIDP", "TEMP"]
-"""The six panels of the AMT latent-space figure — the layout is fixed at 2 x 3."""
 
 
 def _latent_frame(n=200):
@@ -620,7 +627,8 @@ def test_plot_latent_scatter_labels_only_the_outer_axes():
 
     assert axes[0, 1].get_xlabel() == ""
     assert axes[1, 1].get_ylabel() == ""
-    assert axes[1, 0].get_xlabel() and axes[1, 0].get_ylabel()
+    assert axes[1, 0].get_xlabel()
+    assert axes[1, 0].get_ylabel()
 
 
 # ---------------------------------------------------------------------------
@@ -729,7 +737,8 @@ def test_datatree_geometry_matches_the_stored_lattice(plot_dtree, plot_archive_d
     drawn = np.array([q.vertices[:4] for q in plot_ppi(plot_dtree, sweep=1, variable="DBZH").get_paths()])
     tbl = gate_corner_table(PLOT_RADAR, plot_archive_dir, kind="h_plane", sweep=1)
     stored = np.stack(
-        [np.stack([tbl[f"x_{k}"].to_numpy(), tbl[f"y_{k}"].to_numpy()], axis=1) for k in range(1, 5)], axis=1
+        [np.stack([tbl[f"x_{k}"].to_numpy(), tbl[f"y_{k}"].to_numpy()], axis=1) for k in range(1, 5)],
+        axis=1,
     )
 
     # The lattices are float32, so ~1e-7 relative — a few centimetres at 200 km range.
@@ -745,7 +754,7 @@ def test_an_rhi_from_a_datatree(plot_dtree):
 def test_a_cappi_from_a_datatree_matches_the_lut_path(plot_dtree, plot_rdb):
     """Both paths must select the same chords at the same altitude."""
     assert _n_polys(plot_cappi(plot_dtree, altitude=1200, variable="DBZH")) == _n_polys(
-        plot_cappi(plot_rdb, altitude=1200)
+        plot_cappi(plot_rdb, altitude=1200),
     )
 
 
@@ -780,7 +789,7 @@ def test_a_geodataframe_without_an_archive_raises(plot_gdf):
 def test_a_geodataframe_cappi_matches_a_frame(plot_gdf, plot_archive_dir, plot_rdb):
     """Same geometry source, same result."""
     assert _n_polys(plot_cappi(plot_gdf, altitude=1200, archive_dir=plot_archive_dir)) == _n_polys(
-        plot_cappi(plot_rdb, altitude=1200)
+        plot_cappi(plot_rdb, altitude=1200),
     )
 
 
@@ -821,7 +830,7 @@ def test_a_wider_declared_beam_reaches_a_cappi_over_more_bins(plot_dtree):
     wide.attrs["radar_beam_width_h"] = 2.0
 
     assert _n_polys(plot_cappi(wide, altitude=1200, variable="DBZH")) > _n_polys(
-        plot_cappi(narrow, altitude=1200, variable="DBZH")
+        plot_cappi(narrow, altitude=1200, variable="DBZH"),
     )
 
 
@@ -839,7 +848,7 @@ def _tick_labels(lo, hi, offset=0.0):
     locs = np.asarray(ax.yaxis.get_majorticklocs(), dtype=float)
     labels = [t.get_text() for t in ax.get_yticklabels()]
     plt.close(fig)
-    return [(v, lab) for v, lab in zip(locs, labels) if lab and lo <= v <= hi]
+    return [(v, lab) for v, lab in zip(locs, labels, strict=False) if lab and lo <= v <= hi]
 
 
 @pytest.mark.parametrize(

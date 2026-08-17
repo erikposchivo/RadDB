@@ -1,7 +1,4 @@
-"""
-raddb/discovery.py
-------------------
-File discovery for RadDB — both sides of the archive:
+"""File discovery for RadDB, on both sides of the archive.
 
 - **DataTree file discovery** (input side): locate DataTree files
   (NetCDF / Zarr) on disk, optionally filtered by a filename timestamp,
@@ -14,6 +11,7 @@ Everything here is pure filesystem + pandas — no pyart / radar_api
 dependency — so discovery works in any environment.  (Raw METRANET
 scanning lives in the private ``raddb.mch.discovery`` module.)
 """
+
 from __future__ import annotations
 
 import datetime
@@ -25,10 +23,10 @@ import pandas as pd
 
 from raddb.helper import ensure_utc
 
-
 # ============================================================================
 # METRANET filename helpers  (shared with raddb.mch)
 # ============================================================================
+
 
 def _parse_volume_time(stem: str) -> datetime.datetime:
     """Parse the timestamp from a METRANET filename stem.
@@ -45,7 +43,9 @@ def _parse_volume_time(stem: str) -> datetime.datetime:
             int(stem[10:12]),
         )
         return datetime.datetime(2000 + y, 1, 1) + datetime.timedelta(
-            days=j - 1, hours=h, minutes=m
+            days=j - 1,
+            hours=h,
+            minutes=m,
         )
     except Exception:
         return datetime.datetime(1970, 1, 1)
@@ -67,8 +67,8 @@ def _group_files_by_volume(paths: list[str]) -> dict:
 # Filename-stem timestamp patterns, tried in order.
 _DT_TIME_PATTERNS = [
     (r"(\d{8})[T_-]?(\d{6})", "%Y%m%d%H%M%S"),  # YYYYMMDD[T_-]HHMMSS
-    (r"(\d{8})[T_-]?(\d{4})", "%Y%m%d%H%M"),    # YYYYMMDD[T_-]HHMM
-    (r"(\d{12})", "%Y%m%d%H%M"),                # YYYYMMDDHHMM
+    (r"(\d{8})[T_-]?(\d{4})", "%Y%m%d%H%M"),  # YYYYMMDD[T_-]HHMM
+    (r"(\d{12})", "%Y%m%d%H%M"),  # YYYYMMDDHHMM
 ]
 
 
@@ -165,6 +165,7 @@ def find_datatree_files(
 # ============================================================================
 # Archived POL parquet search  (output side)
 # ============================================================================
+
 
 def _parse_pol_time(path: str | Path) -> pd.Timestamp | None:
     """UTC volume timestamp from a ``{radar}_{YYYYMMDD}_{HHMMSS}_POL.parquet`` name.

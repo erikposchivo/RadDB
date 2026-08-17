@@ -1,13 +1,11 @@
-"""
-raddb/io_core.py
-----------------
-Core I/O conversion functions for radar data.
+"""Core I/O conversion functions for radar data.
 
 This module provides generic conversions between xarray DataTree,
 pandas DataFrame, and Parquet files.  It does **not** depend on pyart
 or radar_api — all MCH-specific I/O lives in the private ``raddb.mch``
 subpackage.
 """
+
 from __future__ import annotations
 
 import concurrent.futures
@@ -23,6 +21,14 @@ import polars as pl
 import xarray as xr
 import yaml
 
+from raddb.discovery import _find_polar_files_in_range, _parse_pol_time
+from raddb.helper import (
+    StageTimer,
+    _vprint,
+    list_sweep_names,
+    normalize_radar_name,
+    resolve_filter_logic,
+)
 from raddb.lut import (
     AZIMUTH_SCALE,
     _parse_corners_npz,
@@ -32,41 +38,53 @@ from raddb.lut import (
     load_azimuth_grids,
     snap_azimuths_to_grid,
 )
-from raddb.helper import (
-    StageTimer,
-    _vprint,
-    list_sweep_names,
-    normalize_radar_name,
-    resolve_filter_logic,
-)
-from raddb.discovery import _find_polar_files_in_range, _parse_pol_time
 
 logger = logging.getLogger(__name__)
 
 # --- Constants --- #
 POL_FEATURES = ["DBZH", "ZDR", "RHOHV", "PHIDP"]
 POLAR_COLUMNS = [
-    "gate_id", "time",
-    "DBZH", "DBZH_raw", "ZDR", "ZDR_raw", "KDP", "RHOHV", "PHIDP",
-    "HC_MCH", "HC_PYART", "HZT", "TEMP",
+    "gate_id",
+    "time",
+    "DBZH",
+    "DBZH_raw",
+    "ZDR",
+    "ZDR_raw",
+    "KDP",
+    "RHOHV",
+    "PHIDP",
+    "HC_MCH",
+    "HC_PYART",
+    "HZT",
+    "TEMP",
 ]
 LUT_COLUMNS = [
-    "gate_id", "sweep", "azimuth", "range", "elevation_angle",
-    "latitude", "longitude", "altitude",
-    "x", "y", "z",
+    "gate_id",
+    "sweep",
+    "azimuth",
+    "range",
+    "elevation_angle",
+    "latitude",
+    "longitude",
+    "altitude",
+    "x",
+    "y",
+    "z",
 ]
 
 # float32 gives 7 significant digits — sufficient for all radar variables.
-_POLAR_FLOAT32_COLS: frozenset = frozenset({"DBZH", "DBZH_raw", "ZDR", "ZDR_raw", "KDP", "RHOHV", "PHIDP", "HZT", "HC_MCH", "HC_PYART", "TEMP"})
+_POLAR_FLOAT32_COLS: frozenset = frozenset(
+    {"DBZH", "DBZH_raw", "ZDR", "ZDR_raw", "KDP", "RHOHV", "PHIDP", "HZT", "HC_MCH", "HC_PYART", "TEMP"},
+)
 _LAPSE_RATE: float = -0.0065  # °C/m (standard environmental lapse rate, -6.5 °C/km)
 
 
-def _projection_columns(df: "pl.DataFrame | pd.DataFrame") -> list[str]:
+def _projection_columns(df: pl.DataFrame | pd.DataFrame) -> list[str]:
     """Columns added by :func:`raddb.lut.add_lut_projection` (e.g. x_2056 / y_2056)."""
     return [c for c in df.columns if re.match(r"^[xy]_\w+$", c)]
 
 
-def _col(df: "pl.DataFrame | pd.DataFrame", name: str, dtype=None) -> np.ndarray:
+def _col(df: pl.DataFrame | pd.DataFrame, name: str, dtype=None) -> np.ndarray:
     """Column ``name`` of ``df`` as a numpy array, for polars **or** pandas.
 
     ``polars.Series.to_numpy`` takes no ``dtype`` argument (pandas' does), so the
@@ -77,12 +95,12 @@ def _col(df: "pl.DataFrame | pd.DataFrame", name: str, dtype=None) -> np.ndarray
     return arr if dtype is None else arr.astype(dtype)
 
 
-def _to_polars_frame(df: "pl.DataFrame | pd.DataFrame") -> "pl.DataFrame":
+def _to_polars_frame(df: pl.DataFrame | pd.DataFrame) -> pl.DataFrame:
     """Coerce a pandas frame to polars; pass polars frames straight through."""
     return df if isinstance(df, pl.DataFrame) else pl.from_pandas(df)
 
 
-def _to_pandas_frame(df: "pl.DataFrame | pd.DataFrame") -> pd.DataFrame:
+def _to_pandas_frame(df: pl.DataFrame | pd.DataFrame) -> pd.DataFrame:
     """Coerce a polars frame to pandas; pass pandas frames straight through.
 
     Used only at the **xarray seam**: DataTree reconstruction needs
@@ -95,6 +113,7 @@ def _to_pandas_frame(df: "pl.DataFrame | pd.DataFrame") -> pd.DataFrame:
 # ============================================================================
 # DataTree file loading  (NetCDF / Zarr)
 # ============================================================================
+
 
 def open_any_datatree(
     path: str | Path,
@@ -125,8 +144,7 @@ def open_any_datatree(
         raise FileNotFoundError(f"DataTree file/store not found: {p}")
 
     if engine is None and (
-        p.suffix.lower() == ".zarr"
-        or (p.is_dir() and ((p / ".zgroup").exists() or (p / "zarr.json").exists()))
+        p.suffix.lower() == ".zarr" or (p.is_dir() and ((p / ".zgroup").exists() or (p / "zarr.json").exists()))
     ):
         engine = "zarr"
 
@@ -136,13 +154,14 @@ def open_any_datatree(
         raise ImportError(
             f"Opening {p.name} requires an xarray backend that is not "
             "installed (netCDF4/h5netcdf for NetCDF, zarr for Zarr stores). "
-            "Install with: pip install raddb[io]"
+            "Install with: pip install raddb[io]",
         ) from exc
 
 
 # ============================================================================
 # DataTree -> DataFrame / Parquet
 # ============================================================================
+
 
 def datatree_to_dataset(dt: xr.DataTree, sweep: str | int) -> xr.Dataset:
     """Extract a single sweep Dataset from a DataTree."""
@@ -151,8 +170,9 @@ def datatree_to_dataset(dt: xr.DataTree, sweep: str | int) -> xr.Dataset:
 
 
 def datatree_to_dataframe(
-    dt: xr.DataTree, max_workers: int = 1
-) -> "pl.DataFrame":
+    dt: xr.DataTree,
+    max_workers: int = 1,
+) -> pl.DataFrame:
     """Flatten a DataTree into a single **polars** DataFrame.
 
     Each sweep is converted independently and concatenated, with a ``sweep``
@@ -173,7 +193,7 @@ def datatree_to_dataframe(
         # name, which ``reset_index`` cannot insert.  Re-assigning rebuilds the index.
         unindexed = [d for d in ds.sizes if d in ds.coords and d not in ds.xindexes]
         if unindexed:
-            ds = ds.assign_coords({d: ds[d].values for d in unindexed})
+            ds = ds.assign_coords({d: ds[d].to_numpy() for d in unindexed})
         df = ds.to_dataframe().reset_index()
         df["sweep"] = int(name.split("_")[-1])
         return df
@@ -188,7 +208,9 @@ def datatree_to_dataframe(
 
 
 def _save_polar_parquet(
-    df_polar: "pl.DataFrame | pd.DataFrame", radar: str, base_path: str
+    df_polar: pl.DataFrame | pd.DataFrame,
+    radar: str,
+    base_path: str,
 ) -> str | None:
     """Save a POLAR DataFrame to the standard directory layout.
 
@@ -206,25 +228,21 @@ def _save_polar_parquet(
     df_polar = _to_polars_frame(df_polar)
     if df_polar.is_empty():
         logger.info(
-            "radar %s: no gates satisfied the filter; no POL file written.", radar
+            "radar %s: no gates satisfied the filter; no POL file written.",
+            radar,
         )
         return None
 
     vol_time = pd.to_datetime(df_polar["time"].min())
     if pd.isna(vol_time):
         logger.warning(
-            "radar %s: volume time is NaT for all %d surviving gates; "
-            "no POL file written.", radar, len(df_polar),
+            "radar %s: volume time is NaT for all %d surviving gates; " "no POL file written.",
+            radar,
+            len(df_polar),
         )
         return None
 
-    save_dir = (
-        Path(base_path)
-        / radar
-        / str(vol_time.year)
-        / f"{vol_time.month:02d}"
-        / f"{vol_time.day:02d}"
-    )
+    save_dir = Path(base_path) / radar / str(vol_time.year) / f"{vol_time.month:02d}" / f"{vol_time.day:02d}"
     save_dir.mkdir(parents=True, exist_ok=True)
     ts = vol_time.strftime("%Y%m%d_%H%M%S")
     pp = save_dir / f"{radar}_{ts}_POL.parquet"
@@ -247,7 +265,8 @@ def _cast_hc_column(arr, shift: int = 0) -> np.ndarray:
 
 
 def _compute_gate_temperature(
-    df: "pl.DataFrame | pd.DataFrame", mask: np.ndarray
+    df: pl.DataFrame | pd.DataFrame,
+    mask: np.ndarray,
 ) -> np.ndarray | None:
     """Compute temperature (°C) at surviving gates using standard lapse rate.
 
@@ -259,12 +278,12 @@ def _compute_gate_temperature(
     geom_required = {"range", "elevation", "altitude"}
     if not geom_required.issubset(df.columns):
         return None
-    n        = int(mask.sum())
-    r        = _col(df, "range")[mask]
-    el_rad   = np.deg2rad(_col(df, "elevation")[mask])
+    n = int(mask.sum())
+    r = _col(df, "range")[mask]
+    el_rad = np.deg2rad(_col(df, "elevation")[mask])
     site_alt = _col(df, "altitude")[mask]
-    ke, Re   = 4.0 / 3.0, 6_371_000.0
-    z_gate   = np.sqrt(r**2 + (ke * Re)**2 + 2 * r * ke * Re * np.sin(el_rad)) - ke * Re
+    ke, Re = 4.0 / 3.0, 6_371_000.0
+    z_gate = np.sqrt(r**2 + (ke * Re) ** 2 + 2 * r * ke * Re * np.sin(el_rad)) - ke * Re
     gate_alt = site_alt + z_gate
     if "HZT" not in df.columns:
         return np.full(n, np.nan, dtype=np.float32)
@@ -299,7 +318,7 @@ def _snap_volume_azimuths(sweeps, azimuths, grids, radar):
         if grid is None:
             raise ValueError(
                 f"radar {radar!r}: the LUT has no sweep {int(sweep)}, but this "
-                f"volume does — it uses a different scan strategy."
+                f"volume does — it uses a different scan strategy.",
             )
         sel = sweeps == sweep
         n_rays = np.unique(out[sel]).size
@@ -311,7 +330,7 @@ def _snap_volume_azimuths(sweeps, azimuths, grids, radar):
             raise ValueError(
                 f"radar {radar!r} sweep {int(sweep)}: volume has {n_rays} rays, "
                 f"the LUT was built for {len(grid)} — a different scan strategy. "
-                f"Archive it under its own radar name, or rebuild the LUT."
+                f"Archive it under its own radar name, or rebuild the LUT.",
             )
         snapped, dist = snap_azimuths_to_grid(out[sel], grid)
         tol = azimuth_grid_tolerance(grid)
@@ -320,7 +339,7 @@ def _snap_volume_azimuths(sweeps, azimuths, grids, radar):
                 f"radar {radar!r} sweep {int(sweep)}: a ray sits "
                 f"{dist.max() / AZIMUTH_SCALE:.3f}° from the nearest LUT azimuth, "
                 f"beyond the half-spacing tolerance of {tol / AZIMUTH_SCALE:.3f}° "
-                f"— this is not antenna drift."
+                f"— this is not antenna drift.",
             )
         out[sel] = snapped.astype(np.float64) / AZIMUTH_SCALE
         worst = max(worst, float(dist.max()) if dist.size else 0.0)
@@ -328,13 +347,13 @@ def _snap_volume_azimuths(sweeps, azimuths, grids, radar):
 
 
 def _build_polar_dataframe(
-    df: "pl.DataFrame | pd.DataFrame",
+    df: pl.DataFrame | pd.DataFrame,
     radar: str,
     filter_feature: str,
     filter_threshold: float,
     filter_logic: str,
     azimuth_grids: dict | None = None,
-) -> tuple["pl.DataFrame", np.ndarray]:
+) -> tuple[pl.DataFrame, np.ndarray]:
     """Filter a flattened volume DataFrame and attach gate_ids.
 
     Rows that do not satisfy ``filter_feature [filter_logic] filter_threshold``
@@ -371,7 +390,10 @@ def _build_polar_dataframe(
         # Snapped before the filter, so the scan-strategy check counts the
         # volume's rays rather than only those that survived the filter.
         azimuths_all, worst = _snap_volume_azimuths(
-            sweeps_all, azimuths_all, azimuth_grids, radar
+            sweeps_all,
+            azimuths_all,
+            azimuth_grids,
+            radar,
         )
         logger.debug("radar %s: rays snapped, max move %.3f deg.", radar, worst)
     else:
@@ -382,7 +404,8 @@ def _build_polar_dataframe(
         logger.warning(
             "radar %s: the LUT records no nominal azimuth grid, so measured "
             "azimuths are used as-is and some gates may not join it. Regenerate "
-            "the LUT to fix this.", radar,
+            "the LUT to fix this.",
+            radar,
         )
 
     gate_ids = encode_gate_ids(
@@ -394,10 +417,7 @@ def _build_polar_dataframe(
 
     hzt_available = "HZT" in df.columns
     polar_cols = [
-        c for c in POLAR_COLUMNS
-        if c in df.columns
-        and c != "gate_id"
-        and not (c == "HC_PYART" and not hzt_available)
+        c for c in POLAR_COLUMNS if c in df.columns and c != "gate_id" and not (c == "HC_PYART" and not hzt_available)
     ]
     df_polar = pl.DataFrame(
         {"gate_id": gate_ids, **{c: _col(df, c)[mask] for c in polar_cols}},
@@ -460,28 +480,20 @@ def archive_volume(
     radar = normalize_radar_name(radar)
     resolve_filter_logic(filter_logic)  # fail fast before flattening
 
-    with (
-        timer.time_stage("datatree_to_df", volume=volume)
-        if timer
-        else _nullctx()
-    ):
+    with timer.time_stage("datatree_to_df", volume=volume) if timer else _nullctx():
         df = datatree_to_dataframe(dt)
 
-    with (
-        timer.time_stage("generate_gate_ids", volume=volume)
-        if timer
-        else _nullctx()
-    ):
+    with timer.time_stage("generate_gate_ids", volume=volume) if timer else _nullctx():
         df_polar, _mask = _build_polar_dataframe(
-            df, radar, filter_feature, filter_threshold, filter_logic,
+            df,
+            radar,
+            filter_feature,
+            filter_threshold,
+            filter_logic,
             azimuth_grids=load_azimuth_grids(radar, base_output_path),
         )
 
-    with (
-        timer.time_stage("save_parquet", volume=volume)
-        if timer
-        else _nullctx()
-    ):
+    with timer.time_stage("save_parquet", volume=volume) if timer else _nullctx():
         df_polar = _finalize_polar_dtypes(df_polar, df, _mask)
         return _save_polar_parquet(df_polar, radar, base_output_path)
 
@@ -550,11 +562,7 @@ def archive_multiple_volumes(
 
         vol_t0 = _time.perf_counter()
         try:
-            with (
-                timer.time_stage("archive_volume", volume=label)
-                if timer
-                else _nullctx()
-            ):
+            with timer.time_stage("archive_volume", volume=label) if timer else _nullctx():
                 polar_path = archive_volume(
                     dt,
                     radar=radar,
@@ -573,8 +581,7 @@ def archive_multiple_volumes(
                 result["skipped"] = True
                 result["polar_path"] = None
                 _vprint(
-                    f"SKIP  Volume {i}/{len(items)} held no gates to archive "
-                    f"({vol_elapsed:.1f}s)",
+                    f"SKIP  Volume {i}/{len(items)} held no gates to archive " f"({vol_elapsed:.1f}s)",
                     verbose,
                 )
             else:
@@ -585,8 +592,7 @@ def archive_multiple_volumes(
                 result["n_gates"] = len(df_polar)
 
                 _vprint(
-                    f"OK  Volume {i}/{len(items)} done in "
-                    f"{vol_elapsed:.1f}s -- {result['n_gates']:,} gates saved",
+                    f"OK  Volume {i}/{len(items)} done in " f"{vol_elapsed:.1f}s -- {result['n_gates']:,} gates saved",
                     verbose,
                 )
 
@@ -594,8 +600,7 @@ def archive_multiple_volumes(
             vol_elapsed = _time.perf_counter() - vol_t0
             result["error"] = str(e)
             _vprint(
-                f"FAIL  Volume {i}/{len(items)} FAILED in "
-                f"{vol_elapsed:.1f}s: {e}",
+                f"FAIL  Volume {i}/{len(items)} FAILED in " f"{vol_elapsed:.1f}s: {e}",
                 verbose,
             )
             logger.error(f"[{i}/{len(items)}] {label} - FAIL: {e}")
@@ -607,8 +612,7 @@ def archive_multiple_volumes(
     n_skip = sum(1 for r in results if r["skipped"])
     _vprint(
         f"\nArchiving complete: {n_ok}/{len(results)} volumes "
-        f"in {total_elapsed:.1f}s"
-        + (f" ({n_skip} skipped, nothing to archive)" if n_skip else ""),
+        f"in {total_elapsed:.1f}s" + (f" ({n_skip} skipped, nothing to archive)" if n_skip else ""),
         verbose,
     )
     return results
@@ -674,10 +678,10 @@ def archive_volumes_multi_radar(
 
 
 def _finalize_polar_dtypes(
-    df_polar: "pl.DataFrame | pd.DataFrame",
-    df: "pl.DataFrame | pd.DataFrame",
+    df_polar: pl.DataFrame | pd.DataFrame,
+    df: pl.DataFrame | pd.DataFrame,
     mask: np.ndarray,
-) -> "pl.DataFrame":
+) -> pl.DataFrame:
     """Apply dtype optimisations and add the TEMP column.
 
     HC columns are shifted +1 to the 1-based parquet scale; all polar
@@ -722,7 +726,11 @@ def datatree_to_parquet(
 
     df = datatree_to_dataframe(dt, max_workers)
     df_polar, mask = _build_polar_dataframe(
-        df, radar, filter_feature, filter_threshold, filter_logic,
+        df,
+        radar,
+        filter_feature,
+        filter_threshold,
+        filter_logic,
         azimuth_grids=load_azimuth_grids(radar, base_output_path),
     )
     df_polar = _finalize_polar_dtypes(df_polar, df, mask)
@@ -733,6 +741,7 @@ def datatree_to_parquet(
 # Parquet -> DataFrame / DataTree  (reading archived data)
 # ============================================================================
 
+
 def parquet_to_dataframe(
     radar: str,
     base_path: str | Path,
@@ -740,7 +749,7 @@ def parquet_to_dataframe(
     end_time: str | pd.Timestamp | None = None,
     columns: list[str] | None = None,
     merge_lut: bool = False,
-) -> "pl.DataFrame":
+) -> pl.DataFrame:
     """Load archived POLAR parquet files as a single **polars** DataFrame.
 
     Parameters
@@ -773,8 +782,7 @@ def parquet_to_dataframe(
 
     if not polar_files:
         logger.warning(
-            f"No POLAR data found for radar {radar} "
-            f"between {start_time} and {end_time}"
+            f"No POLAR data found for radar {radar} " f"between {start_time} and {end_time}",
         )
         return pl.DataFrame()
 
@@ -794,9 +802,7 @@ def parquet_to_dataframe(
             # back-to-back volumes reliably).
             vt = _parse_pol_time(f)
             df = df.with_columns(
-                pl.lit(vt.tz_localize(None) if vt is not None else None)
-                .cast(pl.Datetime("ns"))
-                .alias("volume_time")
+                pl.lit(vt.tz_localize(None) if vt is not None else None).cast(pl.Datetime("ns")).alias("volume_time"),
             )
             dfs.append(df)
         except Exception as e:
@@ -831,12 +837,14 @@ def parquet_to_dataframe(
             lut_cols = [c for c in lut_cols if c in lut_df.columns]
             # maintain_order="left" reproduces pandas' left-merge row order.
             df_all = df_all.join(
-                lut_df.select(lut_cols), on="gate_id", how="left", maintain_order="left"
+                lut_df.select(lut_cols),
+                on="gate_id",
+                how="left",
+                maintain_order="left",
             )
         else:
             logger.warning(
-                f"LUT not found at {lut_path}. "
-                "Returning data without spatial coordinates."
+                f"LUT not found at {lut_path}. " "Returning data without spatial coordinates.",
             )
 
     return df_all
@@ -848,7 +856,7 @@ def scan_polar_parquet(
     start_time: str | pd.Timestamp | None = None,
     end_time: str | pd.Timestamp | None = None,
     columns: list[str] | None = None,
-) -> "pl.LazyFrame | None":
+) -> pl.LazyFrame | None:
     """Scan archived POLAR parquet files as a single polars LazyFrame.
 
     The polars counterpart of :func:`parquet_to_dataframe`, used by
@@ -886,8 +894,7 @@ def scan_polar_parquet(
     polar_files = _find_polar_files_in_range(radar_path, start_time, end_time)
     if not polar_files:
         logger.warning(
-            f"No POLAR data found for radar {radar} "
-            f"between {start_time} and {end_time}"
+            f"No POLAR data found for radar {radar} " f"between {start_time} and {end_time}",
         )
         return None
 
@@ -904,14 +911,17 @@ def scan_polar_parquet(
             # multi-volume frame can later be split back into single volumes
             # (per-gate `time` spans the whole ~5 min scan and cannot separate
             # back-to-back volumes reliably).  The dtype is pinned so files with
-            # an unparseable name still concatenate with the rest.  Microsecond
+            # an unparsable name still concatenate with the rest.  Microsecond
             # resolution matches what :func:`parquet_to_dataframe` produces.
             ts = _parse_pol_time(f)
-            scans.append(lf.with_columns(
-                pl.lit(ts.to_pydatetime() if ts is not None else None,
-                       dtype=pl.Datetime("us", "UTC")).alias("volume_time"),
-                pl.lit(radar).alias("radar"),
-            ))
+            scans.append(
+                lf.with_columns(
+                    pl.lit(ts.to_pydatetime() if ts is not None else None, dtype=pl.Datetime("us", "UTC")).alias(
+                        "volume_time",
+                    ),
+                    pl.lit(radar).alias("radar"),
+                ),
+            )
         except Exception as e:
             logger.warning(f"Error scanning {f}: {e}")
             continue
@@ -966,7 +976,7 @@ def parquet_to_datatree(
 
     if not lut_path.exists():
         raise FileNotFoundError(
-            f"LUT not found at {lut_path}. Run generate_lut() first."
+            f"LUT not found at {lut_path}. Run generate_lut() first.",
         )
     if not info_path.exists():
         raise FileNotFoundError(f"Radar info not found at {info_path}.")
@@ -974,8 +984,7 @@ def parquet_to_datatree(
     polar_files = _find_polar_files_in_range(radar_path, start_time, end_time)
     if not polar_files:
         raise ValueError(
-            f"No POLAR data found for {radar} "
-            f"between {start_time} and {end_time}"
+            f"No POLAR data found for {radar} " f"between {start_time} and {end_time}",
         )
 
     # Load all POLAR files in range
@@ -1004,15 +1013,22 @@ def parquet_to_datatree(
 # Columns the LUT owns; a DataFrame's own copies of these are replaced by the
 # LUT's on reconstruction so geometry is always authoritative and never collides.
 _LUT_GEOMETRY_COLS = (
-    "sweep", "azimuth", "range",
-    "latitude", "longitude", "altitude", "x", "y", "z",
+    "sweep",
+    "azimuth",
+    "range",
+    "latitude",
+    "longitude",
+    "altitude",
+    "x",
+    "y",
+    "z",
 )
 # Pure per-volume metadata that must not become gridded data_vars.
 _NON_GATE_METADATA_COLS = ("radar", "volume_time")
 
 
 def dataframe_to_datatree(
-    df: "pl.DataFrame | pd.DataFrame",
+    df: pl.DataFrame | pd.DataFrame,
     radar: str,
     base_path: str | Path,
     label_column: str = "DBZH",
@@ -1023,7 +1039,7 @@ def dataframe_to_datatree(
     The df→DataTree core shared by :func:`parquet_to_datatree` and by DataFrame
     plotting: it joins ``df`` with the radar LUT on ``gate_id`` to recover
     geometry (sweep/azimuth/range + lat/lon/alt/x/y/z and any projection cols),
-    fills the full ``(azimuth × range)`` grid, and NaN-fills gates absent from
+    fills the full ``(azimuth x range)`` grid, and NaN-fills gates absent from
     ``df`` — so a **cropped/filtered** DataFrame reconstructs to a DataTree that
     carries the correct geometry but only the rows present in ``df``, with
     **the DataFrame's own values** (honouring crops or added feature columns).
@@ -1080,7 +1096,8 @@ def dataframe_to_datatree(
     # from the LUT (authoritative, no _x/_y merge collisions) and constant
     # metadata doesn't turn into gridded variables.
     drop = [
-        c for c in (*_LUT_GEOMETRY_COLS, *_projection_columns(lut_df), *_NON_GATE_METADATA_COLS)
+        c
+        for c in (*_LUT_GEOMETRY_COLS, *_projection_columns(lut_df), *_NON_GATE_METADATA_COLS)
         if c != "gate_id" and c in df.columns
     ]
     df_meas = df.drop(columns=drop)
@@ -1110,11 +1127,12 @@ def dataframe_to_datatree(
 # Reconstruction (Parquet + LUT -> DataTree)
 # ============================================================================
 
+
 def labels_to_dataframe(
     labels: np.ndarray,
     gate_ids,
     extra_columns: dict | None = None,
-) -> "pl.DataFrame":
+) -> pl.DataFrame:
     """Create a **polars** DataFrame from prediction labels and gate IDs."""
     data = {"gate_id": np.asarray(gate_ids), "hydrometeor_class": np.asarray(labels)}
     if extra_columns:
@@ -1123,8 +1141,9 @@ def labels_to_dataframe(
 
 
 def join_labels_with_lut(
-    df_labels: "pl.DataFrame | pd.DataFrame", lut_path: str | Path
-) -> "pl.DataFrame":
+    df_labels: pl.DataFrame | pd.DataFrame,
+    lut_path: str | Path,
+) -> pl.DataFrame:
     """Join label data with the LUT to recover spatial coordinates.
 
     Accepts a polars or pandas label frame; always returns polars.
@@ -1134,7 +1153,9 @@ def join_labels_with_lut(
     cols = [c for c in df_labels.columns if c != "gate_id"]
     # maintain_order="left" reproduces pandas' left-merge row order.
     return df_lut.join(
-        df_labels.select(["gate_id", *cols]), on="gate_id", how="left",
+        df_labels.select(["gate_id", *cols]),
+        on="gate_id",
+        how="left",
         maintain_order="left",
     )
 
@@ -1144,10 +1165,10 @@ _PER_GATE_COORDS = ("latitude", "longitude", "altitude", "x", "y", "z")
 
 def _get_sweep_coords(sweep, radar_info):
     coords = {
-        "site_latitude":  radar_info["latitude"],
+        "site_latitude": radar_info["latitude"],
         "site_longitude": radar_info["longitude"],
-        "site_altitude":  radar_info["altitude"],
-        "sweep_number":   sweep,
+        "site_altitude": radar_info["altitude"],
+        "sweep_number": sweep,
     }
     meta = radar_info.get("sweeps", {}).get(sweep, {})
     if "elevation" in meta:
@@ -1156,11 +1177,11 @@ def _get_sweep_coords(sweep, radar_info):
 
 
 def reconstruct_sweep_dataset(
-    df_joined: "pl.DataFrame | pd.DataFrame",
+    df_joined: pl.DataFrame | pd.DataFrame,
     sweep: int,
-    lut_df: "pl.DataFrame | pd.DataFrame",
+    lut_df: pl.DataFrame | pd.DataFrame,
     radar_info: dict,
-    label_column: str = "hydrometeor_class",
+    label_column: str = "hydrometeor_class",  # noqa: ARG001  kept for signature parity with the callers below
     sweep_corners: dict | None = None,
 ) -> xr.Dataset:
     """Reconstruct a single sweep Dataset from joined data.
@@ -1187,8 +1208,7 @@ def reconstruct_sweep_dataset(
     spatial_cols += _projection_columns(lut_df)
 
     non_spatial = [
-        c for c in df_sweep.columns
-        if c not in ("gate_id", "sweep", "azimuth", "range") and c not in spatial_cols
+        c for c in df_sweep.columns if c not in ("gate_id", "sweep", "azimuth", "range") and c not in spatial_cols
     ]
 
     idx = get_full_sweep_index(lut_df, sweep)
@@ -1202,7 +1222,7 @@ def reconstruct_sweep_dataset(
     df_full = pd.concat([df_reidx, lut_spatial], axis=1)
 
     ds = df_full.to_xarray().assign_coords(
-        _get_sweep_coords(sweep, radar_info)
+        _get_sweep_coords(sweep, radar_info),
     )
 
     # Promote per-gate spatial vars to coords so the Dataset is plot-ready.
@@ -1222,7 +1242,7 @@ def reconstruct_sweep_dataset(
 
 
 def reconstruct_datatree(
-    df_joined: "pl.DataFrame | pd.DataFrame",
+    df_joined: pl.DataFrame | pd.DataFrame,
     lut_path: str | Path,
     radar_info_path: str | Path,
     label_column: str = "hydrometeor_class",
@@ -1279,7 +1299,7 @@ def reconstruct_datatree(
     else:
         with concurrent.futures.ThreadPoolExecutor(max_workers) as ex:
             for fut in concurrent.futures.as_completed(
-                [ex.submit(_rec, sw) for sw in sweeps]
+                [ex.submit(_rec, sw) for sw in sweeps],
             ):
                 k, ds = fut.result()
                 if ds is not None:
@@ -1294,11 +1314,12 @@ def reconstruct_datatree(
 # Feature addition utilities
 # ============================================================================
 
+
 def add_feature_to_df(
-    df: "pl.DataFrame | pd.DataFrame",
+    df: pl.DataFrame | pd.DataFrame,
     feature_name: str,
     compute_fn: callable,
-) -> "pl.DataFrame | pd.DataFrame":
+) -> pl.DataFrame | pd.DataFrame:
     """Add a new column to a DataFrame computed from existing columns.
 
     Accepts polars or pandas and returns the **same kind**, so ``compute_fn``

@@ -1,7 +1,4 @@
-"""
-raddb/plot.py
--------------
-PPI, RHI, and latent-space scatter plots for RadDB.
+"""PPI, RHI, and latent-space scatter plots for RadDB.
 
 A radar gate is not a rectangle: it is a curved frustum whose footprint depends
 on range, azimuth, elevation and Earth curvature.  Every plot here draws that
@@ -15,23 +12,27 @@ azimuth/range/elevation with the same 4/3-Earth model that built the LUT; a
 GeoDataFrame is treated as a frame.  There is a single geometry path — always the
 exact frustum — so what is drawn does not depend on how it was asked for.
 """
+
 from __future__ import annotations
 
+import contextlib
+
+import matplotlib.patches as mpatches
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 import numpy as np
 import pandas as pd
 import polars as pl
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-import matplotlib.ticker as mticker
-from matplotlib.colors import BoundaryNorm, ListedColormap, Normalize, TwoSlopeNorm
 import xarray as xr
+from matplotlib.colors import BoundaryNorm, ListedColormap, TwoSlopeNorm
 
-from raddb.hc_mapping import HC_CLASSES as _HC_CLASSES, HC_COLORS as _HC_COLORS
-
+from raddb.hc_mapping import HC_CLASSES as _HC_CLASSES
+from raddb.hc_mapping import HC_COLORS as _HC_COLORS
 
 # ============================================================================
 # Per-variable plotting defaults
 # ============================================================================
+
 
 def _first_available_cmap(*names: str) -> str:
     """First registered colormap among ``names`` (last is the guaranteed fallback).
@@ -52,19 +53,21 @@ def _first_available_cmap(*names: str) -> str:
 # diverging (coolwarm's midpoint is grey) via TwoSlopeNorm so 0 °C reads grey.
 
 _PLOT_DEFAULTS: dict[str, dict] = {
-    "DBZH":     dict(cmap="HomeyerRainbow",   vmin=0,    vmax=60,   label="Reflectivity [dBz]"),
-    "DBZH_raw": dict(cmap="HomeyerRainbow",   vmin=0,    vmax=60,   label="Raw reflectivity [dBz]"),
-    "ZDR":      dict(cmap="viridis",  vmin=-2,   vmax=7,    label="Differential reflectivity [dB]"),
-    "ZDR_raw":  dict(cmap="viridis",  vmin=-2,   vmax=7,    label="Raw differential reflectivity [dB]"),
-    "KDP":      dict(cmap="plasma",   vmin=-2,   vmax=5,    label="Specific differential phase [°/km]"),
-    "RHOHV":    dict(cmap="cividis",  vmin=0.5,  vmax=1.0,  label="Co-polar correlation [-]"),
-    "PHIDP":    dict(cmap="twilight", vmin=-180, vmax=180,  label="Differential phase [deg]"),
-    "HZT":      dict(cmap="viridis",  vmin=0,    vmax=5000, label="Freezing level height [m]"),
-    "TEMP":     dict(cmap="coolwarm",
-                     norm=lambda: TwoSlopeNorm(vmin=-30, vcenter=0, vmax=30),
-                     label="Temperature [°C]"),
-    "HC_MCH":   dict(discrete=True,   classes=_HC_CLASSES,  colors=_HC_COLORS, label="MCH hydrometeor class"),
-    "HC_PYART": dict(discrete=True,   classes=_HC_CLASSES,  colors=_HC_COLORS, label="PyART hydrometeor class"),
+    "DBZH": {"cmap": "HomeyerRainbow", "vmin": 0, "vmax": 60, "label": "Reflectivity [dBz]"},
+    "DBZH_raw": {"cmap": "HomeyerRainbow", "vmin": 0, "vmax": 60, "label": "Raw reflectivity [dBz]"},
+    "ZDR": {"cmap": "viridis", "vmin": -2, "vmax": 7, "label": "Differential reflectivity [dB]"},
+    "ZDR_raw": {"cmap": "viridis", "vmin": -2, "vmax": 7, "label": "Raw differential reflectivity [dB]"},
+    "KDP": {"cmap": "plasma", "vmin": -2, "vmax": 5, "label": "Specific differential phase [°/km]"},
+    "RHOHV": {"cmap": "cividis", "vmin": 0.5, "vmax": 1.0, "label": "Co-polar correlation [-]"},
+    "PHIDP": {"cmap": "twilight", "vmin": -180, "vmax": 180, "label": "Differential phase [deg]"},
+    "HZT": {"cmap": "viridis", "vmin": 0, "vmax": 5000, "label": "Freezing level height [m]"},
+    "TEMP": {
+        "cmap": "coolwarm",
+        "norm": lambda: TwoSlopeNorm(vmin=-30, vcenter=0, vmax=30),
+        "label": "Temperature [°C]",
+    },
+    "HC_MCH": {"discrete": True, "classes": _HC_CLASSES, "colors": _HC_COLORS, "label": "MCH hydrometeor class"},
+    "HC_PYART": {"discrete": True, "classes": _HC_CLASSES, "colors": _HC_COLORS, "label": "PyART hydrometeor class"},
 }
 
 
@@ -89,16 +92,14 @@ def _ensure_cmap_registered(name):
         return name
     if not _PYART_CMAPS_TRIED:
         _PYART_CMAPS_TRIED = True
-        try:
+        with contextlib.suppress(Exception):  # pyart is optional
             import pyart  # noqa: F401  # registers Py-ART colormaps with matplotlib
-        except Exception:  # noqa: BLE001 - pyart optional
-            pass
     if name in plt.colormaps():
         return name
     import warnings
+
     warnings.warn(
-        f"colormap {name!r} is unavailable (Py-ART colormaps need pyart installed); "
-        "falling back to 'turbo'.",
+        f"colormap {name!r} is unavailable (Py-ART colormaps need pyart installed); " "falling back to 'turbo'.",
         stacklevel=2,
     )
     return "turbo"
@@ -160,6 +161,7 @@ def _maybe_cartopy():
     try:
         import cartopy.crs as ccrs
         import cartopy.feature as cfeature
+
         return ccrs, cfeature
     except ImportError:
         return None, None
@@ -195,8 +197,9 @@ def _ne_border_lines():
             for category, name, style in _NE_LAYERS:
                 path = shpreader.natural_earth(resolution="10m", category=category, name=name)
                 _NE_BORDERS.extend((g, style) for g in shpreader.Reader(path).geometries())
-        except Exception as exc:  # noqa: BLE001 - cartopy missing / data not cached
+        except Exception as exc:  # - cartopy missing / data not cached
             import warnings
+
             warnings.warn(
                 f"cartopy country borders unavailable ({exc}); plotted without them.",
                 stacklevel=2,
@@ -216,6 +219,7 @@ def _border_lines(crs, clip):
     key = (str(crs), tuple(round(float(v), 2) for v in clip))
     if key not in _BORDER_LINES:
         import shapely
+
         from raddb.aoi import _reproject_to_aoi
 
         box = shapely.box(*clip)
@@ -264,9 +268,13 @@ def _add_colorbar(p, ax, is_discrete: bool, class_labels, label: str):
     if is_discrete and class_labels is not None:
         n = len(class_labels)
         cbar = plt.colorbar(
-            p, ax=ax, ticks=np.arange(1, n + 1),
+            p,
+            ax=ax,
+            ticks=np.arange(1, n + 1),
             boundaries=np.arange(0.5, n + 1.5),
-            spacing="uniform", fraction=0.046, pad=0.04,
+            spacing="uniform",
+            fraction=0.046,
+            pad=0.04,
         )
         cbar.ax.set_yticklabels(class_labels)
         cbar.set_label(label)
@@ -317,6 +325,7 @@ _ARCHIVE_HINT = (
     "on a RadDB built with RadDB(archive_dir=...) so it can be inferred."
 )
 
+
 class _Source:
     """What the plots need about their input, resolved once.
 
@@ -352,6 +361,7 @@ def _beamwidth(src):
     volume to set it explicitly.
     """
     from raddb.lut import _beamwidth_from_datatree
+
     return _beamwidth_from_datatree(src.dtree)
 
 
@@ -364,8 +374,7 @@ def _resolve_frame(data, archive_dir=None):
     from pathlib import Path
 
     if isinstance(data, (xr.DataTree, xr.Dataset)):
-        return _Source(kind="datatree", dtree=data,
-                       base=Path(archive_dir) if archive_dir else None)
+        return _Source(kind="datatree", dtree=data, base=Path(archive_dir) if archive_dir else None)
 
     crs, base, gdf = None, archive_dir, None
 
@@ -388,12 +397,12 @@ def _resolve_frame(data, archive_dir=None):
         # pyarrow cannot convert — WKB-encode them the way the RadDB converters
         # do, and plot_vcs decodes them again on the way out.
         from raddb.main import _encode_geometry
+
         data = pl.from_pandas(_encode_geometry(data))
 
     if not isinstance(data, pl.DataFrame):
         raise TypeError(
-            f"expected a RadDB, polars/pandas frame, GeoDataFrame or DataTree; "
-            f"got {type(data).__name__}."
+            f"expected a RadDB, polars/pandas frame, GeoDataFrame or DataTree; " f"got {type(data).__name__}.",
         )
     if data.is_empty():
         raise ValueError("no data to plot (the frame is empty).")
@@ -402,10 +411,10 @@ def _resolve_frame(data, archive_dir=None):
     return _Source(kind=kind, df=data, base=Path(base) if base else None, crs=crs, gdf=gdf)
 
 
-def _select_radar(df: "pl.DataFrame", radar: str | None) -> tuple["pl.DataFrame", str]:
+def _select_radar(df: pl.DataFrame, radar: str | None) -> tuple[pl.DataFrame, str]:
     """Narrow to a single radar, inferring it when the frame holds only one."""
-    from raddb.helper import normalize_radar_name
     from raddb.aoi import _radars_from_gate_ids
+    from raddb.helper import normalize_radar_name
 
     if "radar" in df.columns:
         present = sorted(df["radar"].drop_nulls().unique().to_list())
@@ -415,8 +424,7 @@ def _select_radar(df: "pl.DataFrame", radar: str | None) -> tuple["pl.DataFrame"
     if radar is None:
         if len(present) != 1:
             raise ValueError(
-                f"data spans radars {present}; pass radar= to pick one "
-                "(one plot draws one radar)."
+                f"data spans radars {present}; pass radar= to pick one " "(one plot draws one radar).",
             )
         return df, present[0]
 
@@ -425,17 +433,17 @@ def _select_radar(df: "pl.DataFrame", radar: str | None) -> tuple["pl.DataFrame"
         out = df.filter(pl.col("radar") == radar)
     else:
         from raddb.lut import GATE_ID_RADAR_BASE, encode_radar_code
+
         prefix = encode_radar_code(radar) * GATE_ID_RADAR_BASE
         out = df.filter(
-            (pl.col("gate_id") >= prefix)
-            & (pl.col("gate_id") < prefix + GATE_ID_RADAR_BASE)
+            (pl.col("gate_id") >= prefix) & (pl.col("gate_id") < prefix + GATE_ID_RADAR_BASE),
         )
     if out.is_empty():
         raise ValueError(f"no rows for radar {radar!r}; present: {present}.")
     return out, radar
 
 
-def _select_volume(df: "pl.DataFrame", timestep=None, start_time=None, end_time=None):
+def _select_volume(df: pl.DataFrame, timestep=None, start_time=None, end_time=None):
     """Narrow to a single volume. Returns ``(frame, time label)``.
 
     ``start_time`` / ``end_time`` restrict the candidates; ``timestep`` then picks
@@ -474,7 +482,7 @@ def _select_volume(df: "pl.DataFrame", timestep=None, start_time=None, end_time=
     else:
         raise ValueError(
             f"data holds {len(vols)} volumes ({vols[0]} ... {vols[-1]}); pass "
-            "timestep= to pick one, or narrow with start_time=/end_time=."
+            "timestep= to pick one, or narrow with start_time=/end_time=.",
         )
     return df.filter(pl.col(col) == chosen), str(chosen)[:19]
 
@@ -482,10 +490,18 @@ def _select_volume(df: "pl.DataFrame", timestep=None, start_time=None, end_time=
 # ---------------------------------------------------------------- coordinates
 
 _COORD_ALIASES = {
-    "cartesian": "xy", "xy": "xy", "radar": "xy",
-    "geo": "lonlat", "lonlat": "lonlat", "latlon": "lonlat", "wgs": "lonlat",
-    "projected": "projected", "proj": "projected",
-    "swiss": 2056, "lv95": 2056, "2056": 2056,
+    "cartesian": "xy",
+    "xy": "xy",
+    "radar": "xy",
+    "geo": "lonlat",
+    "lonlat": "lonlat",
+    "latlon": "lonlat",
+    "wgs": "lonlat",
+    "projected": "projected",
+    "proj": "projected",
+    "swiss": 2056,
+    "lv95": 2056,
+    "2056": 2056,
 }
 
 
@@ -500,7 +516,7 @@ def _resolve_coords(coords, crs):
     key = str(coords).lower()
     if key not in _COORD_ALIASES:
         raise ValueError(
-            f"coords must be 'xy', 'lonlat', 'projected' or an EPSG int; got {coords!r}."
+            f"coords must be 'xy', 'lonlat', 'projected' or an EPSG int; got {coords!r}.",
         )
     resolved = _COORD_ALIASES[key]
     if isinstance(resolved, int):
@@ -508,14 +524,13 @@ def _resolve_coords(coords, crs):
     if resolved == "projected":
         if crs is None:
             raise ValueError(
-                "coords='projected' needs a CRS; build the RadDB with "
-                "RadDB(crs=...) or pass an EPSG int as coords."
+                "coords='projected' needs a CRS; build the RadDB with " "RadDB(crs=...) or pass an EPSG int as coords.",
             )
         return "projected", int(crs)
     return resolved, None
 
 
-def _corner_vertices(tbl: "pl.DataFrame", n_corners: int, mode: str, epsg, info):
+def _corner_vertices(tbl: pl.DataFrame, n_corners: int, mode: str, epsg, info):
     """Per-gate corner rings as an ``(n_gates, n_corners, 2)`` float array.
 
     ``tbl`` is a :func:`raddb.lut.gate_corner_table` result for the ``h_plane``
@@ -529,29 +544,33 @@ def _corner_vertices(tbl: "pl.DataFrame", n_corners: int, mode: str, epsg, info)
         if not all(c in tbl.columns for c in xs):
             raise KeyError(
                 f"the h_plane lattice has no EPSG:{epsg} columns. Regenerate the "
-                "LUT with that projection, or use coords='xy' / 'lonlat'."
+                "LUT with that projection, or use coords='xy' / 'lonlat'.",
             )
     else:
         xs = [f"x_{k}" for k in range(1, n_corners + 1)]
         ys = [f"y_{k}" for k in range(1, n_corners + 1)]
 
     ring = np.stack(
-        [np.stack([tbl[xc].to_numpy(), tbl[yc].to_numpy()], axis=1)
-         for xc, yc in zip(xs, ys)],
+        [np.stack([tbl[xc].to_numpy(), tbl[yc].to_numpy()], axis=1) for xc, yc in zip(xs, ys, strict=False)],
         axis=1,
     ).astype(np.float64)
 
     if mode == "lonlat":
         from raddb.lut import cartesian_to_geographic
+
         lat, lon, _ = cartesian_to_geographic(
-            ring[:, :, 0], ring[:, :, 1], np.zeros(ring.shape[:2]),
-            info["latitude"], info["longitude"], info["altitude"],
+            ring[:, :, 0],
+            ring[:, :, 1],
+            np.zeros(ring.shape[:2]),
+            info["latitude"],
+            info["longitude"],
+            info["altitude"],
         )
         ring = np.stack([lon, lat], axis=2)
     return ring
 
 
-def _join_corners(df: "pl.DataFrame", tbl: "pl.DataFrame", variable: str):
+def _join_corners(df: pl.DataFrame, tbl: pl.DataFrame, variable: str):
     """Align a per-gate corner table with the data frame, dropping unusable rows.
 
     Returns ``(values, corner table)`` in matching row order.  Gates whose
@@ -569,12 +588,13 @@ def _join_corners(df: "pl.DataFrame", tbl: "pl.DataFrame", variable: str):
     if joined.is_empty():
         raise ValueError(
             f"no gates left to draw: every {variable!r} value is NaN, or none of "
-            "the gates matched the LUT geometry."
+            "the gates matched the LUT geometry.",
         )
     return joined[variable].to_numpy(), joined
 
 
 # ------------------------------------------------- approximate ("rough") gates
+
 
 def _dt_sweep_names(dt):
     """Sweep group names of a DataTree, ordered by sweep number."""
@@ -599,15 +619,13 @@ def _dt_sweep(dt, sweep):
 
 def _dt_site(ds):
     """Site (lat, lon, alt) from a sweep Dataset, as a radar-info-shaped dict."""
-    missing = [k for k in ("latitude", "longitude", "altitude")
-               if k not in ds.variables and k not in ds.coords]
+    missing = [k for k in ("latitude", "longitude", "altitude") if k not in ds.variables and k not in ds.coords]
     if missing:
         raise KeyError(
             f"the DataTree sweep has no {missing} coordinate(s), so the radar site "
-            "is unknown. xradar volumes normally carry them per sweep."
+            "is unknown. xradar volumes normally carry them per sweep.",
         )
-    return {k: float(np.asarray(ds[k]).ravel()[0])
-            for k in ("latitude", "longitude", "altitude")}
+    return {k: float(np.asarray(ds[k]).ravel()[0]) for k in ("latitude", "longitude", "altitude")}
 
 
 def _dt_gate_table(ds, variable):
@@ -619,7 +637,7 @@ def _dt_gate_table(ds, variable):
     """
     if variable not in ds.variables:
         raise KeyError(
-            f"variable {variable!r} not in this sweep; have {sorted(ds.data_vars)}."
+            f"variable {variable!r} not in this sweep; have {sorted(ds.data_vars)}.",
         )
     az = np.asarray(ds["azimuth"].values, dtype=np.float64)
     rng = np.asarray(ds["range"].values, dtype=np.float64)
@@ -632,12 +650,14 @@ def _dt_gate_table(ds, variable):
         vals = vals.T
     n_az, n_rng = az.size, rng.size
 
-    return pl.DataFrame({
-        "azimuth": np.repeat(az, n_rng),
-        "range": np.tile(rng, n_az),
-        "elevation_angle": np.repeat(el, n_rng),
-        variable: vals.ravel(),
-    })
+    return pl.DataFrame(
+        {
+            "azimuth": np.repeat(az, n_rng),
+            "range": np.tile(rng, n_az),
+            "elevation_angle": np.repeat(el, n_rng),
+            variable: vals.ravel(),
+        },
+    )
 
 
 def _dt_h_vertices(ds, mode, epsg, info):
@@ -651,7 +671,9 @@ def _dt_h_vertices(ds, mode, epsg, info):
     beamwidth-independent (verified: 0.8 deg and 1.2 deg give identical nodes).
     """
     from raddb.lut import (
-        antenna_vectors_to_cartesian, cartesian_to_geographic, GATE_RING_OFFSETS,
+        GATE_RING_OFFSETS,
+        antenna_vectors_to_cartesian,
+        cartesian_to_geographic,
     )
 
     az = np.asarray(ds["azimuth"].values, dtype=np.float64)
@@ -663,7 +685,12 @@ def _dt_h_vertices(ds, mode, epsg, info):
     x, y, _ = antenna_vectors_to_cartesian(rng, az, el, edges=True)
     if mode == "lonlat":
         lat, lon, _ = cartesian_to_geographic(
-            x, y, np.zeros_like(x), info["latitude"], info["longitude"], info["altitude"],
+            x,
+            y,
+            np.zeros_like(x),
+            info["latitude"],
+            info["longitude"],
+            info["altitude"],
         )
         x, y = lon, lat
     elif mode == "projected":
@@ -673,8 +700,7 @@ def _dt_h_vertices(ds, mode, epsg, info):
     ai = np.repeat(np.arange(n_az), n_rng)
     ri = np.tile(np.arange(n_rng), n_az)
     return np.stack(
-        [np.stack([x[ai + i, ri + j], y[ai + i, ri + j]], axis=1)
-         for i, j in GATE_RING_OFFSETS],
+        [np.stack([x[ai + i, ri + j], y[ai + i, ri + j]], axis=1) for i, j in GATE_RING_OFFSETS],
         axis=1,
     )
 
@@ -705,8 +731,7 @@ def _dt_v_vertices(ds, height, info, beamwidth_deg):
     # near-bottom, far-bottom, far-top, near-top
     picks = ((-1, 0), (-1, 1), (1, 1), (1, 0))
     return np.stack(
-        [np.stack([faces[lvl][0][ai, ri + j], faces[lvl][1][ai, ri + j]], axis=1)
-         for lvl, j in picks],
+        [np.stack([faces[lvl][0][ai, ri + j], faces[lvl][1][ai, ri + j]], axis=1) for lvl, j in picks],
         axis=1,
     )
 
@@ -714,18 +739,24 @@ def _dt_v_vertices(ds, height, info, beamwidth_deg):
 def _project_nodes_xy(x, y, epsg, info):
     """Radar-relative metres -> a projected CRS, for DataTree-computed geometry."""
     import pyproj
-    from raddb.lut import cartesian_to_geographic
+
     from raddb.aoi import _to_pyproj_crs
+    from raddb.lut import cartesian_to_geographic
 
     lat, lon, _ = cartesian_to_geographic(
-        x, y, np.zeros_like(x), info["latitude"], info["longitude"], info["altitude"],
+        x,
+        y,
+        np.zeros_like(x),
+        info["latitude"],
+        info["longitude"],
+        info["altitude"],
     )
     tf = pyproj.Transformer.from_crs(_to_pyproj_crs(4326), _to_pyproj_crs(epsg), always_xy=True)
     px, py = tf.transform(np.asarray(lon).ravel(), np.asarray(lat).ravel())
     return np.asarray(px).reshape(x.shape), np.asarray(py).reshape(y.shape)
 
 
-def _nearest_ray_per_sweep(frame: "pl.DataFrame", target: float, az_tol: float):
+def _nearest_ray_per_sweep(frame: pl.DataFrame, target: float, az_tol: float):
     """Keep, in each sweep, only the rows on that sweep's ray closest to ``target``.
 
     ``frame`` must carry ``sweep`` and a precomputed ``_off`` column holding the
@@ -738,17 +769,18 @@ def _nearest_ray_per_sweep(frame: "pl.DataFrame", target: float, az_tol: float):
     if within.is_empty():
         raise ValueError(
             f"no sweep has a ray within ±{az_tol}° of azimuth {target}°; the "
-            f"closest is {float(best['_best'].min()):.2f}° away."
+            f"closest is {float(best['_best'].min()):.2f}° away.",
         )
     if within.height < best.height:
         import warnings
+
         warnings.warn(
             f"{best.height - within.height} of {best.height} sweeps have no ray "
             f"within ±{az_tol}° of azimuth {target}° and are omitted.",
             stacklevel=2,
         )
     picked = frame.join(within, on="sweep", how="inner").filter(
-        pl.col("_off") == pl.col("_best")
+        pl.col("_off") == pl.col("_best"),
     )
     return picked, float(picked["azimuth"].mean())
 
@@ -774,7 +806,7 @@ def _dt_rhi(src, target, variable, az_tol, height, beamwidth_deg):
         verts = _dt_v_vertices(ds, height, src.info, beamwidth_deg)
 
         n_rng = np.asarray(ds["range"].values).size
-        rows = slice(j * n_rng, (j + 1) * n_rng)          # table is ray-major
+        rows = slice(j * n_rng, (j + 1) * n_rng)  # table is ray-major
         vals = tbl[variable].to_numpy()[rows]
         verts = verts[rows]
         keep = np.isfinite(vals)
@@ -783,14 +815,14 @@ def _dt_rhi(src, target, variable, az_tol, height, beamwidth_deg):
 
     if not rays:
         raise ValueError(
-            f"no sweep of this DataTree has a ray within ±{az_tol}° of azimuth {target}°."
+            f"no sweep of this DataTree has a ray within ±{az_tol}° of azimuth {target}°.",
         )
-    return (np.concatenate(all_values), np.concatenate(all_verts),
-            float(np.mean(rays)))
+    return (np.concatenate(all_values), np.concatenate(all_verts), float(np.mean(rays)))
 
 
-def _dt_cappi(src, altitude, variable, height, overlap, fill_lowest,
-              mode, epsg, beamwidth_deg):
+# `_fill_lowest` is accepted for signature parity with the LUT path but has no
+# effect here: a DataTree carries every sweep already, so nothing is missing.
+def _dt_cappi(src, altitude, variable, height, overlap, _fill_lowest, mode, epsg, beamwidth_deg):
     """CAPPI geometry and values from a DataTree, with no archive involved.
 
     Mirrors the LUT path: cut the exact ``(d, z)`` faces at the slice altitude to
@@ -809,18 +841,22 @@ def _dt_cappi(src, altitude, variable, height, overlap, fill_lowest,
         per_sweep[sw] = ds
         d_near, d_far, rng_idx, dz = _dt_sweep_chords(ds, z0, site_alt, beamwidth_deg)
         if rng_idx.size:
-            chords.append(pl.DataFrame({
-                "sweep": np.full(rng_idx.size, sw, dtype=np.int32),
-                "rng_idx": rng_idx.astype(np.int32),
-                "d_near": d_near.astype(np.float32),
-                "d_far": d_far.astype(np.float32),
-                "z_center": np.zeros(rng_idx.size, dtype=np.float32),
-                "dz_center": dz.astype(np.float32),
-            }))
+            chords.append(
+                pl.DataFrame(
+                    {
+                        "sweep": np.full(rng_idx.size, sw, dtype=np.int32),
+                        "rng_idx": rng_idx.astype(np.int32),
+                        "d_near": d_near.astype(np.float32),
+                        "d_far": d_far.astype(np.float32),
+                        "z_center": np.zeros(rng_idx.size, dtype=np.float32),
+                        "dz_center": dz.astype(np.float32),
+                    },
+                ),
+            )
     if not chords:
         raise ValueError(
             f"no beam of this DataTree reaches {altitude} m "
-            f"({'ASL' if height == 'asl' else 'above the radar'}); nothing to draw."
+            f"({'ASL' if height == 'asl' else 'above the radar'}); nothing to draw.",
         )
     table = pl.concat(chords, how="vertical")
     if overlap == "nearest":
@@ -843,10 +879,12 @@ def _dt_cappi(src, altitude, variable, height, overlap, fill_lowest,
 
         n_az = np.asarray(ds["azimuth"].values).size
         n_rng = np.asarray(ds["range"].values).size
-        rows = (np.repeat(np.arange(n_az), ri.size) * n_rng
-                + np.tile(ri, n_az))                       # table is ray-major
+        rows = np.repeat(np.arange(n_az), ri.size) * n_rng + np.tile(ri, n_az)  # table is ray-major
         verts = _trim_footprints_to_chord(
-            full[rows], full_xy[rows], np.tile(dn, n_az), np.tile(df_, n_az)
+            full[rows],
+            full_xy[rows],
+            np.tile(dn, n_az),
+            np.tile(df_, n_az),
         )
         vals = tbl[variable].to_numpy()[rows]
         keep = np.isfinite(vals)
@@ -882,10 +920,8 @@ def _dt_sweep_chords(ds, z0, site_alt, beamwidth_deg):
         x, y, z = antenna_vectors_to_cartesian(rng, az, el + lvl * half, edges=True)
         faces[lvl] = (np.hypot(x, y)[0], z[0] + site_alt)
 
-    ring_d = np.stack([faces[-1][0][:-1], faces[-1][0][1:],
-                       faces[1][0][1:], faces[1][0][:-1]], axis=1)
-    ring_z = np.stack([faces[-1][1][:-1], faces[-1][1][1:],
-                       faces[1][1][1:], faces[1][1][:-1]], axis=1)
+    ring_d = np.stack([faces[-1][0][:-1], faces[-1][0][1:], faces[1][0][1:], faces[1][0][:-1]], axis=1)
+    ring_z = np.stack([faces[-1][1][:-1], faces[-1][1][1:], faces[1][1][1:], faces[1][1][:-1]], axis=1)
 
     za, zb = ring_z, np.roll(ring_z, -1, axis=1)
     da, db = ring_d, np.roll(ring_d, -1, axis=1)
@@ -900,8 +936,7 @@ def _dt_sweep_chords(ds, z0, site_alt, beamwidth_deg):
         return (np.empty(0),) * 4
     d_hit = d_cross[hit]
     z_center = ring_z.mean(axis=1)[hit]
-    return (np.nanmin(d_hit, axis=1), np.nanmax(d_hit, axis=1),
-            np.flatnonzero(hit), np.abs(z_center - z0))
+    return (np.nanmin(d_hit, axis=1), np.nanmax(d_hit, axis=1), np.flatnonzero(hit), np.abs(z_center - z0))
 
 
 class _KmFormatter(mticker.Formatter):
@@ -923,7 +958,7 @@ class _KmFormatter(mticker.Formatter):
     #: Never print more than this many decimals, whatever the ticks ask for.
     MAX_DECIMALS = 4
 
-    def __call__(self, v, pos=None):
+    def __call__(self, v, _pos=None):
         return f"{(v - self.offset) / 1e3:.{self._decimals()}f}"
 
     def _decimals(self) -> int:
@@ -953,8 +988,10 @@ def _draw_polygons(ax, verts, values, plot_kwargs, edgecolor, rasterized):
     from matplotlib.collections import PolyCollection
 
     pc = PolyCollection(
-        verts, array=np.asarray(values, dtype=np.float64),
-        edgecolor=edgecolor, linewidth=0.1,
+        verts,
+        array=np.asarray(values, dtype=np.float64),
+        edgecolor=edgecolor,
+        linewidth=0.1,
     )
     if "cmap" in plot_kwargs:
         pc.set_cmap(plot_kwargs["cmap"])
@@ -968,8 +1005,7 @@ def _draw_polygons(ax, verts, values, plot_kwargs, edgecolor, rasterized):
     return pc
 
 
-def _finish_map_axes(ax, mode, epsg, verts, site_xy, xlim, ylim,
-                     add_range_rings=True, context=False, info=None):
+def _finish_map_axes(ax, mode, epsg, verts, site_xy, xlim, ylim, add_range_rings=True, context=False, info=None):
     """Labels, tick formatting, aspect, range rings and limits for a map plot."""
     if mode == "lonlat":
         ax.set_xlabel("Longitude [°]")
@@ -996,9 +1032,13 @@ def _finish_map_axes(ax, mode, epsg, verts, site_xy, xlim, ylim,
         if add_range_rings and mode != "lonlat":
             theta = np.linspace(0, 2 * np.pi, 361)
             for d_km in (50, 100, 150):
-                ax.plot(site_xy[0] + d_km * scale * np.cos(theta),
-                        site_xy[1] + d_km * scale * np.sin(theta),
-                        "k--", linewidth=0.5, zorder=1)
+                ax.plot(
+                    site_xy[0] + d_km * scale * np.cos(theta),
+                    site_xy[1] + d_km * scale * np.sin(theta),
+                    "k--",
+                    linewidth=0.5,
+                    zorder=1,
+                )
 
     ax.set_aspect("equal")
     ax.grid(True, alpha=0.3)
@@ -1008,8 +1048,7 @@ def _finish_map_axes(ax, mode, epsg, verts, site_xy, xlim, ylim,
     # of distant echoes, and would differ between variables and time steps —
     # this keeps panels comparable and the radar where the eye expects it.
     if site_xy is not None and (xlim is None or ylim is None):
-        reach = float(np.nanmax(np.hypot(verts[:, :, 0] - site_xy[0],
-                                         verts[:, :, 1] - site_xy[1])))
+        reach = float(np.nanmax(np.hypot(verts[:, :, 0] - site_xy[0], verts[:, :, 1] - site_xy[1])))
         auto_x = (site_xy[0] - reach, site_xy[0] + reach)
         auto_y = (site_xy[1] - reach, site_xy[1] + reach)
     else:
@@ -1027,12 +1066,15 @@ def _site_xy(info, mode, epsg):
     if mode == "lonlat":
         return (float(info["longitude"]), float(info["latitude"]))
     import shapely
+
     from raddb.aoi import _reproject_to_aoi, _to_pyproj_crs
+
     pt = shapely.Point(float(info["longitude"]), float(info["latitude"]))
     if epsg == 2056:
         p = _reproject_to_aoi(pt, 4326, 2056)
         return (p.x, p.y)
     import pyproj
+
     tf = pyproj.Transformer.from_crs(_to_pyproj_crs(4326), _to_pyproj_crs(epsg), always_xy=True)
     return tf.transform(pt.x, pt.y)
 
@@ -1040,6 +1082,7 @@ def _site_xy(info, mode, epsg):
 # ============================================================================
 # PPI
 # ============================================================================
+
 
 def plot_aoi_quicklook(
     aoi_geom,
@@ -1099,7 +1142,7 @@ def plot_aoi_quicklook(
         Cap the number of scattered centroids (random subsample); ``None`` = all.
     xlim, ylim : (min, max) in EPSG:2056 metres, optional
         Axis limits.  ``xlim`` defaults to auto (fills the context/AOI extent);
-        ``ylim`` defaults to the Swiss north band (1.04–1.31 Mm ≈ North 40–310 km).
+        ``ylim`` defaults to the Swiss north band (1.04-1.31 Mm ~ North 40-310 km).
         Pass ``None`` to either for auto-framing of that axis.
     save_path : str or Path, optional
         If given, save the figure (dpi=150, tight).
@@ -1109,6 +1152,7 @@ def plot_aoi_quicklook(
     (fig, ax)
     """
     import shapely
+
     from raddb.aoi import SWISS_EPSG
 
     # Everything here is drawn in the AOI's own frame.  The default context is
@@ -1138,16 +1182,15 @@ def plot_aoi_quicklook(
     # --- radar site positions (also used to frame the view) ---
     sites: dict[str, tuple[float, float]] = {}
     if radars and base_path is not None:
+        from raddb.aoi import SWISS_EPSG, _reproject_to_aoi
         from raddb.lut import load_radar_info
-        from raddb.aoi import _reproject_to_aoi, SWISS_EPSG
 
         for r in radars:
             try:
                 info = load_radar_info(r, base_path)
-            except Exception:  # noqa: BLE001 - missing info shouldn't kill the quicklook
+            except Exception:  # - missing info shouldn't kill the quicklook
                 continue
-            pt = _reproject_to_aoi(
-                shapely.Point(info["longitude"], info["latitude"]), 4326, frame_epsg)
+            pt = _reproject_to_aoi(shapely.Point(info["longitude"], info["latitude"]), 4326, frame_epsg)
             sites[r] = (pt.x, pt.y)
 
     # --- optional selected gate centroids ---
@@ -1157,20 +1200,21 @@ def plot_aoi_quicklook(
     _xc, _yc = f"x_{frame_epsg}", f"y_{frame_epsg}"
     if selected is not None and _xc not in getattr(selected, "columns", ()):
         _xc, _yc = "x", "y"
-    if (
-        selected is not None
-        and show_gates
-        and len(selected)
-        and {_xc, _yc}.issubset(selected.columns)
-    ):
+    if selected is not None and show_gates and len(selected) and {_xc, _yc}.issubset(selected.columns):
         xs = selected[_xc].to_numpy()
         ys = selected[_yc].to_numpy()
         if gate_sample and len(xs) > gate_sample:
             idx = np.random.default_rng(0).choice(len(xs), gate_sample, replace=False)
             xs, ys = xs[idx], ys[idx]
         ax.scatter(
-            xs, ys, s=2, c="tab:blue", alpha=0.25, linewidths=0,
-            label=f"selected gates (n={len(selected):,})", zorder=2,
+            xs,
+            ys,
+            s=2,
+            c="tab:blue",
+            alpha=0.25,
+            linewidths=0,
+            label=f"selected gates (n={len(selected):,})",
+            zorder=2,
         )
 
     # --- radar sites (+ dashed range rings) ---
@@ -1182,23 +1226,29 @@ def plot_aoi_quicklook(
         rings = (range_rings_km,)
     else:
         rings = tuple(range_rings_km)
-    ring_label = (
-        f"range rings ({', '.join(str(int(d)) for d in rings)} km)" if rings else None
-    )
+    ring_label = f"range rings ({', '.join(str(int(d)) for d in rings)} km)" if rings else None
     first_site = True
     ring_labeled = False
     for r, (sx, sy) in sites.items():
         for d_km in rings:
             ax.plot(
-                sx + d_km * 1e3 * np.cos(theta), sy + d_km * 1e3 * np.sin(theta),
-                color="0.5", lw=0.7, ls="--", zorder=1,
+                sx + d_km * 1e3 * np.cos(theta),
+                sy + d_km * 1e3 * np.sin(theta),
+                color="0.5",
+                lw=0.7,
+                ls="--",
+                zorder=1,
                 label=None if ring_labeled else ring_label,
             )
             ring_labeled = True
         ax.plot(sx, sy, "k^", ms=9, zorder=5, label="radar" if first_site else None)
         ax.annotate(
-            r, (sx, sy), textcoords="offset points", xytext=(5, 5),
-            fontweight="bold", zorder=6,
+            r,
+            (sx, sy),
+            textcoords="offset points",
+            xytext=(5, 5),
+            fontweight="bold",
+            zorder=6,
         )
         first_site = False
 
@@ -1248,8 +1298,7 @@ def _draw_context(ax, geom, label="Switzerland"):
     for g in polys:
         if g.geom_type != "Polygon":
             continue
-        ax.fill(*g.exterior.xy, fc="0.93", ec="0.55", lw=0.8, zorder=0,
-                label=label if first else None)
+        ax.fill(*g.exterior.xy, fc="0.93", ec="0.55", lw=0.8, zorder=0, label=label if first else None)
         first = False
 
 
@@ -1276,6 +1325,7 @@ def _draw_aoi_outline(ax, geom, color="red"):
 # ============================================================================
 # Vertical cross-section (arbitrary line, from crop_cross_section)
 # ============================================================================
+
 
 def plot_cross_section(
     df_cs,
@@ -1336,7 +1386,8 @@ def plot_cross_section(
         raise ValueError(f"no non-NaN {variable!r} values on this cross-section.")
 
     plot_kwargs, is_discrete, class_labels, cbar_label = _resolve_plot_kwargs(
-        variable, plot_kwargs
+        variable,
+        plot_kwargs,
     )
 
     if ax is None:
@@ -1378,6 +1429,7 @@ def plot_cross_section(
 # The four gate-accurate plots
 # ============================================================================
 
+
 def _common_prep(data, archive_dir, radar, timestep, start_time, end_time, variable):
     """Resolve the input and narrow it to one radar and one volume.
 
@@ -1406,6 +1458,7 @@ def _common_prep(data, archive_dir, radar, timestep, start_time, end_time, varia
         # info.yaml crs block; if there is genuinely none, leave it unset so
         # _resolve_coords can say so.
         from raddb.aoi import aoi_epsg
+
         try:
             src.crs = aoi_epsg(src.base, src.radar)
         except (ValueError, FileNotFoundError):
@@ -1503,7 +1556,8 @@ def plot_ppi(
     mode, epsg = _resolve_coords(coords, src.crs)
 
     resolved, is_discrete, class_labels, cbar_label = _resolve_plot_kwargs(
-        variable, plot_kwargs
+        variable,
+        plot_kwargs,
     )
     if ax is None:
         _, ax = plt.subplots(figsize=figsize)
@@ -1528,8 +1582,18 @@ def plot_ppi(
         rasterized = len(values) > 50_000
     p = _draw_polygons(ax, verts, values, resolved, edgecolor, rasterized)
 
-    _finish_map_axes(ax, mode, epsg, verts, _site_xy(src.info, mode, epsg),
-                     xlim, ylim, add_range_rings, context, src.info)
+    _finish_map_axes(
+        ax,
+        mode,
+        epsg,
+        verts,
+        _site_xy(src.info, mode, epsg),
+        xlim,
+        ylim,
+        add_range_rings,
+        context,
+        src.info,
+    )
 
     if add_colorbar:
         _add_colorbar(p, ax, is_discrete, class_labels, cbar_label)
@@ -1593,8 +1657,7 @@ def plot_rhi(
     src = _common_prep(data, archive_dir, radar, timestep, start_time, end_time, variable)
     target = float(azimuth) % 360.0
     if src.kind == "datatree":
-        values, verts, ray_az = _dt_rhi(src, target, variable, az_tol, height,
-                                        _beamwidth(src))
+        values, verts, ray_az = _dt_rhi(src, target, variable, az_tol, height, _beamwidth(src))
     else:
         base = src.require_base("plot_rhi")
         # Nearest ray **per sweep**, compared on the circle so 359.8° and 0.1°
@@ -1605,19 +1668,22 @@ def plot_rhi(
             load_radar_lut(src.radar, base)
             .select(["gate_id", "sweep", "azimuth"])
             .with_columns(
-                (((pl.col("azimuth") - target + 180.0) % 360.0) - 180.0).abs().alias("_off")
+                (((pl.col("azimuth") - target + 180.0) % 360.0) - 180.0).abs().alias("_off"),
             )
         )
         picked, ray_az = _nearest_ray_per_sweep(lut_az, target, az_tol)
         tbl = gate_corner_table(src.radar, base, kind="v_plane").join(
-            picked.select("gate_id"), on="gate_id", how="semi"
+            picked.select("gate_id"),
+            on="gate_id",
+            how="semi",
         )
         values, joined = _join_corners(src.df, tbl, variable)
         z_prefix = "z_asl" if height == "asl" else "z_rel"
         verts = np.stack(
-            [np.stack([joined[f"d_{k}"].to_numpy(),
-                       joined[f"{z_prefix}_{k}"].to_numpy()], axis=1)
-             for k in range(1, 5)],
+            [
+                np.stack([joined[f"d_{k}"].to_numpy(), joined[f"{z_prefix}_{k}"].to_numpy()], axis=1)
+                for k in range(1, 5)
+            ],
             axis=1,
         ).astype(np.float64)
 
@@ -1625,7 +1691,8 @@ def plot_rhi(
         raise ValueError(f"no gates on the ray at azimuth {ray_az:.1f}° in this input.")
 
     resolved, is_discrete, class_labels, cbar_label = _resolve_plot_kwargs(
-        variable, plot_kwargs
+        variable,
+        plot_kwargs,
     )
     if ax is None:
         _, ax = plt.subplots(figsize=figsize)
@@ -1639,11 +1706,16 @@ def plot_rhi(
     ax.set_xlabel("Ground range [km]")
     ax.set_ylabel("Height ASL [km]" if height == "asl" else "Height above radar [km]")
     ax.grid(True, alpha=0.3)
-    ax.set_xlim(xlim if xlim is not None
-                else (0.0, (max_range_km * 1e3) if max_range_km else float(verts[:, :, 0].max())))
-    ax.set_ylim(ylim if ylim is not None
-                else (float(verts[:, :, 1].min()),
-                      (max_height_km * 1e3) if max_height_km else float(verts[:, :, 1].max())))
+    ax.set_xlim(
+        xlim if xlim is not None else (0.0, (max_range_km * 1e3) if max_range_km else float(verts[:, :, 0].max())),
+    )
+    ax.set_ylim(
+        (
+            ylim
+            if ylim is not None
+            else (float(verts[:, :, 1].min()), (max_height_km * 1e3) if max_height_km else float(verts[:, :, 1].max()))
+        ),
+    )
 
     if add_colorbar:
         _add_colorbar(p, ax, is_discrete, class_labels, cbar_label)
@@ -1730,7 +1802,7 @@ def plot_cappi(
     if overlap not in ("nearest", "all"):
         raise ValueError(f"overlap must be 'nearest' or 'all'; got {overlap!r}.")
 
-    from raddb.lut import cappi_chords, gate_corner_table, _gate_grid_index
+    from raddb.lut import _gate_grid_index, cappi_chords, gate_corner_table
 
     src = _common_prep(data, archive_dir, radar, timestep, start_time, end_time, variable)
 
@@ -1738,8 +1810,15 @@ def plot_cappi(
 
     if src.kind == "datatree":
         values, verts = _dt_cappi(
-            src, altitude, variable, height, overlap, fill_lowest,
-            mode, epsg, _beamwidth(src),
+            src,
+            altitude,
+            variable,
+            height,
+            overlap,
+            fill_lowest,
+            mode,
+            epsg,
+            _beamwidth(src),
         )
     else:
         base = src.require_base("plot_cappi")
@@ -1751,7 +1830,7 @@ def plot_cappi(
         if chords.is_empty():
             raise ValueError(
                 f"no beam of radar {src.radar!r} reaches {altitude} m "
-                f"({'ASL' if height == 'asl' else 'above the radar'}); nothing to draw."
+                f"({'ASL' if height == 'asl' else 'above the radar'}); nothing to draw.",
             )
         if overlap == "nearest":
             chords = _resolve_chord_overlap(chords)
@@ -1760,28 +1839,33 @@ def plot_cappi(
 
         # Chords are per (sweep, rng_idx) and azimuth-independent -> expand to gates.
         gates = _gate_grid_index(src.radar, base).join(
-            chords, on=["sweep", "rng_idx"], how="inner"
+            chords,
+            on=["sweep", "rng_idx"],
+            how="inner",
         )
         if gates.is_empty():
             raise ValueError("the constant-altitude surface matched no gates.")
         tbl = gate_corner_table(src.radar, base, kind="h_plane").join(
-            gates.select(["gate_id", "d_near", "d_far"]), on="gate_id", how="inner"
+            gates.select(["gate_id", "d_near", "d_far"]),
+            on="gate_id",
+            how="inner",
         )
         values, joined = _join_corners(src.df, tbl, variable)
         verts = _trim_footprints_to_chord(
             _corner_vertices(joined, 4, mode, epsg, src.info),
             _corner_vertices(joined, 4, "xy", None, src.info),
-            joined["d_near"].to_numpy(), joined["d_far"].to_numpy(),
+            joined["d_near"].to_numpy(),
+            joined["d_far"].to_numpy(),
         )
 
     if len(values) == 0:
         raise ValueError(
-            f"no gates at {altitude} m are present in this input — the slice is "
-            "outside the loaded/cropped data."
+            f"no gates at {altitude} m are present in this input — the slice is " "outside the loaded/cropped data.",
         )
 
     resolved, is_discrete, class_labels, cbar_label = _resolve_plot_kwargs(
-        variable, plot_kwargs
+        variable,
+        plot_kwargs,
     )
     if ax is None:
         _, ax = plt.subplots(figsize=figsize)
@@ -1789,8 +1873,18 @@ def plot_cappi(
         rasterized = len(values) > 50_000
 
     p = _draw_polygons(ax, verts, values, resolved, edgecolor, rasterized)
-    _finish_map_axes(ax, mode, epsg, verts, _site_xy(src.info, mode, epsg),
-                     xlim, ylim, add_range_rings, context, src.info)
+    _finish_map_axes(
+        ax,
+        mode,
+        epsg,
+        verts,
+        _site_xy(src.info, mode, epsg),
+        xlim,
+        ylim,
+        add_range_rings,
+        context,
+        src.info,
+    )
 
     if add_colorbar:
         _add_colorbar(p, ax, is_discrete, class_labels, cbar_label)
@@ -1871,8 +1965,6 @@ def plot_vcs(
     -------
     matplotlib.collections.PolyCollection
     """
-    import shapely
-
     if isinstance(data, (xr.DataTree, xr.Dataset)):
         raise TypeError(
             "plot_vcs cannot work from a DataTree: cutting a cross-section needs "
@@ -1880,7 +1972,7 @@ def plot_vcs(
             "equivalent of. Archive the volume first — it takes a few seconds — "
             "then cut the section on the result:\n"
             "    db.archive(datatree=dt, radar='L')\n"
-            "    db.open(radars='L').plot_vcs(line=(p1, p2))"
+            "    db.open(radars='L').plot_vcs(line=(p1, p2))",
         )
 
     # RadDB.columns is a method, a frame's .columns is a property — handle both.
@@ -1896,7 +1988,7 @@ def plot_vcs(
             "both a section line and an already-cut frame were given, so it is "
             "ambiguous which section to draw. Cutting again would intersect two "
             "different sections. Pass the line to an uncut frame, or drop line= "
-            "to draw the section this frame already carries."
+            "to draw the section this frame already carries.",
         )
     if not already_cut:
         if line is None:
@@ -1905,21 +1997,25 @@ def plot_vcs(
                 "Pass line=((x1, y1), (x2, y2)), a shapely LineString or a "
                 ".shp/.geojson path — or call extract_cross_section() first. "
                 "(An AOI crop by rectangle/polygon/point selects an area, not a "
-                "line, so its result cannot be drawn as a cross-section.)"
+                "line, so its result cannot be drawn as a cross-section.)",
             )
         if not hasattr(data, "extract_cross_section"):
             # A bare frame carries gate_id and the archive carries the geometry,
             # so the section is perfectly cuttable — wrap it, the same way the
             # other three plots read the LUT for a bare frame.
             from raddb.main import RadDB as _RadDB
+
             probe = _resolve_frame(data, archive_dir)
             probe.require_base("cutting a cross-section from line=")
             data = _RadDB(archive_dir=str(probe.base), crs=probe.crs)._derive(probe.df)
         p1, p2, file_crs = _line_endpoints(line)
         # A file states its own CRS; honour it unless the caller overrode it.
         data = data.extract_cross_section(
-            p1, p2, crs=crs if crs is not None else file_crs,
-            beamwidth_deg=beamwidth_deg, aoi_crs=aoi_crs,
+            p1,
+            p2,
+            crs=crs if crs is not None else file_crs,
+            beamwidth_deg=beamwidth_deg,
+            aoi_crs=aoi_crs,
         )
 
     src = _common_prep(data, archive_dir, radar, timestep, start_time, end_time, variable)
@@ -1933,13 +2029,12 @@ def plot_vcs(
 
     # cs_polygon lives in (distance along the line, altitude ASL).
     shift = 0.0 if height == "asl" else -float(src.info["altitude"])
-    verts = np.stack([
-        np.asarray(poly.exterior.coords)[:4, :2] for poly in pdf["cs_polygon"]
-    ]).astype(np.float64)
+    verts = np.stack([np.asarray(poly.exterior.coords)[:4, :2] for poly in pdf["cs_polygon"]]).astype(np.float64)
     verts[:, :, 1] += shift
 
     resolved, is_discrete, class_labels, cbar_label = _resolve_plot_kwargs(
-        variable, plot_kwargs
+        variable,
+        plot_kwargs,
     )
     values = pdf[variable].to_numpy()
     if ax is None:
@@ -1954,10 +2049,8 @@ def plot_vcs(
     ax.set_xlabel("Distance along section [km]")
     ax.set_ylabel("Altitude [km ASL]" if height == "asl" else "Height above radar [km]")
     ax.grid(True, alpha=0.3)
-    ax.set_xlim(xlim if xlim is not None
-                else (float(verts[:, :, 0].min()), float(verts[:, :, 0].max())))
-    ax.set_ylim(ylim if ylim is not None
-                else (float(verts[:, :, 1].min()), float(verts[:, :, 1].max())))
+    ax.set_xlim(xlim if xlim is not None else (float(verts[:, :, 0].min()), float(verts[:, :, 0].max())))
+    ax.set_ylim(ylim if ylim is not None else (float(verts[:, :, 1].min()), float(verts[:, :, 1].max())))
 
     if add_colorbar:
         _add_colorbar(p, ax, is_discrete, class_labels, cbar_label)
@@ -1967,6 +2060,7 @@ def plot_vcs(
 
 
 # ------------------------------------------------------------ plot internals
+
 
 def _default_title(radar, variable, what, tstr):
     parts = [f"radar {radar}", variable, what]
@@ -1988,12 +2082,14 @@ def _line_endpoints(line):
     lon/lat by RFC 7946, and reading those degrees as LV95 metres would place the
     section thousands of kilometres away.
     """
-    import shapely
     from pathlib import Path
+
+    import shapely
 
     src_crs = None
     if isinstance(line, (str, Path)):
         from raddb.aoi import _read_geometry_file
+
         geom, src_crs = _read_geometry_file(Path(line))
     elif isinstance(line, shapely.geometry.base.BaseGeometry):
         geom = line
@@ -2008,7 +2104,7 @@ def _line_endpoints(line):
     return tuple(coords[0][:2]), tuple(coords[-1][:2]), src_crs
 
 
-def _resolve_chord_overlap(chords: "pl.DataFrame") -> "pl.DataFrame":
+def _resolve_chord_overlap(chords: pl.DataFrame) -> pl.DataFrame:
     """Partition the ground-distance axis so no two gates cover the same distance.
 
     Several sweeps typically intersect the slice altitude over overlapping
@@ -2052,7 +2148,7 @@ def _resolve_chord_overlap(chords: "pl.DataFrame") -> "pl.DataFrame":
     )
 
 
-def _extend_lowest_sweep(chords: "pl.DataFrame", radar: str, base) -> "pl.DataFrame":
+def _extend_lowest_sweep(chords: pl.DataFrame, radar: str, base) -> pl.DataFrame:
     """Follow the lowest sweep past the range where every beam is above the slice.
 
     The operational CAPPI convention (Stull §8.2): rather than leaving the far
@@ -2066,7 +2162,7 @@ def _extend_lowest_sweep(chords: "pl.DataFrame", radar: str, base) -> "pl.DataFr
 
     nodes = load_plane_nodes(radar, base, "v_plane", sweep=lowest)
     nodes = nodes.filter(
-        (pl.col("az_idx") == pl.col("az_idx").min()) & (pl.col("el_level") == -1)
+        (pl.col("az_idx") == pl.col("az_idx").min()) & (pl.col("el_level") == -1),
     ).sort("rng_idx")
     d = nodes["d"].to_numpy()
     if d.size < 2:
@@ -2075,17 +2171,20 @@ def _extend_lowest_sweep(chords: "pl.DataFrame", radar: str, base) -> "pl.DataFr
     beyond = np.flatnonzero(d[1:] > d_end)
     if beyond.size == 0:
         return chords
-    extra = pl.DataFrame({
-        "sweep": np.full(beyond.size, lowest, dtype=np.int32),
-        "rng_idx": beyond.astype(np.int32),
-        "d_near": d[beyond].astype(np.float32),
-        "d_far": d[beyond + 1].astype(np.float32),
-        "z_center": np.zeros(beyond.size, dtype=np.float32),
-        "dz_center": np.zeros(beyond.size, dtype=np.float32),
-    })
+    extra = pl.DataFrame(
+        {
+            "sweep": np.full(beyond.size, lowest, dtype=np.int32),
+            "rng_idx": beyond.astype(np.int32),
+            "d_near": d[beyond].astype(np.float32),
+            "d_far": d[beyond + 1].astype(np.float32),
+            "z_center": np.zeros(beyond.size, dtype=np.float32),
+            "dz_center": np.zeros(beyond.size, dtype=np.float32),
+        },
+    )
     existing = chords.filter(pl.col("sweep") == lowest)["rng_idx"].to_list()
     return pl.concat(
-        [chords, extra.filter(~pl.col("rng_idx").is_in(existing))], how="vertical"
+        [chords, extra.filter(~pl.col("rng_idx").is_in(existing))],
+        how="vertical",
     )
 
 
@@ -2112,28 +2211,32 @@ def _trim_footprints_to_chord(verts, verts_xy, d_near, d_far):
     t_far = np.clip(np.nan_to_num(t_far, nan=1.0), 0.0, 1.0)[:, None]
 
     c1, c2, c3, c4 = verts[:, 0], verts[:, 1], verts[:, 2], verts[:, 3]
-    return np.stack([
-        c1 + t_near * (c2 - c1),      # near edge, azimuth side A
-        c1 + t_far * (c2 - c1),       # far  edge, azimuth side A
-        c4 + t_far * (c3 - c4),       # far  edge, azimuth side B
-        c4 + t_near * (c3 - c4),      # near edge, azimuth side B
-    ], axis=1)
+    return np.stack(
+        [
+            c1 + t_near * (c2 - c1),  # near edge, azimuth side A
+            c1 + t_far * (c2 - c1),  # far  edge, azimuth side A
+            c4 + t_far * (c3 - c4),  # far  edge, azimuth side B
+            c4 + t_near * (c3 - c4),  # near edge, azimuth side B
+        ],
+        axis=1,
+    )
 
 
 # ============================================================================
 # LATENT SPACE SCATTER (AMT publication figure)
 # ============================================================================
 
+
 def plot_latent_scatter(
-    df: "pl.DataFrame | pd.DataFrame",
+    df: pl.DataFrame | pd.DataFrame,
     config: list[dict],
     figsize: tuple[float, float] | None = None,
     fig_height: float = 4.6,
     **scatter_kwargs,
 ):
-    """Publication-ready 2×3 AMT latent-space scatter figure.
+    """Publication-ready 2x3 AMT latent-space scatter figure.
 
-    Creates a 2-row × 3-column figure with width=6.9 inches (AMT full-column
+    Creates a 2-row x 3-column figure with width=6.9 inches (AMT full-column
     width). Each subplot shows a scatter of ``df["L1"]`` vs ``df["L2"]``
     coloured by one radar variable. A compact inset colorbar with a white
     semi-transparent background is placed inside each subplot.
@@ -2188,7 +2291,8 @@ def plot_latent_scatter(
     fw = figsize[0] if figsize is not None else 6.9
     fh = figsize[1] if figsize is not None else fig_height
     fig, axes = plt.subplots(
-        n_rows, n_cols,
+        n_rows,
+        n_cols,
         figsize=(fw, fh),
         gridspec_kw={"hspace": 0, "wspace": 0},
     )
@@ -2209,7 +2313,8 @@ def plot_latent_scatter(
         panel_scatter_kw = {**scatter_kwargs, **panel.get("scatter_kwargs", {})}
 
         m = ax.scatter(
-            df["L1"].to_numpy(), df["L2"].to_numpy(),
+            df["L1"].to_numpy(),
+            df["L2"].to_numpy(),
             c=df[var].to_numpy(),
             cmap=cmap,
             norm=norm,
@@ -2233,7 +2338,7 @@ def plot_latent_scatter(
         cb.outline.set_linewidth(0.5)
 
         fancy_box_coords = (cbar_inset_axes[0] - x_pad, cbar_inset_axes[1] - y_pad)
-        fancy_box_width  = cbar_inset_axes[2] + 2 * x_pad
+        fancy_box_width = cbar_inset_axes[2] + 2 * x_pad
         fancy_box_height = cbar_inset_axes[3] + 2 * y_pad
         fancy_patch = mpatches.FancyBboxPatch(
             fancy_box_coords,

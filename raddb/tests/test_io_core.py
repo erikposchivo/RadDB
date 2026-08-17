@@ -53,8 +53,8 @@ from raddb.lut import generate_lut_from_datatree, lut_file_path
 from raddb.main import RadDB
 from raddb.tests.conftest import MCH_BIAS, RADAR, SWISS_EPSG, build_datatree, retime
 
+# A window wide enough to hold every synthetic volume in this module.
 TIME_WINDOW = ("2024-08-01 00:00", "2024-08-02 00:00")
-"""A window wide enough to hold every synthetic volume in this module."""
 
 
 @pytest.fixture
@@ -95,7 +95,8 @@ def test_open_any_datatree(tmp_path, datatree):
 
     assert sorted(g.lstrip("/") for g in loaded.groups if "sweep" in g) == ["sweep_1", "sweep_2"]
     np.testing.assert_allclose(
-        loaded["sweep_1"].to_dataset()["DBZH"].values, datatree["sweep_1"].to_dataset()["DBZH"].values
+        loaded["sweep_1"].to_dataset()["DBZH"].values,
+        datatree["sweep_1"].to_dataset()["DBZH"].values,
     )
 
 
@@ -108,7 +109,8 @@ def test_open_any_datatree_reads_zarr(tmp_path, datatree):
     loaded = open_any_datatree(path)
 
     np.testing.assert_allclose(
-        loaded["sweep_1"].to_dataset()["DBZH"].values, datatree["sweep_1"].to_dataset()["DBZH"].values
+        loaded["sweep_1"].to_dataset()["DBZH"].values,
+        datatree["sweep_1"].to_dataset()["DBZH"].values,
     )
 
 
@@ -165,7 +167,8 @@ def test_archive_volume(lut_base, make_datatree):
     """One volume becomes one POL parquet, whose path is returned."""
     path = archive_volume(make_datatree(), radar=RADAR, base_output_path=lut_base)
 
-    assert path is not None and path.endswith("_POL.parquet")
+    assert path is not None
+    assert path.endswith("_POL.parquet")
     assert "DBZH" in pl.read_parquet(path).columns
 
 
@@ -203,9 +206,7 @@ def test_archive_volume_records_timings(lut_base, make_datatree):
 
 def test_archive_multiple_volumes(lut_base, make_datatree):
     """A list or dict of volumes archives sequentially and reports one record each."""
-    volumes = {
-        f"vol_{i}": make_datatree(vol_time=pd.Timestamp(f"2024-08-01 12:0{i}:00")) for i in range(3)
-    }
+    volumes = {f"vol_{i}": make_datatree(vol_time=pd.Timestamp(f"2024-08-01 12:0{i}:00")) for i in range(3)}
 
     records = archive_multiple_volumes(volumes, radar=RADAR, base_output_path=lut_base, verbose=False)
 
@@ -226,11 +227,16 @@ def test_archive_volumes_multi_radar(tmp_path, make_datatree):
     """The ``{radar: [volumes]}`` form keeps each radar's records separate."""
     for radar in ("A", "D"):
         generate_lut_from_datatree(
-            make_datatree(), radar=radar, output_base_path=str(tmp_path), projection_epsg=SWISS_EPSG
+            make_datatree(),
+            radar=radar,
+            output_base_path=str(tmp_path),
+            projection_epsg=SWISS_EPSG,
         )
 
     results = archive_volumes_multi_radar(
-        {"A": [make_datatree()], "D": [make_datatree()]}, base_output_path=str(tmp_path), verbose=False
+        {"A": [make_datatree()], "D": [make_datatree()]},
+        base_output_path=str(tmp_path),
+        verbose=False,
     )
 
     assert sorted(results) == ["A", "D"]
@@ -334,7 +340,10 @@ def test_snap_volume_azimuths_refuses_more_rays_than_the_grid():
 def test_snap_volume_azimuths_accepts_fewer_rays_than_the_grid():
     """A rotation with holes: each surviving ray still snaps to its own grid point."""
     snapped, _ = _snap_volume_azimuths(
-        np.ones(3, dtype=np.int64), np.array([0.53, 1.47, 2.51]), {1: np.arange(5, 3600, 10)}, RADAR
+        np.ones(3, dtype=np.int64),
+        np.array([0.53, 1.47, 2.51]),
+        {1: np.arange(5, 3600, 10)},
+        RADAR,
     )
 
     assert snapped.size == 3
@@ -382,7 +391,7 @@ def test_archiving_accepts_a_volume_that_dropped_rays(tmp_path):
         {
             name: node.to_dataset().isel(azimuth=np.delete(np.arange(360), [5, 6, 200]))
             for name, node in drifted.children.items()
-        }
+        },
     )
 
     result = db.archive(datatree=holed, radar=RADAR)
@@ -397,7 +406,7 @@ def test_a_lut_built_from_a_holed_volume_still_holds_every_ray(tmp_path):
         {
             name: node.to_dataset().isel(azimuth=np.delete(np.arange(360), [5, 6, 200]))
             for name, node in complete.children.items()
-        }
+        },
     )
     db = RadDB(archive_dir=str(tmp_path / "a"), crs=SWISS_EPSG)
     db.archive(datatree=holed, radar=RADAR)
@@ -442,7 +451,7 @@ def test_building_without_a_grid_warns(caplog):
             "range": [1000.0, 1000.0],
             "DBZH": [10.0, 20.0],
             "time": [pd.Timestamp("2024-01-01")] * 2,
-        }
+        },
     )
 
     with caplog.at_level("WARNING"):
@@ -590,7 +599,9 @@ def test_labels_to_dataframe():
 def test_labels_to_dataframe_carries_extra_columns():
     """``extra_columns=`` rides along, e.g. a per-gate confidence."""
     df = labels_to_dataframe(
-        np.array([1, 2]), np.array([10, 20], dtype=np.int64), extra_columns={"confidence": np.array([0.9, 0.8])}
+        np.array([1, 2]),
+        np.array([10, 20], dtype=np.int64),
+        extra_columns={"confidence": np.array([0.9, 0.8])},
     )
 
     assert "confidence" in df.columns
@@ -662,7 +673,7 @@ def test_to_polars_frame_and_back():
 
 
 def test_col_reads_from_either_kind():
-    """polars' ``Series.to_numpy()`` takes no ``dtype``, unlike pandas'."""
+    """Polars' ``Series.to_numpy()`` takes no ``dtype``, unlike pandas'."""
     for df in (pl.DataFrame({"a": [1, 2]}), pd.DataFrame({"a": [1, 2]})):
         out = _col(df, "a", np.float64)
         assert out.dtype == np.float64

@@ -1,7 +1,4 @@
-"""
-raddb/lut.py
-------------
-Look-Up Table (LUT) generation and loading utilities.
+"""Look-Up Table (LUT) generation and loading utilities.
 
 The LUT stores one record per radar gate (azimuth x range x sweep) with
 static spatial information (Cartesian coordinates, lat/lon, elevation).
@@ -11,6 +8,7 @@ This module is **generic** — it works with any xarray DataTree that
 has ``azimuth``, ``range``, and ``elevation`` coordinates per sweep.
 No pyart or radar_api dependency.
 """
+
 from __future__ import annotations
 
 import logging
@@ -43,7 +41,7 @@ GATE_ID_RADAR_BASE: int = 1_000_000_000_000
 #: Number of distinct radar codes: ``36**4 - 1`` is the largest, ``0`` the
 #: smallest.  ``radar_code * 10**12`` must stay inside int64, which allows
 #: ``9_223_371``; base-36 over four characters needs only ``1_679_615``.
-MAX_RADAR_CODE: int = 36 ** RADAR_CODE_LEN - 1
+MAX_RADAR_CODE: int = 36**RADAR_CODE_LEN - 1
 
 #: Version of the ``gate_id`` encoding written into each radar's info YAML.
 #:
@@ -126,7 +124,7 @@ def decode_radar_code(code: int) -> str:
     value = int(code)
     if not 0 <= value <= MAX_RADAR_CODE:
         raise ValueError(
-            f"radar code {value} is outside [0, {MAX_RADAR_CODE}] and names no radar."
+            f"radar code {value} is outside [0, {MAX_RADAR_CODE}] and names no radar.",
         )
     chars = []
     for _ in range(RADAR_CODE_LEN):
@@ -142,9 +140,7 @@ def decode_radar_code(code: int) -> str:
 #:    Kept because it is part of the public API surface; do **not** use it as a
 #:    membership test for "is this a usable radar name" — see
 #:    :func:`raddb.helper.is_valid_radar_name`.
-RADAR_TO_IDX: dict[str, int] = {
-    chr(ord("A") + i): encode_radar_code(chr(ord("A") + i)) for i in range(26)
-}
+RADAR_TO_IDX: dict[str, int] = {chr(ord("A") + i): encode_radar_code(chr(ord("A") + i)) for i in range(26)}
 
 #: Antenna 3 dB beamwidth in degrees, used for the gate's angular extent.
 #: 1.0 deg matches the MeteoSwiss Rad4Alp radars and the reference prototype
@@ -181,14 +177,13 @@ def lut_file_path(radar: str, kind: str, lut_base_path: str | Path) -> Path:
     """Path of one of the five LUT files (see :data:`LUT_FILES`)."""
     if kind not in LUT_FILES:
         raise KeyError(f"unknown LUT file kind {kind!r}; use one of {sorted(LUT_FILES)}.")
-    return (
-        Path(lut_base_path) / radar / "LUT" / LUT_FILES[kind].format(radar=radar)
-    )
+    return Path(lut_base_path) / radar / "LUT" / LUT_FILES[kind].format(radar=radar)
 
 
 # ============================================================================
 # Coordinate transforms  (pure numpy, no pyart dependency)
 # ============================================================================
+
 
 def _interpolate_range_edges(ranges: np.ndarray) -> np.ndarray:
     """Interpolate the edges of range gates (PyART's formula).
@@ -200,8 +195,8 @@ def _interpolate_range_edges(ranges: np.ndarray) -> np.ndarray:
     r = np.asarray(ranges, dtype=np.float64)
     edges = np.empty(r.size + 1, dtype=np.float64)
     edges[1:-1] = 0.5 * (r[:-1] + r[1:])
-    edges[0]    = r[0]  - 0.5 * (r[1]  - r[0])
-    edges[-1]   = r[-1] + 0.5 * (r[-1] - r[-2])
+    edges[0] = r[0] - 0.5 * (r[1] - r[0])
+    edges[-1] = r[-1] + 0.5 * (r[-1] - r[-2])
     edges[edges < 0] = 0.0
     return edges
 
@@ -211,8 +206,8 @@ def _interpolate_elevation_edges(elevations: np.ndarray) -> np.ndarray:
     el = np.asarray(elevations, dtype=np.float64)
     edges = np.empty(el.size + 1, dtype=np.float64)
     edges[1:-1] = 0.5 * (el[:-1] + el[1:])
-    edges[0]    = el[0]  - 0.5 * (el[1]  - el[0])
-    edges[-1]   = el[-1] + 0.5 * (el[-1] - el[-2])
+    edges[0] = el[0] - 0.5 * (el[1] - el[0])
+    edges[-1] = el[-1] + 0.5 * (el[-1] - el[-2])
     return np.clip(edges, -90.0, 90.0)
 
 
@@ -230,8 +225,8 @@ def _interpolate_azimuth_edges(azimuths: np.ndarray) -> np.ndarray:
     az = np.asarray(azimuths, dtype=np.float64)
     z = np.exp(1j * np.deg2rad(az))
     midpoints = 0.5 * (z[:-1] + z[1:])
-    first = z[0]  - (midpoints[0]  - z[0])
-    last  = z[-1] + (z[-1] - midpoints[-1])
+    first = z[0] - (midpoints[0] - z[0])
+    last = z[-1] + (z[-1] - midpoints[-1])
     edges = np.concatenate(([first], midpoints, [last]))
     return np.rad2deg(np.angle(edges)) % 360.0
 
@@ -270,8 +265,8 @@ def antenna_vectors_to_cartesian(
         Cartesian coordinates in meters relative to the radar.
     """
     if edges:
-        ranges     = _interpolate_range_edges(ranges)
-        azimuths   = _interpolate_azimuth_edges(azimuths)
+        ranges = _interpolate_range_edges(ranges)
+        azimuths = _interpolate_azimuth_edges(azimuths)
         elevations = _interpolate_elevation_edges(elevations)
 
     r = np.atleast_1d(np.asarray(ranges, dtype=np.float64))
@@ -283,16 +278,14 @@ def antenna_vectors_to_cartesian(
     # Height of each gate above radar (n_rays, n_gates)
     z = (
         np.sqrt(
-            r[np.newaxis, :] ** 2
-            + R ** 2
-            + 2.0 * r[np.newaxis, :] * R * np.sin(theta_e[:, np.newaxis])
+            r[np.newaxis, :] ** 2 + R**2 + 2.0 * r[np.newaxis, :] * R * np.sin(theta_e[:, np.newaxis]),
         )
         - R
     )
 
     # Ground-range arc length
     s = R * np.arcsin(
-        r[np.newaxis, :] * np.cos(theta_e[:, np.newaxis]) / (R + z)
+        r[np.newaxis, :] * np.cos(theta_e[:, np.newaxis]) / (R + z),
     )
 
     # Cartesian
@@ -432,7 +425,7 @@ def nominal_azimuth_grid(azimuths) -> np.ndarray:
     if spacing <= 0.0:
         raise ValueError(
             f"the {n} rays of this sweep are not distinct enough to give a ray "
-            f"spacing (median gap {spacing:.6f}°)."
+            f"spacing (median gap {spacing:.6f}°).",
         )
 
     # How many ray slots each gap spans: 1 between neighbours, 2 or more across
@@ -445,15 +438,14 @@ def nominal_azimuth_grid(azimuths) -> np.ndarray:
     n_grid = int(slots_per_gap.sum())
     if n_grid < n:
         raise ValueError(
-            f"the {n} rays of this sweep do not sit one per slot on a "
-            f"{spacing:.4f}° grid (two rays share a slot)."
+            f"the {n} rays of this sweep do not sit one per slot on a " f"{spacing:.4f}° grid (two rays share a slot).",
         )
     step = 360.0 / n_grid
     if step * AZIMUTH_SCALE < 1.0:
         raise ValueError(
             f"{n_grid} rays give a {step:.4f}° ray spacing, finer than the "
             f"{1 / AZIMUTH_SCALE}° azimuth resolution of gate_id; two rays would "
-            f"share one gate_id."
+            f"share one gate_id.",
         )
 
     # A rotation may have holes but must still be a rotation: a sector scan (or
@@ -465,7 +457,7 @@ def nominal_azimuth_grid(azimuths) -> np.ndarray:
             f"(they span {np.ptp(az_sorted):.1f}° with a derived spacing of "
             f"{step:.4f}°, filling {n}/{n_grid} of the rotation), so they have no "
             f"nominal azimuth grid. Sector scans and irregular sweeps are not "
-            f"supported."
+            f"supported.",
         )
 
     # Residual of each ray against the slot it occupies on a step grid anchored
@@ -490,7 +482,7 @@ def nominal_azimuth_grid(azimuths) -> np.ndarray:
     if np.unique(az_int).size != n_grid:
         raise ValueError(
             f"the {n_grid}-ray azimuth grid collides after rounding to "
-            f"{1 / AZIMUTH_SCALE}°; this scan strategy cannot be stored in gate_id."
+            f"{1 / AZIMUTH_SCALE}°; this scan strategy cannot be stored in gate_id.",
         )
 
     # The grid is only meaningful if it actually fits the rays it came from.
@@ -501,7 +493,7 @@ def nominal_azimuth_grid(azimuths) -> np.ndarray:
             f"these {n} rays do not form a full rotation of evenly spaced rays "
             f"(they span {np.ptp(az_sorted):.1f}° with a derived spacing of "
             f"{step:.4f}°), so they have no nominal azimuth grid. Sector scans and "
-            f"irregular sweeps are not supported."
+            f"irregular sweeps are not supported.",
         )
     return az_int
 
@@ -574,17 +566,12 @@ def load_azimuth_grids(radar: str, base_path: str | Path) -> dict[int, np.ndarra
     lut_path = lut_file_path(radar, "lut", base_path)
     if not lut_path.exists():
         return None
-    az = (
-        pl.scan_parquet(lut_path)
-        .select(["sweep", "azimuth"])
-        .unique()
-        .collect()
-    )
+    az = pl.scan_parquet(lut_path).select(["sweep", "azimuth"]).unique().collect()
     grids = {
         int(sweep): np.sort(
             np.round(
-                az.filter(pl.col("sweep") == sweep)["azimuth"].to_numpy() * AZIMUTH_SCALE
-            ).astype(np.int64)
+                az.filter(pl.col("sweep") == sweep)["azimuth"].to_numpy() * AZIMUTH_SCALE,
+            ).astype(np.int64),
         )
         for sweep in sorted(az["sweep"].unique().to_list())
     }
@@ -594,6 +581,7 @@ def load_azimuth_grids(radar: str, base_path: str | Path) -> dict[int, np.ndarra
 # ============================================================================
 # Gate ID generation
 # ============================================================================
+
 
 def encode_gate_ids(
     radar: str,
@@ -626,18 +614,21 @@ def encode_gate_ids(
     """
     radar_code = np.int64(encode_radar_code(radar))
     sweep_v = np.asarray(sweeps, dtype=np.int64)
-    az_int  = np.round(np.asarray(azimuths, dtype=np.float64) * 10).astype(np.int64)
+    az_int = np.round(np.asarray(azimuths, dtype=np.float64) * 10).astype(np.int64)
     rng_int = np.asarray(ranges).astype(np.int64)
     return (
         radar_code * np.int64(GATE_ID_RADAR_BASE)
-        + sweep_v  * np.int64(   10_000_000_000)
-        + az_int   * np.int64(        1_000_000)
+        + sweep_v * np.int64(10_000_000_000)
+        + az_int * np.int64(1_000_000)
         + rng_int
     )
 
 
 def generate_gate_id(
-    radar: str, sweep: int, azimuth: float, range_m: float
+    radar: str,
+    sweep: int,
+    azimuth: float,
+    range_m: float,
 ) -> int:
     """Create a unique gate identifier as a 64-bit integer.
 
@@ -650,6 +641,7 @@ def generate_gate_id(
 # ============================================================================
 # Generic LUT generation from DataTree
 # ============================================================================
+
 
 def _beamwidth_from_datatree(dt: xr.DataTree) -> float:
     """Antenna beamwidth [deg] from the DataTree, else the package default.
@@ -665,7 +657,7 @@ def _beamwidth_from_datatree(dt: xr.DataTree) -> float:
                     val = float(np.asarray(attrs[nm]).ravel()[0])
                 except (TypeError, ValueError):
                     continue
-                if 0.0 < val < 20.0:      # sanity: a real antenna beamwidth
+                if 0.0 < val < 20.0:  # sanity: a real antenna beamwidth
                     return val
     return DEFAULT_BEAMWIDTH_DEG
 
@@ -689,8 +681,7 @@ def suggest_crs(longitude: float, latitude: float) -> int:
     return (32600 if float(latitude) >= 0 else 32700) + zone
 
 
-def crs_distance_error(crs, longitude: float, latitude: float,
-                       baseline_m: float = 100_000.0) -> float:
+def crs_distance_error(crs, longitude: float, latitude: float, baseline_m: float = 100_000.0) -> float:
     """Worst relative distance error of ``crs`` at a site, in percent.
 
     Projects a ``baseline_m`` geodesic in eight directions from the site and
@@ -701,11 +692,11 @@ def crs_distance_error(crs, longitude: float, latitude: float,
     baseline as 145 km in Switzerland).
     """
     import pyproj
+
     from raddb.aoi import _to_pyproj_crs
 
     geod = pyproj.Geod(ellps="WGS84")
-    tf = pyproj.Transformer.from_crs(_to_pyproj_crs(4326), _to_pyproj_crs(crs),
-                                     always_xy=True)
+    tf = pyproj.Transformer.from_crs(_to_pyproj_crs(4326), _to_pyproj_crs(crs), always_xy=True)
     x0, y0 = tf.transform(longitude, latitude)
     worst = 0.0
     for azimuth in range(0, 360, 45):
@@ -727,7 +718,7 @@ def _crs_label(crs) -> str:
         try:
             named = pyproj.CRS.from_epsg(int(crs))
             return f"EPSG:{int(crs)} ({named.name})"
-        except Exception:                                          # noqa: BLE001
+        except Exception:
             return f"EPSG:{int(crs)}"
     name = getattr(crs, "name", None)
     return str(name) if name and name != "unknown" else str(crs)
@@ -755,7 +746,9 @@ def validate_crs_for_site(crs, longitude: float, latitude: float, radar: str = "
         Worst distance error at this site, in percent.
     """
     import warnings as _warnings
+
     import pyproj
+
     from raddb.aoi import _to_pyproj_crs
 
     who = f"radar {radar} " if radar else ""
@@ -767,7 +760,7 @@ def validate_crs_for_site(crs, longitude: float, latitude: float, radar: str = "
             f"degrees, so it cannot express gate geometry, a crop radius or a "
             f"cross-section distance. Pass a projected CRS; for {who}at "
             f"({longitude:.4f}, {latitude:.4f}) try "
-            f"EPSG:{suggest_crs(longitude, latitude)}."
+            f"EPSG:{suggest_crs(longitude, latitude)}.",
         )
 
     err = crs_distance_error(resolved, longitude, latitude)
@@ -775,21 +768,21 @@ def validate_crs_for_site(crs, longitude: float, latitude: float, radar: str = "
         area = getattr(resolved.area_of_use, "name", None)
         if area is None and isinstance(crs, (int, np.integer)):
             import pyproj
+
             try:
                 area = getattr(pyproj.CRS.from_epsg(int(crs)).area_of_use, "name", None)
-            except Exception:                                      # noqa: BLE001
+            except Exception:
                 area = None
         where = f", valid for {area}" if area else ""
         raise ValueError(
             f"{label}{where} distorts distance by {err:.1f}% at "
             f"{who}({longitude:.4f}, {latitude:.4f}) — gate geometry, crops and "
             f"cross-sections would all be wrong by that much. Suggested for this "
-            f"site: EPSG:{suggest_crs(longitude, latitude)}."
+            f"site: EPSG:{suggest_crs(longitude, latitude)}.",
         )
     if err > CRS_WARN_PCT:
         _warnings.warn(
-            f"{label} distorts distance by {err:.2f}% at "
-            f"{who}({longitude:.4f}, {latitude:.4f}).",
+            f"{label} distorts distance by {err:.2f}% at " f"{who}({longitude:.4f}, {latitude:.4f}).",
             stacklevel=3,
         )
     return err
@@ -851,7 +844,6 @@ def generate_lut_from_datatree(
     """
     lut_dir = Path(output_base_path) / radar / "LUT"
     lut_path = lut_dir / f"{radar}_LUT.parquet"
-    info_path = lut_dir / f"{radar}_info.yaml"
 
     if beamwidth_deg is None:
         beamwidth_deg = _beamwidth_from_datatree(dt)
@@ -859,12 +851,11 @@ def generate_lut_from_datatree(
     # Skip only when *all five* files are present. An archive written before the
     # geometry lattices existed has the LUT parquet + info YAML but not the three
     # plane files, and must still be able to fill them in.
-    if all(
-        (lut_dir / tmpl.format(radar=radar)).exists() for tmpl in LUT_FILES.values()
-    ):
+    if all((lut_dir / tmpl.format(radar=radar)).exists() for tmpl in LUT_FILES.values()):
         logger.info(
             "All %d LUT files already exist at %s -- skipping generation.",
-            len(LUT_FILES), lut_dir,
+            len(LUT_FILES),
+            lut_dir,
         )
         return str(lut_path)
 
@@ -882,8 +873,8 @@ def generate_lut_from_datatree(
         ds = dt[sweep_name].to_dataset()
 
         measured_az = np.asarray(ds["azimuth"].values, dtype=np.float64)
-        ranges = ds["range"].values
-        elevations = ds["elevation"].values
+        ranges = ds["range"].to_numpy()
+        elevations = ds["elevation"].to_numpy()
 
         # The LUT is the radar's *nominal* scan geometry, not a snapshot of this
         # one volume's antenna readings.  Every later volume snaps onto this same
@@ -897,7 +888,7 @@ def generate_lut_from_datatree(
                 f"radar {radar!r} sweep {sweep_idx}: the {measured_az.size} rays do "
                 f"not sit one-per-point on a regular {360 / measured_az.size:.4f}° "
                 f"grid (two rays snap together), so this sweep has no nominal "
-                f"azimuth grid."
+                f"azimuth grid.",
             )
 
         elevation_angle = float(ds.coords.get("elevation_angle", np.mean(elevations)))
@@ -909,23 +900,29 @@ def generate_lut_from_datatree(
         absent = np.setdiff1d(az_grid, snapped)
         azimuths = np.concatenate([snapped, absent]).astype(np.float64) / AZIMUTH_SCALE
         elevations = np.concatenate(
-            [np.asarray(elevations, dtype=np.float64), np.full(absent.size, elevation_angle)]
+            [np.asarray(elevations, dtype=np.float64), np.full(absent.size, elevation_angle)],
         )
         if absent.size:
             logger.info(
-                "sweep %d: %d of %d rays missing from this volume; their grid "
-                "points are still written to the LUT.",
-                sweep_idx, absent.size, az_grid.size,
+                "sweep %d: %d of %d rays missing from this volume; their grid " "points are still written to the LUT.",
+                sweep_idx,
+                absent.size,
+                az_grid.size,
             )
         n_az, n_rng = len(azimuths), len(ranges)
         logger.debug(
             "sweep %d: %d rays snapped to the nominal grid, max move %.3f°.",
-            sweep_idx, n_az, snap_dist.max() / AZIMUTH_SCALE,
+            sweep_idx,
+            n_az,
+            snap_dist.max() / AZIMUTH_SCALE,
         )
 
         # Compute Cartesian coordinates
         x_raw, y_raw, z_raw = antenna_vectors_to_cartesian(
-            ranges, azimuths, elevations, ke=ke
+            ranges,
+            azimuths,
+            elevations,
+            ke=ke,
         )
 
         # Extract site coordinates
@@ -940,31 +937,37 @@ def generate_lut_from_datatree(
 
         # Compute per-gate geographic coordinates from Cartesian offsets
         gate_lat, gate_lon, gate_alt = cartesian_to_geographic(
-            x_raw, y_raw, z_raw, radar_lat, radar_lon, radar_alt
+            x_raw,
+            y_raw,
+            z_raw,
+            radar_lat,
+            radar_lon,
+            radar_alt,
         )
 
-        gate_az  = np.repeat(azimuths, n_rng)
+        gate_az = np.repeat(azimuths, n_rng)
         gate_rng = np.tile(ranges, n_az)
         gate_ids = encode_gate_ids(radar, sweep_idx, gate_az, gate_rng)
 
-        lut_dfs.append(pl.DataFrame({
-            "gate_id":         gate_ids,
-            "sweep":           np.full(n_az * n_rng, sweep_idx, dtype=np.int32),
-            "azimuth":         gate_az,
-            "range":           gate_rng,
-            "elevation_angle": np.full(n_az * n_rng, elevation_angle),
-            "latitude":        gate_lat.ravel(),
-            "longitude":       gate_lon.ravel(),
-            "altitude":        gate_alt.ravel(),
-            "x":               x_raw.ravel(),
-            "y":               y_raw.ravel(),
-            "z":               z_raw.ravel(),
-        }))
-
-        rng_res = (
-            float(np.median(np.diff(np.sort(ranges).astype(np.float64))))
-            if n_rng > 1 else float("nan")
+        lut_dfs.append(
+            pl.DataFrame(
+                {
+                    "gate_id": gate_ids,
+                    "sweep": np.full(n_az * n_rng, sweep_idx, dtype=np.int32),
+                    "azimuth": gate_az,
+                    "range": gate_rng,
+                    "elevation_angle": np.full(n_az * n_rng, elevation_angle),
+                    "latitude": gate_lat.ravel(),
+                    "longitude": gate_lon.ravel(),
+                    "altitude": gate_alt.ravel(),
+                    "x": x_raw.ravel(),
+                    "y": y_raw.ravel(),
+                    "z": z_raw.ravel(),
+                },
+            ),
         )
+
+        rng_res = float(np.median(np.diff(np.sort(ranges).astype(np.float64)))) if n_rng > 1 else float("nan")
         sweep_meta[sweep_idx] = {
             "n_azimuths": n_az,
             "n_ranges": n_rng,
@@ -984,7 +987,9 @@ def generate_lut_from_datatree(
 
     df_lut = pl.concat(lut_dfs, how="vertical")
     logger.info(
-        "LUT built: %d total gates, %d sweeps.", len(df_lut), len(sweep_meta)
+        "LUT built: %d total gates, %d sweeps.",
+        len(df_lut),
+        len(sweep_meta),
     )
 
     # A CRS is required, and must hold at this radar's site.  There is no
@@ -997,11 +1002,13 @@ def generate_lut_from_datatree(
             f"There is no default because a wrong one is silently wrong. Radar "
             f"{radar!r} is at ({radar_lon:.4f}, {radar_lat:.4f}); suggested: "
             f"RadDB(crs={suggest_crs(radar_lon, radar_lat)})  "
-            f"# UTM zone {int((radar_lon + 180) // 6) + 1}"
+            f"# UTM zone {int((radar_lon + 180) // 6) + 1}",
         )
     validate_crs_for_site(
         projection_epsg if projection_epsg is not None else projection_crs,
-        radar_lon, radar_lat, radar,
+        radar_lon,
+        radar_lat,
+        radar,
     )
     df_lut = add_lut_projection(df_lut, epsg=projection_epsg, crs=projection_crs)
 
@@ -1038,9 +1045,14 @@ def generate_lut_from_datatree(
     corners_by_sweep: dict[int, dict] = {}
     for sweep_idx, g in sweep_grids.items():
         corners_by_sweep[sweep_idx] = compute_sweep_corners(
-            ranges=g["ranges"], azimuths=g["azimuths"], elevations=g["elevations"],
-            radar_lat=radar_lat, radar_lon=radar_lon, radar_alt=radar_alt,
-            ke=ke, beamwidth_deg=beamwidth_deg,
+            ranges=g["ranges"],
+            azimuths=g["azimuths"],
+            elevations=g["elevations"],
+            radar_lat=radar_lat,
+            radar_lon=radar_lon,
+            radar_alt=radar_alt,
+            ke=ke,
+            beamwidth_deg=beamwidth_deg,
         )
     planes = build_gate_planes(
         corners_by_sweep,
@@ -1055,6 +1067,7 @@ def generate_lut_from_datatree(
 # ============================================================================
 # LUT storage helpers
 # ============================================================================
+
 
 def _save_lut_outputs(lut_dir, radar, df_lut, radar_info, planes=None):
     """Save the five LUT files to disk (see :data:`LUT_FILES`).
@@ -1074,10 +1087,7 @@ def _save_lut_outputs(lut_dir, radar, df_lut, radar_info, planes=None):
     lut_path = lut_dir / LUT_FILES["lut"].format(radar=radar)
     info_path = lut_dir / LUT_FILES["info"].format(radar=radar)
 
-    plane_paths = {
-        kind: lut_dir / LUT_FILES[kind].format(radar=radar)
-        for kind in ("h_plane", "v_plane", "corners")
-    }
+    plane_paths = {kind: lut_dir / LUT_FILES[kind].format(radar=radar) for kind in ("h_plane", "v_plane", "corners")}
     expected = [lut_path, info_path]
     if planes is not None:
         expected += list(plane_paths.values())
@@ -1085,7 +1095,8 @@ def _save_lut_outputs(lut_dir, radar, df_lut, radar_info, planes=None):
     if all(p.exists() for p in expected):
         logger.info(
             "All %d LUT files already exist at %s -- skipping creation.",
-            len(expected), lut_dir,
+            len(expected),
+            lut_dir,
         )
         return str(lut_path)
 
@@ -1163,18 +1174,27 @@ def compute_sweep_corners(
 
     def _mesh(el: np.ndarray) -> dict:
         x_e, y_e, z_e = antenna_vectors_to_cartesian(
-            ranges, azimuths, el, ke=ke, edges=True,
+            ranges,
+            azimuths,
+            el,
+            ke=ke,
+            edges=True,
         )
         lat_e, lon_e, _ = cartesian_to_geographic(
-            x_e, y_e, z_e, radar_lat=radar_lat, radar_lon=radar_lon, radar_alt=radar_alt,
+            x_e,
+            y_e,
+            z_e,
+            radar_lat=radar_lat,
+            radar_lon=radar_lon,
+            radar_alt=radar_alt,
         )
         # float64 throughout: these edges are the gate polygon vertices, and gate
         # position precision is a hard requirement (float32 costs ~20 cm, and the
         # error does not shrink with range).
         return {
-            "x_edges":   x_e.astype(np.float64),
-            "y_edges":   y_e.astype(np.float64),
-            "z_edges":   z_e.astype(np.float64),
+            "x_edges": x_e.astype(np.float64),
+            "y_edges": y_e.astype(np.float64),
+            "z_edges": z_e.astype(np.float64),
             "lon_edges": lon_e.astype(np.float64),
             "lat_edges": lat_e.astype(np.float64),
         }
@@ -1186,10 +1206,7 @@ def compute_sweep_corners(
     half_bw = float(beamwidth_deg) / 2.0
     # dict(centre) for level 0 so the `levels` key added below cannot make the
     # structure self-referential.
-    levels = {
-        lvl: dict(centre) if lvl == 0 else _mesh(elevations + lvl * half_bw)
-        for lvl in EL_LEVELS
-    }
+    levels = {lvl: dict(centre) if lvl == 0 else _mesh(elevations + lvl * half_bw) for lvl in EL_LEVELS}
     return {**centre, "levels": levels}
 
 
@@ -1202,8 +1219,7 @@ def compute_sweep_corners(
 GATE_RING_OFFSETS: tuple[tuple[int, int], ...] = ((0, 0), (0, 1), (1, 1), (1, 0))
 
 
-def _project_nodes(x: np.ndarray, y: np.ndarray, lon: np.ndarray, lat: np.ndarray,
-                   epsg: int | None, crs=None):
+def _project_nodes(lon: np.ndarray, lat: np.ndarray, epsg: int | None, crs=None):
     """Projected easting/northing for lattice nodes, or ``(None, None, None)``."""
     if epsg is None and crs is None:
         return None, None, None
@@ -1227,7 +1243,7 @@ def build_gate_planes(
     radar_alt: float,
     projection_epsg: int | None = None,
     projection_crs=None,
-) -> dict[str, "pl.DataFrame"]:
+) -> dict[str, pl.DataFrame]:
     """Build the h_plane / v_plane / corners **node lattices** as polars frames.
 
     Input is the output of :func:`compute_sweep_corners` called with
@@ -1260,14 +1276,14 @@ def build_gate_planes(
         if levels is None:
             raise ValueError(
                 f"sweep {sweep_num}: compute_sweep_corners must be called with "
-                "beamwidth_deg so the vertical levels are available."
+                "beamwidth_deg so the vertical levels are available.",
             )
 
         for lvl in sorted(levels):
             m = levels[lvl]
             xe, ye, ze = m["x_edges"], m["y_edges"], m["z_edges"]
             lone, late = m["lon_edges"], m["lat_edges"]
-            n_az_n, n_rng_n = xe.shape           # (n_az+1, n_rng+1) node counts
+            n_az_n, n_rng_n = xe.shape  # (n_az+1, n_rng+1) node counts
 
             az_idx = np.repeat(np.arange(n_az_n, dtype=np.int16), n_rng_n)
             rng_idx = np.tile(np.arange(n_rng_n, dtype=np.int16), n_az_n)
@@ -1288,9 +1304,7 @@ def build_gate_planes(
                     "x": xf.astype(np.float32),
                     "y": yf.astype(np.float32),
                 }
-                px, py, suffix = _project_nodes(
-                    xf, yf, lonf, latf, projection_epsg, projection_crs
-                )
+                px, py, suffix = _project_nodes(lonf, latf, projection_epsg, projection_crs)
                 if suffix is not None:
                     cols[f"x_{suffix}"] = px.astype(np.float32)
                     cols[f"y_{suffix}"] = py.astype(np.float32)
@@ -1300,29 +1314,37 @@ def build_gate_planes(
             # --- bottom / top levels: v_plane + 3-D corners ------------------
             lvl_col = np.full(n, lvl, dtype=np.int8)
             z_asl = (zf + radar_alt).astype(np.float32)
-            v_parts.append(pl.DataFrame({
-                "sweep": sweep_col,
-                "el_level": lvl_col,
-                "az_idx": az_idx,
-                "rng_idx": rng_idx,
-                # ground distance from the radar: the beam's arc length, which is
-                # exactly hypot(x, y) in this equidistant frame.
-                "d": np.hypot(xf, yf).astype(np.float32),
-                "z_asl": z_asl,
-                "z_rel": zf.astype(np.float32),
-            }))
+            v_parts.append(
+                pl.DataFrame(
+                    {
+                        "sweep": sweep_col,
+                        "el_level": lvl_col,
+                        "az_idx": az_idx,
+                        "rng_idx": rng_idx,
+                        # ground distance from the radar: the beam's arc length, which is
+                        # exactly hypot(x, y) in this equidistant frame.
+                        "d": np.hypot(xf, yf).astype(np.float32),
+                        "z_asl": z_asl,
+                        "z_rel": zf.astype(np.float32),
+                    },
+                ),
+            )
             # z_asl and lon/lat omitted here for the same reason as in h_plane:
             # z_asl = z_rel + site altitude (a constant), and lon/lat are a
             # closed form of (x, y). Both are derived by the accessors.
-            c_parts.append(pl.DataFrame({
-                "sweep": sweep_col,
-                "el_level": lvl_col,
-                "az_idx": az_idx,
-                "rng_idx": rng_idx,
-                "x": xf.astype(np.float32),
-                "y": yf.astype(np.float32),
-                "z_rel": zf.astype(np.float32),
-            }))
+            c_parts.append(
+                pl.DataFrame(
+                    {
+                        "sweep": sweep_col,
+                        "el_level": lvl_col,
+                        "az_idx": az_idx,
+                        "rng_idx": rng_idx,
+                        "x": xf.astype(np.float32),
+                        "y": yf.astype(np.float32),
+                        "z_rel": zf.astype(np.float32),
+                    },
+                ),
+            )
 
     return {
         "h_plane": pl.concat(h_parts, how="vertical_relaxed"),
@@ -1336,7 +1358,7 @@ def load_plane_nodes(
     lut_base_path: str | Path,
     kind: str,
     sweep: int | None = None,
-) -> "pl.DataFrame":
+) -> pl.DataFrame:
     """Load one of the node-lattice files (``h_plane`` / ``v_plane`` / ``corners``).
 
     ``sweep`` pushes a row filter into the parquet scan.
@@ -1350,7 +1372,7 @@ def load_plane_nodes(
     if not path.exists():
         raise FileNotFoundError(
             f"{kind} lattice not found at {path}, and it could not be rebuilt from "
-            f"{radar}_LUT.parquet. Regenerate the LUT (generate_lut_from_datatree)."
+            f"{radar}_LUT.parquet. Regenerate the LUT (generate_lut_from_datatree).",
         )
     lf = pl.scan_parquet(path)
     if sweep is not None:
@@ -1359,7 +1381,9 @@ def load_plane_nodes(
 
 
 def _node_grids(
-    nodes: "pl.DataFrame", value_cols: list[str], level: int | None = None
+    nodes: pl.DataFrame,
+    value_cols: list[str],
+    level: int | None = None,
 ) -> dict[int, dict[str, np.ndarray]]:
     """Reshape flat lattice rows into ``{sweep: {col: (n_az+1, n_rng+1) array}}``."""
     if level is not None and "el_level" in nodes.columns:
@@ -1369,9 +1393,7 @@ def _node_grids(
         sub = sub.sort(["az_idx", "rng_idx"])
         n_az_n = int(sub["az_idx"].max()) + 1
         n_rng_n = int(sub["rng_idx"].max()) + 1
-        out[int(sweep_num)] = {
-            c: sub[c].to_numpy().reshape(n_az_n, n_rng_n) for c in value_cols
-        }
+        out[int(sweep_num)] = {c: sub[c].to_numpy().reshape(n_az_n, n_rng_n) for c in value_cols}
     return out
 
 
@@ -1380,7 +1402,7 @@ def gate_corner_table(
     lut_base_path: str | Path,
     kind: str = "h_plane",
     sweep: int | None = None,
-) -> "pl.DataFrame":
+) -> pl.DataFrame:
     """Materialise per-gate corners from a node lattice, keyed by ``gate_id``.
 
     This is the "hybrid" read side: the archive stores compact node lattices, and
@@ -1405,7 +1427,7 @@ def gate_corner_table(
     """
     if kind not in ("h_plane", "v_plane", "corners"):
         raise ValueError(
-            f"kind must be 'h_plane', 'v_plane' or 'corners'; got {kind!r}."
+            f"kind must be 'h_plane', 'v_plane' or 'corners'; got {kind!r}.",
         )
 
     idx = _gate_grid_index(radar, lut_base_path)
@@ -1417,8 +1439,7 @@ def gate_corner_table(
     nodes = load_plane_nodes(radar, lut_base_path, kind, sweep=sweep)
 
     if kind == "h_plane":
-        value_cols = [c for c in nodes.columns
-                      if c not in ("sweep", "az_idx", "rng_idx", "el_level")]
+        value_cols = [c for c in nodes.columns if c not in ("sweep", "az_idx", "rng_idx", "el_level")]
         grids = {0: _node_grids(nodes, value_cols)}
         # 4 corners, one level, ring order
         picks = [(0, i, j) for (i, j) in GATE_RING_OFFSETS]
@@ -1433,8 +1454,14 @@ def gate_corner_table(
         # near face (rng+0) then far face (rng+1); within a face:
         # (az-, el-), (az+, el-), (az+, el+), (az-, el+)
         picks = [
-            (-1, 0, 0), (-1, 1, 0), (1, 1, 0), (1, 0, 0),      # near face
-            (-1, 0, 1), (-1, 1, 1), (1, 1, 1), (1, 0, 1),      # far face
+            (-1, 0, 0),
+            (-1, 1, 0),
+            (1, 1, 0),
+            (1, 0, 0),  # near face
+            (-1, 0, 1),
+            (-1, 1, 1),
+            (1, 1, 1),
+            (1, 0, 1),  # far face
         ]
 
     n = idx.height
@@ -1456,11 +1483,13 @@ def gate_corner_table(
                 arr = g[col]
                 out[f"{col}_{k}"][rows] = arr[az_i[rows] + di, rng_i[rows] + dj]
 
-    return pl.DataFrame({
-        "gate_id": idx["gate_id"],
-        "sweep": idx["sweep"],
-        **{c: v.astype(np.float32) for c, v in out.items()},
-    })
+    return pl.DataFrame(
+        {
+            "gate_id": idx["gate_id"],
+            "sweep": idx["sweep"],
+            **{c: v.astype(np.float32) for c, v in out.items()},
+        },
+    )
 
 
 def ensure_gate_planes(
@@ -1486,8 +1515,7 @@ def ensure_gate_planes(
         ``True`` if files were written, ``False`` if all three already existed.
     """
     missing = [
-        kind for kind in ("h_plane", "v_plane", "corners")
-        if not lut_file_path(radar, kind, lut_base_path).exists()
+        kind for kind in ("h_plane", "v_plane", "corners") if not lut_file_path(radar, kind, lut_base_path).exists()
     ]
     if not missing:
         return False
@@ -1497,13 +1525,16 @@ def ensure_gate_planes(
         beamwidth_deg = float(info.get("beamwidth_deg") or DEFAULT_BEAMWIDTH_DEG)
     logger.info(
         "radar %s: geometry lattices %s missing -- rebuilding from the centroid LUT.",
-        radar, missing,
+        radar,
+        missing,
     )
 
     corners_by_sweep: dict[int, dict] = {}
     for sweep_num, g in _sweep_grids_from_lut(radar, lut_base_path).items():
         corners_by_sweep[int(sweep_num)] = compute_sweep_corners(
-            ranges=g["ranges"], azimuths=g["azimuths"], elevations=g["elevations"],
+            ranges=g["ranges"],
+            azimuths=g["azimuths"],
+            elevations=g["elevations"],
             radar_lat=info["latitude"],
             radar_lon=info["longitude"],
             radar_alt=info["altitude"],
@@ -1516,9 +1547,13 @@ def ensure_gate_planes(
     # backfilled h_plane is projected exactly like a freshly generated one.
     epsg = (info.get("crs") or {}).get("epsg")
     if epsg is None:
-        lut_cols = pl.scan_parquet(
-            lut_file_path(radar, "lut", lut_base_path)
-        ).collect_schema().names()
+        lut_cols = (
+            pl.scan_parquet(
+                lut_file_path(radar, "lut", lut_base_path),
+            )
+            .collect_schema()
+            .names()
+        )
         for name in _projection_column_names(pl.DataFrame(schema={c: pl.Float64 for c in lut_cols})):
             suffix = name.split("_", 1)[1]
             if name.startswith("x_") and suffix.isdigit():
@@ -1545,7 +1580,7 @@ def cappi_chords(
     lut_base_path: str | Path,
     altitude: float,
     height: str = "asl",
-) -> "pl.DataFrame":
+) -> pl.DataFrame:
     """Where a constant-altitude surface cuts each range bin — the CAPPI slice.
 
     A CAPPI is a horizontal slice through the volume, so the question it asks of
@@ -1640,26 +1675,36 @@ def cappi_chords(
         d_far = np.nanmax(d_hit, axis=1)
         z_center = ring_z.mean(axis=1)[hit]
 
-        parts.append(pl.DataFrame({
-            "sweep": np.full(hit.sum(), sweep_num, dtype=np.int32),
-            "rng_idx": np.flatnonzero(hit).astype(np.int32),
-            "d_near": d_near.astype(np.float32),
-            "d_far": d_far.astype(np.float32),
-            "z_center": z_center.astype(np.float32),
-            "dz_center": np.abs(z_center - z0).astype(np.float32),
-        }))
+        parts.append(
+            pl.DataFrame(
+                {
+                    "sweep": np.full(hit.sum(), sweep_num, dtype=np.int32),
+                    "rng_idx": np.flatnonzero(hit).astype(np.int32),
+                    "d_near": d_near.astype(np.float32),
+                    "d_far": d_far.astype(np.float32),
+                    "z_center": z_center.astype(np.float32),
+                    "dz_center": np.abs(z_center - z0).astype(np.float32),
+                },
+            ),
+        )
 
     if not parts:
-        return pl.DataFrame(schema={
-            "sweep": pl.Int32, "rng_idx": pl.Int32,
-            "d_near": pl.Float32, "d_far": pl.Float32,
-            "z_center": pl.Float32, "dz_center": pl.Float32,
-        })
+        return pl.DataFrame(
+            schema={
+                "sweep": pl.Int32,
+                "rng_idx": pl.Int32,
+                "d_near": pl.Float32,
+                "d_far": pl.Float32,
+                "z_center": pl.Float32,
+                "dz_center": pl.Float32,
+            },
+        )
     return pl.concat(parts, how="vertical")
 
 
 def save_sweep_corners(
-    corners_by_sweep: dict[int, dict], corners_path: str | Path
+    corners_by_sweep: dict[int, dict],
+    corners_path: str | Path,
 ) -> str:
     """Save per-sweep corner arrays to a single ``.npz`` file.
 
@@ -1681,7 +1726,8 @@ def save_sweep_corners(
 
 
 def _sweep_grids_from_lut(
-    radar: str, lut_base_path: str | Path
+    radar: str,
+    lut_base_path: str | Path,
 ) -> dict[int, dict]:
     """Per-sweep ``(azimuths, ranges, elevation)`` grids read from the LUT parquet.
 
@@ -1696,9 +1742,13 @@ def _sweep_grids_from_lut(
     lut_path = Path(lut_base_path) / radar / "LUT" / f"{radar}_LUT.parquet"
     if not lut_path.exists():
         raise FileNotFoundError(f"LUT not found at {lut_path}.")
-    lut = pl.scan_parquet(lut_path).select(
-        ["sweep", "azimuth", "range", "elevation_angle"]
-    ).collect()
+    lut = (
+        pl.scan_parquet(lut_path)
+        .select(
+            ["sweep", "azimuth", "range", "elevation_angle"],
+        )
+        .collect()
+    )
 
     grids: dict[int, dict] = {}
     for sweep_num in sorted(lut["sweep"].unique().to_list()):
@@ -1745,7 +1795,9 @@ def compute_corners_from_lut(
     corners_by_sweep: dict[int, dict] = {}
     for sweep_num, g in _sweep_grids_from_lut(radar, lut_base_path).items():
         full = compute_sweep_corners(
-            ranges=g["ranges"], azimuths=g["azimuths"], elevations=g["elevations"],
+            ranges=g["ranges"],
+            azimuths=g["azimuths"],
+            elevations=g["elevations"],
             radar_lat=info["latitude"],
             radar_lon=info["longitude"],
             radar_alt=info["altitude"],
@@ -1755,9 +1807,7 @@ def compute_corners_from_lut(
         # The npz keeps only the beam-centre mesh (its consumers — plot_ppi and
         # reconstruct_sweep_dataset — are 2-D). The vertical levels live in the
         # *_corners_LUT.parquet / *_v_plane_LUT.parquet files.
-        corners_by_sweep[int(sweep_num)] = {
-            k: v for k, v in full.items() if k != "levels"
-        }
+        corners_by_sweep[int(sweep_num)] = {k: v for k, v in full.items() if k != "levels"}
     corners_path = Path(lut_base_path) / radar / "LUT" / f"{radar}_corners.npz"
     save_sweep_corners(corners_by_sweep, corners_path)
     return str(corners_path)
@@ -1781,7 +1831,8 @@ def _parse_corners_npz(corners_path: str | Path) -> dict[int, dict]:
 
 
 def load_sweep_corners(
-    radar: str, lut_base_path: str | Path
+    radar: str,
+    lut_base_path: str | Path,
 ) -> dict[int, dict]:
     """Load per-sweep corner arrays from ``{radar}_corners.npz``.
 
@@ -1803,7 +1854,7 @@ def load_sweep_corners(
 # Per-radar cache of gate_id -> (sweep, azimuth index, range index) into the
 # corner arrays: {(base_path, radar): pl.DataFrame}.  ~27 MB per radar, built
 # once per session.
-_GRID_CACHE: dict[tuple[str, str, int], "pl.DataFrame"] = {}
+_GRID_CACHE: dict[tuple[str, str, int], pl.DataFrame] = {}
 
 
 def decode_gate_ids(gate_ids) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -1854,7 +1905,7 @@ def decode_gate_radars(gate_ids) -> list[str]:
     return sorted(names)
 
 
-def _gate_grid_index(radar: str, lut_base_path: str | Path) -> "pl.DataFrame":
+def _gate_grid_index(radar: str, lut_base_path: str | Path) -> pl.DataFrame:
     """Map every ``gate_id`` to its position in the per-sweep corner arrays.
 
     Returns a frame ``[gate_id, sweep, az_idx, rng_idx]``.  The indices are
@@ -1883,12 +1934,14 @@ def _gate_grid_index(radar: str, lut_base_path: str | Path) -> "pl.DataFrame":
     for (sweep_num,), sub in lut.group_by(["sweep"]):
         az_grid = np.sort(sub["azimuth"].unique().to_numpy())
         rng_grid = np.sort(sub["range"].unique().to_numpy())
-        parts.append(sub.select(
-            "gate_id",
-            pl.lit(int(sweep_num), dtype=pl.Int32).alias("sweep"),
-            pl.Series("az_idx", np.searchsorted(az_grid, sub["azimuth"].to_numpy()), dtype=pl.Int32),
-            pl.Series("rng_idx", np.searchsorted(rng_grid, sub["range"].to_numpy()), dtype=pl.Int32),
-        ))
+        parts.append(
+            sub.select(
+                "gate_id",
+                pl.lit(int(sweep_num), dtype=pl.Int32).alias("sweep"),
+                pl.Series("az_idx", np.searchsorted(az_grid, sub["azimuth"].to_numpy()), dtype=pl.Int32),
+                pl.Series("rng_idx", np.searchsorted(rng_grid, sub["range"].to_numpy()), dtype=pl.Int32),
+            ),
+        )
     table = pl.concat(parts, how="vertical")
     _GRID_CACHE[key] = table
     return table
@@ -1930,8 +1983,7 @@ def gate_polygons_geoarrow(
 
     if frame not in ("geographic", "cartesian"):
         raise ValueError(f"frame must be 'geographic' or 'cartesian'; got {frame!r}.")
-    xkey, ykey = (("lon_edges", "lat_edges") if frame == "geographic"
-                  else ("x_edges", "y_edges"))
+    xkey, ykey = ("lon_edges", "lat_edges") if frame == "geographic" else ("x_edges", "y_edges")
 
     corners = load_sweep_corners(radar, lut_base_path)
     if not corners:
@@ -1972,13 +2024,15 @@ def gate_polygons_geoarrow(
     if not valid.all():
         logger.warning(
             "%d of %d gate_ids could not be placed on the LUT grid (null geometry).",
-            int((~valid).sum()), n,
+            int((~valid).sum()),
+            n,
         )
 
     # geoarrow.polygon = List<List<FixedSizeList<double>[2]>>: polygon -> rings -> xy.
     # A null in the outer offsets makes that polygon null (unplaceable gate).
     coords = pa.FixedSizeListArray.from_arrays(
-        pa.array(ring_xy.reshape(-1), type=pa.float64()), 2
+        pa.array(ring_xy.reshape(-1), type=pa.float64()),
+        2,
     )
     rings = pa.ListArray.from_arrays(np.arange(n + 1, dtype=np.int32) * 5, coords)
     offsets = pa.array(
@@ -2009,14 +2063,13 @@ def geoarrow_field(name: str, dtype, kind: str, crs: str | None = None):
 
     meta = {b"ARROW:extension:name": f"geoarrow.{kind}".encode()}
     if crs:
-        meta[b"ARROW:extension:metadata"] = (
-            f'{{"crs":"{crs}","crs_type":"authority_code"}}'
-        ).encode()
+        meta[b"ARROW:extension:metadata"] = (f'{{"crs":"{crs}","crs_type":"authority_code"}}').encode()
     return pa.field(name, dtype, metadata=meta)
 
 
 def load_radar_lut(
-    radar: str, lut_base_path: str | Path
+    radar: str,
+    lut_base_path: str | Path,
 ) -> pl.DataFrame:
     """Load the LUT parquet for a radar as a **polars** DataFrame.
 
@@ -2029,12 +2082,11 @@ def load_radar_lut(
 
 
 def load_radar_info(
-    radar: str, lut_base_path: str | Path
+    radar: str,
+    lut_base_path: str | Path,
 ) -> dict:
     """Load the radar info YAML for a radar."""
-    info_path = (
-        Path(lut_base_path) / radar / "LUT" / f"{radar}_info.yaml"
-    )
+    info_path = Path(lut_base_path) / radar / "LUT" / f"{radar}_info.yaml"
     if not info_path.exists():
         raise FileNotFoundError(f"Info not found at {info_path}.")
     with open(info_path) as f:
@@ -2043,7 +2095,8 @@ def load_radar_info(
 
 
 def get_full_sweep_index(
-    lut_df: "pl.DataFrame | pd.DataFrame", sweep: int
+    lut_df: pl.DataFrame | pd.DataFrame,
+    sweep: int,
 ) -> pd.MultiIndex:
     """Get the full (azimuth, range) MultiIndex for a sweep from the LUT.
 
@@ -2072,11 +2125,12 @@ def get_full_sweep_index(
 # Projection utilities
 # ============================================================================
 
+
 def add_lut_projection(
-    lut_df: "pl.DataFrame | pd.DataFrame",
+    lut_df: pl.DataFrame | pd.DataFrame,
     epsg: int | None = None,
     crs=None,
-) -> "pl.DataFrame | pd.DataFrame":
+) -> pl.DataFrame | pd.DataFrame:
     """Add projected coordinates to a LUT DataFrame.
 
     Converts the ``latitude`` / ``longitude`` columns to the target CRS and
@@ -2125,15 +2179,14 @@ def add_lut_projection(
     Use a custom pyproj CRS:
 
     >>> import pyproj
-    >>> my_crs = pyproj.CRS.from_epsg(32632)   # UTM zone 32N
+    >>> my_crs = pyproj.CRS.from_epsg(32632)  # UTM zone 32N
     >>> lut_utm = add_lut_projection(lut_df, crs=my_crs)
     """
     try:
         import pyproj
     except ImportError as exc:
         raise ImportError(
-            "pyproj is required for add_lut_projection. "
-            "Install it with: pip install pyproj"
+            "pyproj is required for add_lut_projection. " "Install it with: pip install pyproj",
         ) from exc
 
     if epsg is not None:
@@ -2148,10 +2201,12 @@ def add_lut_projection(
 
     # Use proj4 string for WGS-84 to avoid requiring the PROJ database
     wgs84 = pyproj.CRS.from_proj4(
-        "+proj=longlat +datum=WGS84 +no_defs"
+        "+proj=longlat +datum=WGS84 +no_defs",
     )
     transformer = pyproj.Transformer.from_crs(
-        wgs84, target_crs, always_xy=True
+        wgs84,
+        target_crs,
+        always_xy=True,
     )
     x_proj, y_proj = transformer.transform(
         lut_df["longitude"].to_numpy(),

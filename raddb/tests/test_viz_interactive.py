@@ -26,8 +26,8 @@ from raddb.viz.interactive import (
 pytest.importorskip("ipyleaflet")
 pytest.importorskip("ipywidgets")
 
+# The synthetic fixture's site — ``(longitude, latitude)``, as the map reports it.
 CH_SITE = (7.0, 46.0)
-"""The synthetic fixture's site — ``(longitude, latitude)``, as the map reports it."""
 
 
 def _feature(geometry: dict) -> dict:
@@ -139,10 +139,14 @@ def test_an_unsupported_geometry_is_refused(rdb):
 def test_the_drawn_coordinates_are_read_as_lonlat(rdb):
     """A marker at the radar site must land on the radar, not 2600 km away."""
     _, at_site = _crop_from_feature(
-        rdb, _feature({"type": "Point", "coordinates": list(CH_SITE)}), distance_m=8_000
+        rdb,
+        _feature({"type": "Point", "coordinates": list(CH_SITE)}),
+        distance_m=8_000,
     )
     _, elsewhere = _crop_from_feature(
-        rdb, _feature({"type": "Point", "coordinates": [0.0, 0.0]}), distance_m=8_000
+        rdb,
+        _feature({"type": "Point", "coordinates": [0.0, 0.0]}),
+        distance_m=8_000,
     )
 
     assert len(at_site) > 0

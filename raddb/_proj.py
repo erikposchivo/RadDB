@@ -3,6 +3,7 @@
 Importing this module must happen *before* anything imports pyproj (directly
 or through geopandas / cartopy); ``raddb/__init__.py`` imports it first.
 """
+
 from __future__ import annotations
 
 import contextlib

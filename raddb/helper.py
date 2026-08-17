@@ -1,17 +1,15 @@
-"""
-raddb/helper.py
----------------
-Shared utilities and configuration for RadDB.
-"""
-import re
-import time as _time
+"""Shared utilities and configuration for RadDB."""
+
 import contextlib as _contextlib
 import datetime as _dt
+import re
+import time as _time
 from pathlib import Path
 
 import pandas as pd
 import polars as pl
 import xarray as xr
+
 
 # --- DataTree Helpers ---
 def list_sweep_names(dt: xr.DataTree) -> list[str]:
@@ -19,11 +17,10 @@ def list_sweep_names(dt: xr.DataTree) -> list[str]:
     pat = re.compile(r"^sweep_\d+$")
     return sorted(s.lstrip("/") for s in dt.groups if pat.match(s.lstrip("/")))
 
+
 # --- Parquet Helpers ---
 def ensure_utc(dt_input):
-    """
-    Ensure a datetime-like input is timezone-aware and in UTC.
-    """
+    """Ensure a datetime-like input is timezone-aware and in UTC."""
     if dt_input is None:
         return None
 
@@ -42,12 +39,16 @@ def read_parquet_files(
     """Read matching parquet files into a single **polars** DataFrame."""
     files = sorted(Path(base_path).rglob(pattern))
     if not files:
-        if verbose: print(f"[RadDB] No files found matching '{pattern}' in {base_path}")
+        if verbose:
+            print(f"[RadDB] No files found matching '{pattern}' in {base_path}")
         return pl.DataFrame()
-    if verbose: print(f"[RadDB] Found {len(files)} file(s) — loading...")
+    if verbose:
+        print(f"[RadDB] Found {len(files)} file(s) — loading...")
     return pl.concat(
-        [pl.read_parquet(f, columns=columns) for f in files], how="vertical_relaxed"
+        [pl.read_parquet(f, columns=columns) for f in files],
+        how="vertical_relaxed",
     )
+
 
 def check_dataframe(df: "pl.DataFrame | pd.DataFrame") -> None:
     """Print a quick structural summary; accepts polars or pandas."""
@@ -61,10 +62,11 @@ def check_dataframe(df: "pl.DataFrame | pd.DataFrame") -> None:
         for k, v in nulls.items():
             print(f"{k}    {v}")
     else:
-        print(f"Missing values:\n{df.isnull().sum()}")
+        print(f"Missing values:\n{df.isna().sum()}")
     print("-" * 50)
     print(df.head())
     print("-" * 50)
+
 
 # --- Radar Name Normalization ---
 
@@ -143,7 +145,7 @@ def normalize_radar_name(radar: str) -> str:
         raise ValueError(
             f"radar name {radar!r} is not usable: a radar name must be 1 to "
             f"{RADAR_CODE_LEN} characters from [0-9A-Z] (e.g. 'A', 'KTLX'). "
-            f"Longer identifiers must be aliased to {RADAR_CODE_LEN} characters."
+            f"Longer identifiers must be aliased to {RADAR_CODE_LEN} characters.",
         )
     return name
 
@@ -161,9 +163,9 @@ def is_valid_radar_name(radar) -> bool:
 FILTER_LOGICS: dict[str, callable] = {
     "==": lambda a, b: a == b,
     "!=": lambda a, b: a != b,
-    ">":  lambda a, b: a > b,
+    ">": lambda a, b: a > b,
     ">=": lambda a, b: a >= b,
-    "<":  lambda a, b: a < b,
+    "<": lambda a, b: a < b,
     "<=": lambda a, b: a <= b,
 }
 
@@ -179,7 +181,7 @@ def resolve_filter_logic(logic: str):
     fn = FILTER_LOGICS.get(logic)
     if fn is None:
         raise ValueError(
-            f"Unknown logic '{logic}'. Choose from: {list(FILTER_LOGICS)}"
+            f"Unknown logic '{logic}'. Choose from: {list(FILTER_LOGICS)}",
         )
     return fn
 
@@ -283,11 +285,9 @@ def filter_dt(
             # is meaningless and broadcasting the mask onto them explodes
             # memory (dims are disjoint).
             mask_dims = set(keep_mask.dims)
-            ds = ds.assign({
-                name: var.where(keep_mask)
-                for name, var in ds.data_vars.items()
-                if mask_dims & set(var.dims)
-            })
+            ds = ds.assign(
+                {name: var.where(keep_mask) for name, var in ds.data_vars.items() if mask_dims & set(var.dims)},
+            )
         dict_ds[sweep_name] = ds
 
     return xr.DataTree.from_dict(dict_ds)
@@ -296,6 +296,7 @@ def filter_dt(
 # ============================================================
 # --- Profiling Utilities ---
 # ============================================================
+
 
 def _vprint(msg: str, verbose: bool = False) -> None:
     """Print a timestamped progress message to stdout when verbose is True."""
@@ -312,6 +313,7 @@ class StageTimer:
     >>> timer = StageTimer()
     >>> with timer.time_stage("my_stage", volume="vol_001", sweep=2):
     ...     do_work()
+    ...
     >>> timer.print_summary()
     """
 
@@ -325,17 +327,28 @@ class StageTimer:
         try:
             yield
         finally:
-            self.records.append({
-                "volume": volume,
-                "sweep": sweep,
-                "stage": stage,
-                "t_start": t0,
-                "duration": _time.perf_counter() - t0,
-            })
+            self.records.append(
+                {
+                    "volume": volume,
+                    "sweep": sweep,
+                    "stage": stage,
+                    "t_start": t0,
+                    "duration": _time.perf_counter() - t0,
+                },
+            )
 
-    def record(self, stage: str, duration: float, volume: str | None = None, sweep: int | None = None, t_start: float | None = None):
+    def record(
+        self,
+        stage: str,
+        duration: float,
+        volume: str | None = None,
+        sweep: int | None = None,
+        t_start: float | None = None,
+    ):
         """Manually append a pre-measured timing entry."""
-        self.records.append({"volume": volume, "sweep": sweep, "stage": stage, "t_start": t_start, "duration": duration})
+        self.records.append(
+            {"volume": volume, "sweep": sweep, "stage": stage, "t_start": t_start, "duration": duration},
+        )
 
     def to_dataframe(self) -> pd.DataFrame:
         """Return all records as a DataFrame with columns [volume, sweep, stage, duration]."""
@@ -369,8 +382,7 @@ class StageTimer:
         for stage, row in summary.iterrows():
             pct = 100.0 * row["sum"] / total if total > 0 else 0.0
             print(
-                f"  {stage:<34} {row['sum']:>6.2f}s  {row['mean']:>5.2f}s"
-                f"  {int(row['count']):>5}  {pct:>4.1f}%"
+                f"  {stage:<34} {row['sum']:>6.2f}s  {row['mean']:>5.2f}s" f"  {int(row['count']):>5}  {pct:>4.1f}%",
             )
         print("-" * 68)
         print(f"  {'TOTAL':<34} {total:>6.2f}s")

@@ -31,8 +31,8 @@ import xarray as xr
 from raddb.main import RadDB, _format_elapsed_time, _format_size, _iter_days, _normalize_time_period
 from raddb.tests.conftest import RADAR, SWISS_EPSG, US_EPSG, US_SITE, build_datatree, relocate
 
+# The synthetic fixture's site — ``(longitude, latitude)``.
 CH_SITE = (7.0, 46.0)
-"""The synthetic fixture's site — ``(longitude, latitude)``."""
 
 VOL_TIMES = [pd.Timestamp("2024-08-01 12:00:00"), pd.Timestamp("2024-08-02 06:30:00")]
 
@@ -48,8 +48,8 @@ LUT_ONLY_COLUMNS = {
     "azimuth",
     "range",
     "elevation_angle",
+    # Columns that belong to the static LUT and must never appear in a dynamic frame.
 }
-"""Columns that belong to the static LUT and must never appear in a dynamic frame."""
 
 
 @pytest.fixture
@@ -171,7 +171,9 @@ def test_archive_resumes_from_its_checkpoint(tmp_path, datatree_dir):
 def test_archive_honours_a_time_period(tmp_path, datatree_dir):
     """Only volumes whose filename timestamp falls in the window are read."""
     result = RadDB(archive_dir=str(tmp_path / "arch"), crs=SWISS_EPSG).archive(
-        datatree_dir=datatree_dir, radar=RADAR, time_period=("2024-08-01 00:00", "2024-08-01 23:59")
+        datatree_dir=datatree_dir,
+        radar=RADAR,
+        time_period=("2024-08-01 00:00", "2024-08-01 23:59"),
     )
 
     assert result["n_archived"] == 1
@@ -276,7 +278,7 @@ def test_the_three_counts_sum_to_the_volumes_attempted(tmp_path, make_datatree):
 def test_archive_accepts_a_radar_keyed_dict(tmp_path, make_datatree):
     """The multi-radar form, ``{radar: [volumes]}``."""
     result = RadDB(archive_dir=str(tmp_path), crs=SWISS_EPSG).archive(
-        datatree={"A": [make_datatree()], "D": [make_datatree()]}
+        datatree={"A": [make_datatree()], "D": [make_datatree()]},
     )
 
     assert sorted(result["radars"]) == ["A", "D"]
@@ -392,7 +394,8 @@ def test_RadDB_export_h_plane_geoparquet(db, tmp_path):
 
     gdf = gpd.read_parquet(out)
     assert len(gdf) == 12 * 24 * 2
-    assert gdf.crs is not None and gdf.crs.to_epsg() == SWISS_EPSG
+    assert gdf.crs is not None
+    assert gdf.crs.to_epsg() == SWISS_EPSG
     assert gdf.geometry.is_valid.all()
     # Corner order is clockwise in storage; GeoParquet prefers counter-clockwise.
     assert shapely.is_ccw(shapely.get_exterior_ring(gdf.geometry.values)).all()
@@ -440,9 +443,11 @@ def test_inventory_detailed_adds_lut_columns_and_days(two_volume_rdb, capsys):
     RadDB(archive_dir=str(two_volume_rdb.archive_dir)).inventory(detailed=True)
 
     out = capsys.readouterr().out
-    assert "LUT:" in out and "sweeps" in out
+    assert "LUT:" in out
+    assert "sweeps" in out
     assert "DBZH" in out
-    assert "2024-08-01" in out and "2024-08-02" in out
+    assert "2024-08-01" in out
+    assert "2024-08-02" in out
 
 
 def test_inventory_on_an_empty_archive(tmp_path, capsys):
@@ -492,7 +497,8 @@ def test_inventory_warns_about_an_unusable_radar_name(tmp_path, datatree, capsys
     RadDB().inventory(datatree_dir=str(directory), detailed=True)
 
     out = capsys.readouterr().out
-    assert "OVERLONG" in out and "not a usable radar name" in out
+    assert "OVERLONG" in out
+    assert "not a usable radar name" in out
 
 
 def test_inventory_of_a_missing_directory_raises(tmp_path):
@@ -617,7 +623,8 @@ def test_RadDB_sel(rdb):
     values = out.data["DBZH"].to_numpy()
 
     assert len(out) > 0
-    assert values.min() >= 5.0 and values.max() <= 15.0
+    assert values.min() >= 5.0
+    assert values.max() <= 15.0
 
 
 def test_open_ended_slices_match_filter(rdb):
@@ -634,7 +641,7 @@ def test_sel_with_no_arguments_is_a_no_op(rdb):
 def test_sel_keywords_are_anded(rdb):
     """Two indexers in one call equal two chained calls."""
     assert len(rdb.sel(DBZH=slice(10, None), ZDR=slice(None, 5))) == len(
-        rdb.sel(DBZH=slice(10, None)).sel(ZDR=slice(None, 5))
+        rdb.sel(DBZH=slice(10, None)).sel(ZDR=slice(None, 5)),
     )
 
 
@@ -824,7 +831,8 @@ def test_to_geoarrow_polygons_are_closed_wedges(rdb):
 
     assert table.schema.field("geometry").metadata[b"ARROW:extension:name"] == b"geoarrow.polygon"
     rings = table.column("geometry").to_pylist()
-    assert rings and all(r is not None for r in rings), "every gate should be placed"
+    assert rings
+    assert all(r is not None for r in rings), "every gate should be placed"
     for ring in rings:
         assert len(ring) == 1, "a gate is a single ring"
         assert len(ring[0]) == 5, "4 corners + closing vertex"
@@ -840,7 +848,9 @@ def test_to_geoarrow_wedges_surround_their_own_centroid(rdb, db):
     assert shapely.is_valid(polygons).all()
 
     reference = pl.DataFrame({"gate_id": table.column("gate_id").to_numpy()}).join(
-        db.get_lut(RADAR).select("gate_id", "latitude", "longitude"), on="gate_id", how="left"
+        db.get_lut(RADAR).select("gate_id", "latitude", "longitude"),
+        on="gate_id",
+        how="left",
     )
     centres = shapely.centroid(polygons)
     dx = (shapely.get_x(centres) - reference["longitude"].to_numpy()) * 111_320 * np.cos(np.radians(46.0))
@@ -929,7 +939,8 @@ def test_RadDB_extent(rdb):
     extent = rdb.extent()
 
     assert len(extent) == 4
-    assert extent[0] < extent[1] and extent[2] < extent[3]
+    assert extent[0] < extent[1]
+    assert extent[2] < extent[3]
     assert 2.4e6 < extent[0] < 2.9e6
 
 
@@ -1045,7 +1056,10 @@ def test_a_crop_radius_is_true_metres_outside_switzerland(us_archive_dir):
     lut = db.get_lut(RADAR)
     lon, lat = lut["longitude"].to_numpy(), lut["latitude"].to_numpy()
     _, _, ground = pyproj.Geod(ellps="WGS84").inv(
-        np.full(lon.size, US_SITE[0]), np.full(lat.size, US_SITE[1]), lon, lat
+        np.full(lon.size, US_SITE[0]),
+        np.full(lat.size, US_SITE[1]),
+        lon,
+        lat,
     )
     truth = int((ground <= 10_000).sum())
 
@@ -1117,7 +1131,10 @@ def test_a_cross_section_quicklook_is_framed_on_the_archive(us_archive_dir):
 
     rdf = RadDB(archive_dir=str(us_archive_dir)).open(radars=RADAR)
     rdf.extract_cross_section(
-        p1=(US_SITE[0] - 0.2, US_SITE[1]), p2=(US_SITE[0] + 0.2, US_SITE[1]), crs=4326, quicklook=True
+        p1=(US_SITE[0] - 0.2, US_SITE[1]),
+        p2=(US_SITE[0] + 0.2, US_SITE[1]),
+        crs=4326,
+        quicklook=True,
     )
 
     ax = plt.gcf().axes[0]
@@ -1158,7 +1175,8 @@ def test_RadDB_plot_vcs(plot_rdb, plot_site):
 def test_RadDB_plot_cross_section(plot_rdb, plot_site):
     """The deprecated alias: it warns and delegates to ``plot_vcs``."""
     cs = plot_rdb.extract_cross_section(
-        (plot_site[0] - 12_000, plot_site[1] - 12_000), (plot_site[0] + 12_000, plot_site[1] + 12_000)
+        (plot_site[0] - 12_000, plot_site[1] - 12_000),
+        (plot_site[0] + 12_000, plot_site[1] + 12_000),
     )
 
     with pytest.deprecated_call():
@@ -1204,7 +1222,8 @@ def test_normalize_time_period():
     """A ``(start, end)`` pair becomes tz-aware UTC timestamps."""
     start, end = _normalize_time_period(("2024-08-01", "2024-08-02"))
 
-    assert start.tzinfo is not None and end.tzinfo is not None
+    assert start.tzinfo is not None
+    assert end.tzinfo is not None
     assert start < end
 
 
@@ -1274,7 +1293,7 @@ def test_the_multi_radar_path_counts_a_skip_separately(tmp_path, make_datatree):
         empty[name].dataset = ds
 
     result = RadDB(archive_dir=str(tmp_path), crs=SWISS_EPSG).archive(
-        datatree={RADAR: [make_datatree(vol_time=VOL_TIMES[0]), empty], "D": [make_datatree()]}
+        datatree={RADAR: [make_datatree(vol_time=VOL_TIMES[0]), empty], "D": [make_datatree()]},
     )
 
     assert (result["n_archived"], result["n_failed"], result["n_skipped"]) == (2, 0, 1)

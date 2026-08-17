@@ -34,7 +34,6 @@ import yaml
 from raddb.helper import normalize_radar_name
 from raddb.lut import (
     AZIMUTH_SCALE,
-    RADAR_ALPHABET,
     AZIMUTH_STEPS,
     CRS_REFUSE_PCT,
     DEFAULT_BEAMWIDTH_DEG,
@@ -42,6 +41,7 @@ from raddb.lut import (
     LEGACY_RADAR_TO_IDX,
     LUT_FILES,
     MAX_RADAR_CODE,
+    RADAR_ALPHABET,
     RADAR_CODE_LEN,
     _round_half_up,
     add_lut_projection,
@@ -91,8 +91,8 @@ from raddb.tests.conftest import (
     retime,
 )
 
+# The synthetic fixture's own site — ``(longitude, latitude)``.
 CH_SITE = (7.0, 46.0)
-"""The synthetic fixture's own site — ``(longitude, latitude)``."""
 
 N_AZ, N_RNG, N_SWEEPS = 12, 24, 2
 N_GATES = N_AZ * N_RNG * N_SWEEPS
@@ -105,7 +105,10 @@ REAL_N_GATES = REAL_N_AZ * REAL_N_RNG * REAL_N_SWEEPS
 def lut_base(tmp_path, make_datatree):
     """A base path holding radar ``A``'s complete five-file LUT directory."""
     generate_lut_from_datatree(
-        make_datatree(), radar=RADAR, output_base_path=str(tmp_path), projection_epsg=SWISS_EPSG
+        make_datatree(),
+        radar=RADAR,
+        output_base_path=str(tmp_path),
+        projection_epsg=SWISS_EPSG,
     )
     return tmp_path
 
@@ -135,7 +138,8 @@ def _face_area(table: pl.DataFrame, corners) -> np.ndarray:
     pts = np.stack(
         [
             np.stack(
-                [table[f"x_{k}"].to_numpy(), table[f"y_{k}"].to_numpy(), table[f"z_rel_{k}"].to_numpy()], axis=1
+                [table[f"x_{k}"].to_numpy(), table[f"y_{k}"].to_numpy(), table[f"z_rel_{k}"].to_numpy()],
+                axis=1,
             )
             for k in corners
         ],
@@ -362,7 +366,7 @@ def test_decode_gate_radars_spans_a_concatenated_archive():
         [
             encode_gate_ids("A", np.array([1]), np.array([0.5]), np.array([1000.0])),
             encode_gate_ids("KTLX", np.array([1]), np.array([0.5]), np.array([1000.0])),
-        ]
+        ],
     )
 
     assert sorted(decode_gate_radars(ids)) == ["A", "KTLX"]
@@ -592,9 +596,11 @@ def test_load_azimuth_grids(tmp_path):
 
     grids = load_azimuth_grids(RADAR, tmp_path)
 
-    assert grids is not None and set(grids) == {1, 2, 3}
+    assert grids is not None
+    assert set(grids) == {1, 2, 3}
     for grid in grids.values():
-        assert grid.size == 360 and np.all(np.diff(grid) == 10)
+        assert grid.size == 360
+        assert np.all(np.diff(grid) == 10)
 
     info = yaml.safe_load((tmp_path / RADAR / "LUT" / f"{RADAR}_info.yaml").read_text())
     assert "azimuths" not in info["sweeps"][1]
@@ -616,7 +622,10 @@ def test_the_lut_azimuth_column_holds_the_nominal_grid(tmp_path):
         MCH_BIAS,
     )
     generate_lut_from_datatree(
-        drifted, radar=RADAR, output_base_path=str(tmp_path), projection_epsg=SWISS_EPSG
+        drifted,
+        radar=RADAR,
+        output_base_path=str(tmp_path),
+        projection_epsg=SWISS_EPSG,
     )
 
     lut = load_radar_lut(RADAR, tmp_path)
@@ -637,8 +646,10 @@ def test_antenna_vectors_to_cartesian():
     x_n, y_n, _ = antenna_vectors_to_cartesian(ranges, np.array([0.0]), np.array([0.0]))
     x_e, y_e, _ = antenna_vectors_to_cartesian(ranges, np.array([90.0]), np.array([0.0]))
 
-    assert abs(x_n[0]) < 1.0 and y_n[0] == pytest.approx(10_000.0, rel=1e-3)
-    assert x_e[0] == pytest.approx(10_000.0, rel=1e-3) and abs(y_e[0]) < 1.0
+    assert abs(x_n[0]) < 1.0
+    assert y_n[0] == pytest.approx(10_000.0, rel=1e-3)
+    assert x_e[0] == pytest.approx(10_000.0, rel=1e-3)
+    assert abs(y_e[0]) < 1.0
 
 
 def test_the_beam_rises_with_elevation_and_earth_curvature():
@@ -674,7 +685,12 @@ def test_cartesian_to_geographic():
     ``(longitude, latitude)`` argument order used everywhere a *site* is named.
     """
     lat, lon, alt = cartesian_to_geographic(
-        np.array([0.0]), np.array([0.0]), np.array([0.0]), CH_SITE[1], CH_SITE[0], 1000.0
+        np.array([0.0]),
+        np.array([0.0]),
+        np.array([0.0]),
+        CH_SITE[1],
+        CH_SITE[0],
+        1000.0,
     )
 
     assert lon[0] == pytest.approx(CH_SITE[0], abs=1e-6)
@@ -685,7 +701,12 @@ def test_cartesian_to_geographic():
 def test_geographic_conversion_moves_north_for_positive_y():
     """A 10 km northward offset raises the latitude by ~0.09 degrees."""
     lat, _, _ = cartesian_to_geographic(
-        np.array([0.0]), np.array([10_000.0]), np.array([0.0]), CH_SITE[1], CH_SITE[0], 0.0
+        np.array([0.0]),
+        np.array([10_000.0]),
+        np.array([0.0]),
+        CH_SITE[1],
+        CH_SITE[0],
+        0.0,
     )
 
     assert lat[0] > CH_SITE[1]
@@ -726,7 +747,10 @@ def test_regenerating_backfills_the_lattices_without_rewriting_the_centroids(lut
         (lut_dir / LUT_FILES[kind].format(radar=RADAR)).unlink()
 
     generate_lut_from_datatree(
-        make_datatree(), radar=RADAR, output_base_path=str(lut_base), projection_epsg=SWISS_EPSG
+        make_datatree(),
+        radar=RADAR,
+        output_base_path=str(lut_base),
+        projection_epsg=SWISS_EPSG,
     )
 
     for kind in ("h_plane", "v_plane", "corners"):
@@ -738,7 +762,19 @@ def test_the_info_yaml_records_the_generation_parameters(lut_base):
     """Everything needed to reproduce the geometry, and nothing that went stale."""
     info = load_radar_info(RADAR, lut_base)
 
-    for key in ("radar", "network", "latitude", "longitude", "altitude", "crs", "ke", "beamwidth_deg", "n_sweeps", "n_gates", "sweeps"):
+    for key in (
+        "radar",
+        "network",
+        "latitude",
+        "longitude",
+        "altitude",
+        "crs",
+        "ke",
+        "beamwidth_deg",
+        "n_sweeps",
+        "n_gates",
+        "sweeps",
+    ):
         assert key in info, f"missing info key {key!r}"
     assert info["ke"] == pytest.approx(4.0 / 3.0)
     assert info["beamwidth_deg"] == DEFAULT_BEAMWIDTH_DEG
@@ -764,7 +800,7 @@ def test_generate_lut_accepts_a_projection_crs_object(tmp_path, make_datatree):
     """A pyproj CRS works where an EPSG int is not available."""
     crs = pyproj.CRS.from_proj4(
         "+proj=somerc +lat_0=46.9524056 +lon_0=7.4395833 +k_0=1 +x_0=2600000 +y_0=1200000 "
-        "+ellps=bessel +towgs84=674.374,15.056,405.346,0,0,0,0 +units=m +no_defs"
+        "+ellps=bessel +towgs84=674.374,15.056,405.346,0,0,0,0 +units=m +no_defs",
     )
 
     generate_lut_from_datatree(make_datatree(), radar=RADAR, output_base_path=str(tmp_path), projection_crs=crs)
@@ -777,7 +813,11 @@ def test_generate_lut_accepts_a_projection_crs_object(tmp_path, make_datatree):
 def test_generate_lut_records_an_explicit_beamwidth(tmp_path, make_datatree):
     """The one place beamwidth may be set; no plot takes it."""
     generate_lut_from_datatree(
-        make_datatree(), radar=RADAR, output_base_path=str(tmp_path), beamwidth_deg=1.5, projection_epsg=SWISS_EPSG
+        make_datatree(),
+        radar=RADAR,
+        output_base_path=str(tmp_path),
+        beamwidth_deg=1.5,
+        projection_epsg=SWISS_EPSG,
     )
 
     assert load_radar_info(RADAR, tmp_path)["beamwidth_deg"] == pytest.approx(1.5)
@@ -902,7 +942,8 @@ def test_the_frustum_ratio_stays_physically_sane(lut_base):
     keep = near > 1.0  # drop the r~0 near face
 
     ratio = far[keep] / near[keep]
-    assert 1.0 < ratio.min() and ratio.max() < 100.0
+    assert ratio.min() > 1.0
+    assert ratio.max() < 100.0
 
 
 def test_the_first_range_bin_is_degenerate(lut_base):
@@ -911,7 +952,8 @@ def test_the_first_range_bin_is_degenerate(lut_base):
     pts = np.stack(
         [
             np.stack(
-                [table[f"x_{k}"].to_numpy(), table[f"y_{k}"].to_numpy(), table[f"z_rel_{k}"].to_numpy()], axis=1
+                [table[f"x_{k}"].to_numpy(), table[f"y_{k}"].to_numpy(), table[f"z_rel_{k}"].to_numpy()],
+                axis=1,
             )
             for k in range(1, 9)
         ],
@@ -1029,7 +1071,8 @@ def test_compute_sweep_corners():
     """The per-sweep node mesh the three lattices are built from."""
     corners = _sweep_corners()
 
-    assert isinstance(corners, dict) and corners
+    assert isinstance(corners, dict)
+    assert corners
     # The mesh is one node lattice per elevation level, so it is (n_az+1) x (n_rng+1).
     assert any(np.asarray(v).size == (N_AZ + 1) * (N_RNG + 1) for v in corners.values() if np.ndim(v))
 
@@ -1273,7 +1316,8 @@ def test_an_area_of_use_check_alone_would_pass_web_mercator():
     """EPSG:3857 declares the whole world, so a bounds check lets it through."""
     area = pyproj.CRS.from_epsg(3857).area_of_use
 
-    assert area.west <= CH_SITE[0] <= area.east and area.south <= CH_SITE[1] <= area.north
+    assert area.west <= CH_SITE[0] <= area.east
+    assert area.south <= CH_SITE[1] <= area.north
     assert crs_distance_error(3857, *CH_SITE) > 10.0
 
 

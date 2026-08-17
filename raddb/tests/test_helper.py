@@ -55,7 +55,7 @@ def test_list_sweep_names_ignores_other_groups():
             "sweep_1": xr.Dataset({"DBZH": ("range", [1.0])}),
             "radar_parameters": xr.Dataset({"beamwidth": 1.0}),
             "georeferencing_correction": xr.Dataset({"dx": 0.0}),
-        }
+        },
     )
 
     assert list_sweep_names(dt) == ["sweep_1"]
@@ -138,8 +138,10 @@ def test_check_dataframe(capsys):
     check_dataframe(pl.DataFrame({"DBZH": [1.0, None], "gate_id": [1, 2]}))
 
     out = capsys.readouterr().out
-    assert "Shape:" in out and "(2, 2)" in out
-    assert "DBZH" in out and "Missing values:" in out
+    assert "Shape:" in out
+    assert "(2, 2)" in out
+    assert "DBZH" in out
+    assert "Missing values:" in out
 
 
 def test_check_dataframe_accepts_pandas(capsys):
@@ -240,7 +242,14 @@ def test_the_alphabet_and_length_match_the_gate_id_layout():
 
 @pytest.mark.parametrize(
     ("logic", "a", "b", "expected"),
-    [("==", 1, 1, True), ("!=", 1, 2, True), (">", 2, 1, True), (">=", 1, 1, True), ("<", 1, 2, True), ("<=", 1, 1, True)],
+    [
+        ("==", 1, 1, True),
+        ("!=", 1, 2, True),
+        (">", 2, 1, True),
+        (">=", 1, 1, True),
+        ("<", 1, 2, True),
+        ("<=", 1, 1, True),
+    ],
 )
 def test_resolve_filter_logic(logic, a, b, expected):
     """All six operators resolve to the comparison they spell."""
@@ -477,7 +486,8 @@ def test_StageTimer_print_summary(capsys):
 
     out = capsys.readouterr().out
     assert "PIPELINE PROFILING SUMMARY" in out
-    assert "archive_volume" in out and "TOTAL" in out
+    assert "archive_volume" in out
+    assert "TOTAL" in out
     assert "75.0%" in out
 
 
@@ -494,16 +504,14 @@ def test_timer_accumulates_across_a_batch(tmp_path, make_datatree):
     from raddb.lut import generate_lut_from_datatree
 
     timer = StageTimer()
-    volumes = {
-        f"vol_{i:03d}": make_datatree(vol_time=pd.Timestamp(f"2024-08-01 19:0{i}:00")) for i in range(3)
-    }
+    volumes = {f"vol_{i:03d}": make_datatree(vol_time=pd.Timestamp(f"2024-08-01 19:0{i}:00")) for i in range(3)}
     generate_lut_from_datatree(volumes["vol_000"], radar="A", output_base_path=str(tmp_path), projection_epsg=2056)
 
     archive_multiple_volumes(volumes, radar="A", base_output_path=str(tmp_path), timer=timer, verbose=False)
 
     df = timer.to_dataframe()
     assert len(df) >= 3
-    assert "archive_volume" in df["stage"].values
+    assert "archive_volume" in df["stage"].to_numpy()
 
 
 # ---------------------------------------------------------------------------
@@ -524,7 +532,8 @@ def test_vprint_timestamps_its_output(capsys):
 
     out = capsys.readouterr().out
     assert "hello" in out
-    assert out.startswith("[") and out.count(":") == 2
+    assert out.startswith("[")
+    assert out.count(":") == 2
 
 
 def test_read_parquet_files_accepts_a_path_object(archive_dir):

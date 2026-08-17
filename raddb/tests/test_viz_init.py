@@ -52,7 +52,7 @@ def test_importing_the_subpackage_does_not_pull_in_ipyleaflet():
 
 
 def test_lonboard_is_not_imported_eagerly():
-    """lonboard caches a broken pyproj context if it imports before ``raddb._proj``."""
+    """Lonboard caches a broken pyproj context if it imports before ``raddb._proj``."""
     import ast
     from pathlib import Path
 

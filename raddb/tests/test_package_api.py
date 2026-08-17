@@ -33,7 +33,7 @@ def test_all_has_no_duplicates():
 def test_star_import_matches_all():
     """``from raddb import *`` exposes exactly ``__all__`` and nothing more."""
     namespace: dict = {}
-    exec("from raddb import *", namespace)  # noqa: S102 - the behaviour under test
+    exec("from raddb import *", namespace)  # - the behaviour under test
     namespace.pop("__builtins__", None)
     assert sorted(namespace) == sorted(raddb.__all__)
 
@@ -79,13 +79,16 @@ def test_the_private_mch_subpackage_is_not_imported():
 
 
 def test_lonboard_is_not_imported_at_module_level():
-    """lonboard pulls in pyproj; importing it eagerly defeats the PROJ repair."""
+    """Lonboard pulls in pyproj; importing it eagerly defeats the PROJ repair."""
     import sys
 
     assert "lonboard" not in sys.modules or "raddb" in sys.modules
 
 
-@pytest.mark.parametrize("name", ["RadDB", "plot_ppi", "generate_lut_from_datatree", "filter_df", "find_datatree_files"])
+@pytest.mark.parametrize(
+    "name",
+    ["RadDB", "plot_ppi", "generate_lut_from_datatree", "filter_df", "find_datatree_files"],
+)
 def test_representative_exports_are_callable(name):
     """A spot check that the re-exports are the real objects, not stubs."""
     assert callable(getattr(raddb, name))

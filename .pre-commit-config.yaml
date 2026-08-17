@@ -25,7 +25,9 @@ repos:
     rev: v0.3.9
     hooks:
       - id: blackdoc
-        additional_dependencies: ["black[jupyter]"]
+        # pin to the black hook's rev: blackdoc 0.3.9 calls black.decode_bytes()
+        # with the pre-25.x signature and TypeErrors against a newer black.
+        additional_dependencies: ["black[jupyter]==24.8.0"]
   - repo: https://github.com/pre-commit/mirrors-prettier
     rev: "v4.0.0-alpha.8"
     hooks:

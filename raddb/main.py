@@ -1,7 +1,4 @@
-"""
-raddb/main.py
--------------
-High-level interface for RadDB — a generic radar data archiving library.
+"""High-level interface for RadDB — a generic radar data archiving library.
 
 ``RadDB`` is a single, dual-role class:
 
@@ -19,8 +16,10 @@ Note: network-specific constants such as a list of radar identifiers
 network-specific pipeline (e.g. the private ``raddb.mch`` subpackage),
 not here.
 """
+
 from __future__ import annotations
 
+import contextlib
 import datetime
 import logging
 import time
@@ -33,26 +32,6 @@ import polars as pl
 import shapely
 import xarray as xr
 
-from raddb.io_core import (
-    archive_volume,
-    archive_multiple_volumes,
-    archive_volumes_multi_radar,
-    open_any_datatree,
-    scan_polar_parquet,
-    dataframe_to_datatree,
-)
-from raddb.helper import (
-    RADAR_CODE_LEN,
-    ensure_utc,
-    is_valid_radar_name,
-    normalize_radar_name,
-)
-from raddb.discovery import (
-    find_datatree_files,
-    _find_polar_files_in_range,
-    _parse_datatree_file_time,
-    _parse_pol_time,
-)
 from raddb.aoi import (
     _apply_gate_ids,
     _cross_section_gates,
@@ -61,19 +40,39 @@ from raddb.aoi import (
     _lut_cs_table,
     _radars_from_gate_ids,
     _reproject_to_aoi,
-    aoi_epsg_for,
     _resolve_aoi_centroids,
+    aoi_epsg_for,
+)
+from raddb.discovery import (
+    _find_polar_files_in_range,
+    _parse_datatree_file_time,
+    _parse_pol_time,
+    find_datatree_files,
+)
+from raddb.helper import (
+    RADAR_CODE_LEN,
+    ensure_utc,
+    is_valid_radar_name,
+    normalize_radar_name,
+)
+from raddb.io_core import (
+    archive_multiple_volumes,
+    archive_volume,
+    archive_volumes_multi_radar,
+    dataframe_to_datatree,
+    open_any_datatree,
+    scan_polar_parquet,
 )
 from raddb.lut import (
     GATE_ID_RADAR_BASE,
-    encode_radar_code,
-    generate_lut_from_datatree,
-    gate_corner_table,
-    load_plane_nodes,
-    load_radar_lut,
-    load_radar_info,
     add_lut_projection,
     cartesian_to_geographic,
+    encode_radar_code,
+    gate_corner_table,
+    generate_lut_from_datatree,
+    load_plane_nodes,
+    load_radar_info,
+    load_radar_lut,
 )
 
 logger = logging.getLogger(__name__)
@@ -82,6 +81,7 @@ logger = logging.getLogger(__name__)
 # ================================================================
 # Private helpers for end-to-end archiving
 # ================================================================
+
 
 def _iter_days(start: pd.Timestamp, end: pd.Timestamp):
     """Yield (day_start, day_end) pairs covering [start, end] inclusively."""
@@ -114,7 +114,7 @@ def _format_elapsed_time(seconds: float) -> str:
     secs = int(seconds % 60)
     if hours > 0:
         return f"{hours}h {minutes}m {secs}s"
-    elif minutes > 0:
+    if minutes > 0:
         return f"{minutes}m {secs}s"
     return f"{secs}s"
 
@@ -128,7 +128,7 @@ def _format_elapsed_time(seconds: float) -> str:
 _GEOM_COLS = ("cs_polygon",)
 
 
-def _filter_expr(var: str, logic: str, threshold) -> "pl.Expr":
+def _filter_expr(var: str, logic: str, threshold) -> pl.Expr:
     """Build a polars boolean expression ``var <logic> threshold``."""
     col = pl.col(var)
     ops = {
@@ -141,7 +141,7 @@ def _filter_expr(var: str, logic: str, threshold) -> "pl.Expr":
     }
     if logic not in ops:
         raise ValueError(
-            f"Unknown filter logic {logic!r}; use one of {sorted(ops)}."
+            f"Unknown filter logic {logic!r}; use one of {sorted(ops)}.",
         )
     return ops[logic]
 
@@ -208,7 +208,7 @@ def _time_bound(value, dtype, *, upper: bool):
     return ts
 
 
-def _sel_expr(name: str, value, dtype) -> "pl.Expr":
+def _sel_expr(name: str, value, dtype) -> pl.Expr:
     """Build the boolean expression selecting ``value`` on column ``name``.
 
     ``value`` may be a ``slice`` (inclusive on both ends, as in xarray), a
@@ -226,7 +226,7 @@ def _sel_expr(name: str, value, dtype) -> "pl.Expr":
         if value.step is not None:
             raise ValueError(
                 f"sel({name}=...): a step is not supported (got step={value.step!r}); "
-                "use a plain slice(start, stop)."
+                "use a plain slice(start, stop).",
             )
         parts = []
         if value.start is not None:
@@ -241,7 +241,7 @@ def _sel_expr(name: str, value, dtype) -> "pl.Expr":
         return expr
 
     if isinstance(value, (list, tuple, set, frozenset, np.ndarray, pl.Series)):
-        vals = [v for v in (value.to_list() if isinstance(value, pl.Series) else list(value))]
+        vals = list(value.to_list() if isinstance(value, pl.Series) else list(value))
         if is_time:
             # a list of timestamps/partial strings -> union of their periods
             expr = None
@@ -262,7 +262,7 @@ def _ccw_polygons(polys: np.ndarray) -> np.ndarray:
     The gate corner order is deterministically clockwise (inherited from the
     reference prototype), so serialised output needs flipping.
     """
-    if hasattr(shapely, "orient_polygons"):        # shapely >= 2.1
+    if hasattr(shapely, "orient_polygons"):  # shapely >= 2.1
         return shapely.orient_polygons(polys)
     ccw = shapely.is_ccw(shapely.get_exterior_ring(polys))
     return np.where(ccw, polys, shapely.reverse(polys))
@@ -289,7 +289,7 @@ def _resolve_filters(filters) -> list[tuple[str, str, float]]:
         if extra:
             raise KeyError(
                 f"unknown filter key(s) {sorted(extra)} in {f!r}; "
-                f"a filter is {{{', '.join(repr(k) for k in _FILTER_KEYS)}}}."
+                f"a filter is {{{', '.join(repr(k) for k in _FILTER_KEYS)}}}.",
             )
         specs.append((f["var"], f.get("logic", ">"), f.get("threshold", 0.0)))
     return specs
@@ -297,6 +297,7 @@ def _resolve_filters(filters) -> list[tuple[str, str, float]]:
 
 def _normalize_time_period(time_period):
     """Return ``(start, end)`` datetimes from str | datetime | (start, end)."""
+
     def _u(x):
         return ensure_utc(x) if x is not None else None
 
@@ -330,8 +331,8 @@ def _decode_geometry(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _to_polars(df: pd.DataFrame) -> "pl.DataFrame":
-    """pandas -> polars, WKB-encoding any shapely-geometry columns first."""
+def _to_polars(df: pd.DataFrame) -> pl.DataFrame:
+    """Pandas -> polars, WKB-encoding any shapely-geometry columns first."""
     return pl.from_pandas(_encode_geometry(df))
 
 
@@ -392,9 +393,7 @@ def _list_archive_radars(archive_dir: Path) -> list[str]:
     if not archive_dir.exists():
         return []
     return sorted(
-        p.name
-        for p in archive_dir.iterdir()
-        if p.is_dir() and is_valid_radar_name(p.name) and (p / "LUT").is_dir()
+        p.name for p in archive_dir.iterdir() if p.is_dir() and is_valid_radar_name(p.name) and (p / "LUT").is_dir()
     )
 
 
@@ -404,11 +403,11 @@ class RadDB:
     Examples
     --------
     >>> db = RadDB(archive_dir="/data/raddb", crs=2056)
-    >>> db.archive(datatree_dir="/data/MCH_datatree")        # or datatree=dt
+    >>> db.archive(datatree_dir="/data/MCH_datatree")  # or datatree=dt
     >>> rdf = db.open(time_period=("2024-08-26", "2024-08-27"))
-    >>> rdf.filter({"var": "DBZH", "logic": ">", "threshold": 20})\
-    ...    .crop_by_bbox(extent=rdf.extent())\
-    ...    .plot_ppi(variable="DBZH", save="ppi.png")
+    >>> rdf.filter({"var": "DBZH", "logic": ">", "threshold": 20}).crop_by_bbox(extent=rdf.extent()).plot_ppi(
+    ...     variable="DBZH", save="ppi.png"
+    ... )
     """
 
     # ================================================================
@@ -421,7 +420,7 @@ class RadDB:
         crs: int | str | None = None,
         network: str = "",
         *,
-        _data: "pl.DataFrame | None" = None,
+        _data: pl.DataFrame | None = None,
         _meta: dict | None = None,
     ):
         """Create an archive-bound RadDB.
@@ -448,11 +447,12 @@ class RadDB:
         self._data = _data
         self._meta = dict(_meta) if _meta else {}
 
-    def _derive(self, data: "pl.DataFrame", *, archive_dir=None, crs=None, **meta) -> "RadDB":
+    def _derive(self, data: pl.DataFrame, *, archive_dir=None, crs=None, **meta) -> RadDB:
         """Build a new data-carrying ``RadDB`` sharing this one's configuration."""
         return RadDB(
-            archive_dir=str(archive_dir) if archive_dir is not None
-            else (str(self.archive_dir) if self.archive_dir else None),
+            archive_dir=(
+                str(archive_dir) if archive_dir is not None else (str(self.archive_dir) if self.archive_dir else None)
+            ),
             crs=crs if crs is not None else self._crs,
             network=self.network,
             _data=data,
@@ -462,45 +462,40 @@ class RadDB:
     def _require_archive_dir(self) -> Path:
         if self.archive_dir is None:
             raise ValueError(
-                "This RadDB has no archive_dir; pass it to RadDB(archive_dir=...) "
-                "or to the method call."
+                "This RadDB has no archive_dir; pass it to RadDB(archive_dir=...) " "or to the method call.",
             )
         return self.archive_dir
 
-    def _require_data(self) -> "pl.DataFrame":
+    def _require_data(self) -> pl.DataFrame:
         if self._data is None:
             raise ValueError(
-                "This RadDB carries no data (it is archive-bound). Load data "
-                "first with db.open(...)."
+                "This RadDB carries no data (it is archive-bound). Load data " "first with db.open(...).",
             )
         return self._data
 
     @property
-    def data(self) -> "pl.DataFrame":
+    def data(self) -> pl.DataFrame:
         """The loaded data as a polars DataFrame."""
         return self._require_data()
 
     def __len__(self) -> int:
+        """Number of gates held; ``0`` when archive-bound with no data loaded."""
         return 0 if self._data is None else self._data.height
 
     def __repr__(self) -> str:
+        """One-line summary when archive-bound, a multi-line one when data-carrying."""
         if self._data is None:
-            return (
-                f"RadDB(archive_dir={self.archive_dir!s}, crs={self._crs!r}) "
-                f"[archive-bound, no data loaded]"
-            )
+            return f"RadDB(archive_dir={self.archive_dir!s}, crs={self._crs!r}) " f"[archive-bound, no data loaded]"
         lines = [f"RadDB [{len(self):,} gates]"]
-        try:
+        with contextlib.suppress(Exception):
             lines.append(f"  radars     : {self.radars()}")
-        except Exception:
-            pass
         try:
             t0, t1 = self.start_time(), self.end_time()
             lines.append(f"  time range : {t0} .. {t1}")
         except Exception:
             pass
         schema = self._data.schema
-        cols = ", ".join(f"{n}:{str(t)}" for n, t in list(schema.items())[:12])
+        cols = ", ".join(f"{n}:{t!s}" for n, t in list(schema.items())[:12])
         more = "" if len(schema) <= 12 else f" (+{len(schema) - 12} more)"
         lines.append(f"  columns    : {cols}{more}")
         lines.append(f"  archive_dir: {self.archive_dir}")
@@ -579,13 +574,12 @@ class RadDB:
                 "EPSG:2056 outside Switzerland mis-measures distance by ~20%. "
                 "Pass RadDB(crs=<epsg>) or archive(crs=<epsg>), choosing one valid "
                 "at your radar's site (raddb.lut.suggest_crs(lon, lat) gives the "
-                "UTM zone)."
+                "UTM zone).",
             )
 
         if (datatree is None) == (datatree_dir is None):
             raise ValueError(
-                "Pass exactly one of `datatree` (in-memory) or `datatree_dir` "
-                "(saved files)."
+                "Pass exactly one of `datatree` (in-memory) or `datatree_dir` " "(saved files).",
             )
 
         if filter is None:
@@ -598,11 +592,24 @@ class RadDB:
         t0 = time.time()
         if datatree is not None:
             radars_done, n_ok, n_fail, n_skip = self._archive_in_memory(
-                datatree, radar, archive_dir, crs, feat, logic, thr
+                datatree,
+                radar,
+                archive_dir,
+                crs,
+                feat,
+                logic,
+                thr,
             )
         else:
             radars_done, n_ok, n_fail, n_skip = self._archive_from_disk(
-                datatree_dir, radar, archive_dir, crs, feat, logic, thr, time_period
+                datatree_dir,
+                radar,
+                archive_dir,
+                crs,
+                feat,
+                logic,
+                thr,
+                time_period,
             )
 
         print("=" * 70)
@@ -613,7 +620,7 @@ class RadDB:
         print(f"  filter      : keep {feat} {logic} {thr}")
         print(
             f"  volumes     : {n_ok} archived, {n_fail} failed"
-            + (f", {n_skip} skipped (nothing to archive)" if n_skip else "")
+            + (f", {n_skip} skipped (nothing to archive)" if n_skip else ""),
         )
         print(f"  elapsed     : {_format_elapsed_time(time.time() - t0)}")
         print("=" * 70)
@@ -643,15 +650,13 @@ class RadDB:
             # write POL files against a LUT that does not exist or is wrong, and
             # report "archived" for data no crop or section could ever use.
             raise
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             print(f"  [{radar}] LUT generation failed: {e}")
 
     def _archive_in_memory(self, datatree, radar, archive_dir, crs, feat, logic, thr):
         archive_dir = Path(archive_dir)
         # {radar: [DataTree, ...]} -- multi-radar
-        if isinstance(datatree, dict) and datatree and all(
-            not isinstance(v, xr.DataTree) for v in datatree.values()
-        ):
+        if isinstance(datatree, dict) and datatree and all(not isinstance(v, xr.DataTree) for v in datatree.values()):
             for r, vols in datatree.items():
                 rn = normalize_radar_name(r)
                 first = next(iter(vols.values())) if isinstance(vols, dict) else vols[0]
@@ -659,7 +664,9 @@ class RadDB:
             results = archive_volumes_multi_radar(
                 volumes_by_radar=datatree,
                 base_output_path=str(archive_dir),
-                filter_feature=feat, filter_threshold=thr, filter_logic=logic,
+                filter_feature=feat,
+                filter_threshold=thr,
+                filter_logic=logic,
                 verbose=False,
             )
             # Count outcomes, not attempts: archive_multiple_volumes reports a
@@ -672,15 +679,18 @@ class RadDB:
 
         if radar is None or not isinstance(radar, str):
             raise ValueError(
-                "For in-memory archiving, pass a single radar letter, e.g. "
-                "archive(datatree=dt, radar='A')."
+                "For in-memory archiving, pass a single radar letter, e.g. " "archive(datatree=dt, radar='A').",
             )
         r = normalize_radar_name(radar)
         if isinstance(datatree, xr.DataTree):
             self._ensure_lut(r, datatree, archive_dir, crs)
             path = archive_volume(
-                dt=datatree, radar=r, base_output_path=str(archive_dir),
-                filter_feature=feat, filter_threshold=thr, filter_logic=logic,
+                dt=datatree,
+                radar=r,
+                base_output_path=str(archive_dir),
+                filter_feature=feat,
+                filter_threshold=thr,
+                filter_logic=logic,
             )
             # A None path means the volume held nothing to archive; counting it
             # as archived is how an empty volume gets reported as stored.
@@ -689,8 +699,12 @@ class RadDB:
         first = next(iter(datatree.values())) if isinstance(datatree, dict) else datatree[0]
         self._ensure_lut(r, first, archive_dir, crs)
         results = archive_multiple_volumes(
-            volumes=datatree, radar=r, base_output_path=str(archive_dir),
-            filter_feature=feat, filter_threshold=thr, filter_logic=logic,
+            volumes=datatree,
+            radar=r,
+            base_output_path=str(archive_dir),
+            filter_feature=feat,
+            filter_threshold=thr,
+            filter_logic=logic,
             verbose=False,
         )
         n_ok = sum(1 for res in results if res.get("success"))
@@ -701,7 +715,10 @@ class RadDB:
         archive_dir = Path(archive_dir)
         start, end = _normalize_time_period(time_period)
         files = find_datatree_files(
-            Path(datatree_dir), recursive=True, start_time=start, end_time=end
+            Path(datatree_dir),
+            recursive=True,
+            start_time=start,
+            end_time=end,
         )
         if isinstance(radar, str):
             # A single radar name: archive every file as that radar (the
@@ -724,7 +741,13 @@ class RadDB:
         radars_done, total_ok, total_fail, total_skip = [], 0, 0, 0
         for r, rfiles in sorted(by_radar.items()):
             n_ok, n_fail, n_skip = self._archive_files_one_radar(
-                r, sorted(rfiles), archive_dir, crs, feat, logic, thr
+                r,
+                sorted(rfiles),
+                archive_dir,
+                crs,
+                feat,
+                logic,
+                thr,
             )
             radars_done.append(r)
             total_ok += n_ok
@@ -750,7 +773,7 @@ class RadDB:
                 dt0 = open_any_datatree(files[0])
                 preopened[files[0]] = dt0
                 self._ensure_lut(radar, dt0, archive_dir, crs)
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 print(f"  [{radar}] LUT generation failed: {e}")
 
         n_ok = n_fail = n_skip = 0
@@ -765,8 +788,12 @@ class RadDB:
                 if dt is None:
                     dt = open_any_datatree(f)
                 path = archive_volume(
-                    dt=dt, radar=radar, base_output_path=str(archive_dir),
-                    filter_feature=feat, filter_threshold=thr, filter_logic=logic,
+                    dt=dt,
+                    radar=radar,
+                    base_output_path=str(archive_dir),
+                    filter_feature=feat,
+                    filter_threshold=thr,
+                    filter_logic=logic,
                     volume=stem,
                 )
                 # Checkpoint either way: a volume with nothing to archive is
@@ -779,14 +806,14 @@ class RadDB:
                 else:
                     n_ok += 1
                 del dt
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 n_fail += 1
                 print(f"  [{radar}] FAIL {stem}: {e}")
         return (n_ok, n_fail, n_skip)
 
     # ---- LUT read accessors (archive-bound) ----
 
-    def get_lut(self, radar: str) -> "pl.DataFrame":
+    def get_lut(self, radar: str) -> pl.DataFrame:
         """Load the LUT (static gate geometry) for a radar, as polars."""
         return load_radar_lut(normalize_radar_name(radar), self._require_archive_dir())
 
@@ -794,14 +821,17 @@ class RadDB:
         """Load radar metadata (location, sweep geometry)."""
         return load_radar_info(normalize_radar_name(radar), self._require_archive_dir())
 
-    def add_lut_projection(self, radar: str, epsg: int | None = None, crs=None) -> "pl.DataFrame":
+    def add_lut_projection(self, radar: str, epsg: int | None = None, crs=None) -> pl.DataFrame:
         """Return the radar LUT enriched with projected ``x_{epsg}`` / ``y_{epsg}`` columns."""
         lut_df = load_radar_lut(normalize_radar_name(radar), self._require_archive_dir())
         return add_lut_projection(lut_df, epsg=epsg, crs=crs)
 
     def get_h_plane(
-        self, radar: str, sweep: int | None = None, per_gate: bool = False
-    ) -> "pl.DataFrame":
+        self,
+        radar: str,
+        sweep: int | None = None,
+        per_gate: bool = False,
+    ) -> pl.DataFrame:
         """Horizontal-face geometry of each gate — the precise PPI footprint.
 
         ``per_gate=False`` (default) returns the compact **node lattice** as
@@ -829,7 +859,7 @@ class RadDB:
         sweep: int | None = None,
         azimuth: float | None = None,
         per_gate: bool = False,
-    ) -> "pl.DataFrame":
+    ) -> pl.DataFrame:
         """Vertical-face geometry of each gate — the precise RHI footprint.
 
         Coordinates are ``(d, z)``: ``d`` is the ground distance from the radar
@@ -864,8 +894,11 @@ class RadDB:
         return tbl.join(keep, on="gate_id", how="semi")
 
     def get_corners(
-        self, radar: str, sweep: int | None = None, per_gate: bool = False
-    ) -> "pl.DataFrame":
+        self,
+        radar: str,
+        sweep: int | None = None,
+        per_gate: bool = False,
+    ) -> pl.DataFrame:
         """Full 3-D gate corners — 8 per gate, for volume reconstruction.
 
         ``per_gate=True`` returns ``x_1..x_8``, ``y_1..y_8``, ``z_rel_1..z_rel_8``
@@ -922,31 +955,36 @@ class RadDB:
         else:
             # Fall back to WGS-84 from the radar-relative metres.
             info = load_radar_info(radar, base)
-            ring = np.stack([
-                np.stack([tbl[f"x_{k}"].to_numpy(), tbl[f"y_{k}"].to_numpy()], axis=1)
-                for k in range(1, 5)
-            ], axis=1)
-            lat, lon, _ = cartesian_to_geographic(
-                ring[:, :, 0], ring[:, :, 1], np.zeros(ring.shape[:2]),
-                info["latitude"], info["longitude"], info["altitude"],
+            ring = np.stack(
+                [np.stack([tbl[f"x_{k}"].to_numpy(), tbl[f"y_{k}"].to_numpy()], axis=1) for k in range(1, 5)],
+                axis=1,
             )
-            ring = np.concatenate([np.stack([lon, lat], axis=2),
-                                   np.stack([lon[:, :1], lat[:, :1]], axis=2)], axis=1)
+            lat, lon, _ = cartesian_to_geographic(
+                ring[:, :, 0],
+                ring[:, :, 1],
+                np.zeros(ring.shape[:2]),
+                info["latitude"],
+                info["longitude"],
+                info["altitude"],
+            )
+            ring = np.concatenate([np.stack([lon, lat], axis=2), np.stack([lon[:, :1], lat[:, :1]], axis=2)], axis=1)
             gdf = gpd.GeoDataFrame(
                 {"gate_id": tbl["gate_id"].to_numpy(), "sweep": tbl["sweep"].to_numpy()},
-                geometry=_ccw_polygons(shapely.polygons(ring)), crs="EPSG:4326",
+                geometry=_ccw_polygons(shapely.polygons(ring)),
+                crs="EPSG:4326",
             )
             gdf.to_parquet(path)
             return str(path)
 
-        ring = np.stack([
-            np.stack([tbl[xc].to_numpy(), tbl[yc].to_numpy()], axis=1)
-            for xc, yc in zip(xcols, ycols)
-        ], axis=1)
-        ring = np.concatenate([ring, ring[:, :1, :]], axis=1)   # close the ring
+        ring = np.stack(
+            [np.stack([tbl[xc].to_numpy(), tbl[yc].to_numpy()], axis=1) for xc, yc in zip(xcols, ycols, strict=False)],
+            axis=1,
+        )
+        ring = np.concatenate([ring, ring[:, :1, :]], axis=1)  # close the ring
         gdf = gpd.GeoDataFrame(
             {"gate_id": tbl["gate_id"].to_numpy(), "sweep": tbl["sweep"].to_numpy()},
-            geometry=_ccw_polygons(shapely.polygons(ring)), crs=out_crs,
+            geometry=_ccw_polygons(shapely.polygons(ring)),
+            crs=out_crs,
         )
         gdf.to_parquet(path)
         return str(path)
@@ -957,8 +995,12 @@ class RadDB:
 
     # ---- what is on disk? ----
 
-    def inventory(self, datatree_dir: str | None = None, detailed: bool = False,
-                  archive_dir: str | None = None) -> None:
+    def inventory(
+        self,
+        datatree_dir: str | None = None,
+        detailed: bool = False,
+        archive_dir: str | None = None,
+    ) -> None:
         """Print what data is available on disk — which radars, which time periods.
 
         Answers "what can I analyse?" before :meth:`open` (archive side) or
@@ -979,9 +1021,9 @@ class RadDB:
 
         Examples
         --------
-        >>> db.inventory()                                  # what is archived
-        >>> db.inventory(detailed=True)                     # ... day by day
-        >>> db.inventory(datatree_dir="/data/MCH_datatree") # what could be archived
+        >>> db.inventory()  # what is archived
+        >>> db.inventory(detailed=True)  # ... day by day
+        >>> db.inventory(datatree_dir="/data/MCH_datatree")  # what could be archived
         """
         if datatree_dir is not None:
             self._inventory_datatrees(Path(datatree_dir), detailed)
@@ -1018,9 +1060,11 @@ class RadDB:
             if detailed:
                 _print_daily_breakdown(times)
                 if not is_valid_radar_name(r):
-                    print(f"      [!] {r!r} is not a usable radar name (1-{RADAR_CODE_LEN} "
-                          f"characters from [0-9A-Z]) — archive() would skip it unless you "
-                          f"pass radar='<name>'")
+                    print(
+                        f"      [!] {r!r} is not a usable radar name (1-{RADAR_CODE_LEN} "
+                        f"characters from [0-9A-Z]) — archive() would skip it unless you "
+                        f"pass radar='<name>'",
+                    )
         print("-" * 78)
         print(f"  archive with: db.archive(datatree_dir={str(directory)!r})")
         print("=" * 78)
@@ -1058,11 +1102,13 @@ class RadDB:
             if lut_path.exists():
                 try:
                     info = load_radar_info(r, base)
-                    print(f"      LUT: {_format_size(_path_size(lut_path))}, "
-                          f"{len(info.get('sweeps', {}))} sweeps, site "
-                          f"({info.get('latitude'):.4f}, {info.get('longitude'):.4f}) "
-                          f"at {info.get('altitude'):.0f} m")
-                except Exception as e:  # noqa: BLE001
+                    print(
+                        f"      LUT: {_format_size(_path_size(lut_path))}, "
+                        f"{len(info.get('sweeps', {}))} sweeps, site "
+                        f"({info.get('latitude'):.4f}, {info.get('longitude'):.4f}) "
+                        f"at {info.get('altitude'):.0f} m",
+                    )
+                except Exception as e:
                     print(f"      LUT: present, metadata unreadable ({e})")
             else:
                 print("      LUT: MISSING — open() will have no geometry for this radar")
@@ -1070,7 +1116,7 @@ class RadDB:
                 try:
                     cols = pl.read_parquet_schema(pol[0]).keys()
                     print(f"      columns: {', '.join(c for c in cols if c != 'gate_id')}")
-                except Exception as e:  # noqa: BLE001
+                except Exception as e:
                     print(f"      columns: unreadable ({e})")
             _print_daily_breakdown(times)
         print("-" * 78)
@@ -1088,7 +1134,7 @@ class RadDB:
         columns: list[str] | None = None,
         filters=None,
         archive_dir: str | None = None,
-    ) -> "RadDB":
+    ) -> RadDB:
         """Load archived data into a data-carrying ``RadDB``.
 
         Parameters
@@ -1124,8 +1170,11 @@ class RadDB:
         scans = []
         for r in radars:
             lf = scan_polar_parquet(
-                radar=normalize_radar_name(r), base_path=archive_dir,
-                start_time=start, end_time=end, columns=columns,
+                radar=normalize_radar_name(r),
+                base_path=archive_dir,
+                start_time=start,
+                end_time=end,
+                columns=columns,
             )
             if lf is not None:
                 scans.append(lf)
@@ -1141,7 +1190,7 @@ class RadDB:
             data = pl.DataFrame()
         return self._derive(data, archive_dir=archive_dir)
 
-    def filter(self, filters) -> "RadDB":
+    def filter(self, filters) -> RadDB:
         """Keep only gates satisfying ``filters`` (row removal); returns a new RadDB.
 
         ``filters`` is a dict ``{"var", "logic", "threshold"}`` or a list of such
@@ -1166,7 +1215,7 @@ class RadDB:
             if unknown:
                 raise KeyError(
                     f"cannot filter on {unknown}: not a data column "
-                    f"{sorted(data.columns)} nor a LUT column {sorted(geo.columns)}."
+                    f"{sorted(data.columns)} nor a LUT column {sorted(geo.columns)}.",
                 )
             data = data.join(geo.select("gate_id", *borrowed), on="gate_id", how="left")
 
@@ -1193,7 +1242,7 @@ class RadDB:
             return list(pl.scan_parquet(p).collect_schema().names())
         return []
 
-    def _borrow_lut_columns(self, cols: list[str]) -> "pl.DataFrame":
+    def _borrow_lut_columns(self, cols: list[str]) -> pl.DataFrame:
         """Load ``cols`` from the LUT for the gates present, keyed by ``gate_id``.
 
         The general form of :meth:`_gate_geometry` (which exposes only
@@ -1206,8 +1255,7 @@ class RadDB:
         paths = self._lut_paths()
         if not paths:
             raise ValueError(
-                "no LUT found for the radars in this data; cannot select on "
-                f"static columns {cols}."
+                "no LUT found for the radars in this data; cannot select on " f"static columns {cols}.",
             )
         present = self._require_data().select("gate_id").unique()
         parts = []
@@ -1215,13 +1263,18 @@ class RadDB:
             names = pl.scan_parquet(p).collect_schema().names()
             keep = ["gate_id", *[c for c in cols if c in names and c != "gate_id"]]
             parts.append(
-                pl.scan_parquet(p).select(keep).join(present.lazy(), on="gate_id", how="semi")
+                pl.scan_parquet(p).select(keep).join(present.lazy(), on="gate_id", how="semi"),
             )
-        return pl.concat(parts, how="vertical_relaxed").collect().unique(
-            subset="gate_id", maintain_order=True
+        return (
+            pl.concat(parts, how="vertical_relaxed")
+            .collect()
+            .unique(
+                subset="gate_id",
+                maintain_order=True,
+            )
         )
 
-    def sel(self, **indexers) -> "RadDB":
+    def sel(self, **indexers) -> RadDB:
         """Select gates by label, xarray-style; returns a **new** ``RadDB``.
 
         Each keyword names a column and gives what to keep:
@@ -1272,7 +1325,7 @@ class RadDB:
         data = self._require_data()
         lut_names = None  # loaded lazily, only if a static column is requested
 
-        resolved: list[tuple[str, object]] = []   # (column, value)
+        resolved: list[tuple[str, object]] = []  # (column, value)
         static: list[str] = []
         radar_from_gate_id = None
 
@@ -1294,12 +1347,12 @@ class RadDB:
                             name = self._time_column()
                         except KeyError:
                             raise KeyError(
-                                f"sel({key}=...): data has no time column."
+                                f"sel({key}=...): data has no time column.",
                             ) from None
                     else:
                         raise KeyError(
                             f"sel({key}=...): {name!r} is neither a data column "
-                            f"{sorted(data.columns)} nor a LUT column {sorted(lut_names)}."
+                            f"{sorted(data.columns)} nor a LUT column {sorted(lut_names)}.",
                         )
             if name not in data.columns:
                 static.append(name)
@@ -1313,11 +1366,12 @@ class RadDB:
             still_missing = [c for c in static if c not in borrowed]
             if still_missing:
                 raise KeyError(
-                    f"sel(): LUT has no column(s) {still_missing}; "
-                    f"available: {sorted(lut_tbl.columns)}."
+                    f"sel(): LUT has no column(s) {still_missing}; " f"available: {sorted(lut_tbl.columns)}.",
                 )
             data = data.join(
-                lut_tbl.select(["gate_id", *borrowed]), on="gate_id", how="left",
+                lut_tbl.select(["gate_id", *borrowed]),
+                on="gate_id",
+                how="left",
                 maintain_order="left",
             )
 
@@ -1325,20 +1379,17 @@ class RadDB:
             data = data.filter(_sel_expr(name, value, data.schema[name]))
 
         if radar_from_gate_id is not None:
-            wanted = (
-                [radar_from_gate_id] if isinstance(radar_from_gate_id, str)
-                else list(radar_from_gate_id)
-            )
+            wanted = [radar_from_gate_id] if isinstance(radar_from_gate_id, str) else list(radar_from_gate_id)
             codes = [encode_radar_code(r) for r in wanted]
             data = data.filter(
-                (pl.col("gate_id") // GATE_ID_RADAR_BASE).is_in(codes)
+                (pl.col("gate_id") // GATE_ID_RADAR_BASE).is_in(codes),
             )
 
         if borrowed:
             data = data.drop(borrowed)
         return self._derive(data)
 
-    def add_feature(self, name: str, compute_fn) -> "RadDB":
+    def add_feature(self, name: str, compute_fn) -> RadDB:
         """Add a computed column ``name`` and return a new RadDB.
 
         ``compute_fn`` receives the polars DataFrame and returns a polars
@@ -1355,8 +1406,7 @@ class RadDB:
 
     # ---- converters ----
 
-    def to_pandas(self, with_geometry: bool = False,
-                  with_polar_coords: bool = False) -> pd.DataFrame:
+    def to_pandas(self, with_geometry: bool = False, with_polar_coords: bool = False) -> pd.DataFrame:
         """Return the data as a pandas DataFrame.
 
         Parameters
@@ -1373,8 +1423,12 @@ class RadDB:
         """
         data = self._require_data()
         if with_geometry or with_polar_coords:
-            data = data.join(self._gate_geometry(with_polar_coords=with_polar_coords),
-                             on="gate_id", how="left", suffix="_lut")
+            data = data.join(
+                self._gate_geometry(with_polar_coords=with_polar_coords),
+                on="gate_id",
+                how="left",
+                suffix="_lut",
+            )
         return _decode_geometry(data.to_pandas())
 
     def to_geopandas(self, with_polar_coords: bool = False):
@@ -1445,7 +1499,7 @@ class RadDB:
                 f"to_geoarrow() would build {len(data):,} features, over the "
                 f"max_rows={max_rows:,} guardrail. Narrow the selection first "
                 "(crop_by_bbox / crop_by_polygone / crop_around_point / filter), "
-                "or pass max_rows=None to override."
+                "or pass max_rows=None to override.",
             )
         if columns is not None:
             data = data.select(dict.fromkeys(["gate_id", *columns]))
@@ -1458,10 +1512,12 @@ class RadDB:
             if len(radars) != 1:
                 raise ValueError(
                     f"polygon geometry needs a single radar; data spans {radars}. "
-                    "Select one with open(radars=...) or filter first."
+                    "Select one with open(radars=...) or filter first.",
                 )
             geom = gate_polygons_geoarrow(
-                normalize_radar_name(radars[0]), self._require_archive_dir(), gate_ids,
+                normalize_radar_name(radars[0]),
+                self._require_archive_dir(),
+                gate_ids,
             )
             field = geoarrow_field("geometry", geom.type, "polygon", "EPSG:4326")
         else:
@@ -1472,7 +1528,8 @@ class RadDB:
             )
             xy = np.column_stack([geo["longitude"].to_numpy(), geo["latitude"].to_numpy()])
             geom = pa.FixedSizeListArray.from_arrays(
-                pa.array(xy.reshape(-1), type=pa.float64()), 2
+                pa.array(xy.reshape(-1), type=pa.float64()),
+                2,
             )
             field = geoarrow_field("geometry", geom.type, "point", "EPSG:4326")
 
@@ -1505,7 +1562,7 @@ class RadDB:
             df_r = data.filter(pl.col("radar") == radar)
         else:
             df_r = data.filter(
-                (pl.col("gate_id") // GATE_ID_RADAR_BASE) == encode_radar_code(radar)
+                (pl.col("gate_id") // GATE_ID_RADAR_BASE) == encode_radar_code(radar),
             )
         if df_r.is_empty():
             raise ValueError(f"No rows for radar {radar!r} in data.")
@@ -1530,17 +1587,19 @@ class RadDB:
             df_vol = df_r
 
         return dataframe_to_datatree(
-            df=df_vol, radar=radar, base_path=str(self._require_archive_dir()),
+            df=df_vol,
+            radar=radar,
+            base_path=str(self._require_archive_dir()),
             label_column=label_column,
         )
 
     # ---- accessors (return values; repr prints the summary) ----
 
-    def head(self, n: int = 5) -> "pl.DataFrame":
+    def head(self, n: int = 5) -> pl.DataFrame:
         """First ``n`` rows (polars)."""
         return self._require_data().head(n)
 
-    def tail(self, n: int = 5) -> "pl.DataFrame":
+    def tail(self, n: int = 5) -> pl.DataFrame:
         """Last ``n`` rows (polars)."""
         return self._require_data().tail(n)
 
@@ -1578,7 +1637,7 @@ class RadDB:
     #: columns unless you are working in polar (antenna) space.
     _POLAR_COLS = ("range", "azimuth", "elevation_angle")
 
-    def _gate_geometry(self, with_polar_coords: bool = False) -> "pl.DataFrame":
+    def _gate_geometry(self, with_polar_coords: bool = False) -> pl.DataFrame:
         """LUT geometry (lon/lat/alt [+ projected x/y]) for the gates present.
 
         Returned as its **own** table — the LUT is never carried alongside the
@@ -1613,16 +1672,19 @@ class RadDB:
         xcol, ycol = f"x_{epsg}", f"y_{epsg}"
         if xcol not in geo.columns:
             raise ValueError(
-                f"LUT has no {xcol} column; archive with crs={epsg} to store projected coords."
+                f"LUT has no {xcol} column; archive with crs={epsg} to store projected coords.",
             )
-        return [float(geo[xcol].min()), float(geo[xcol].max()),
-                float(geo[ycol].min()), float(geo[ycol].max())]
+        return [float(geo[xcol].min()), float(geo[xcol].max()), float(geo[ycol].min()), float(geo[ycol].max())]
 
     def geographic_extent(self) -> list[float]:
         """Geographic bounding box ``[lon_min, lon_max, lat_min, lat_max]``."""
         geo = self._gate_geometry()
-        return [float(geo["longitude"].min()), float(geo["longitude"].max()),
-                float(geo["latitude"].min()), float(geo["latitude"].max())]
+        return [
+            float(geo["longitude"].min()),
+            float(geo["longitude"].max()),
+            float(geo["latitude"].min()),
+            float(geo["latitude"].max()),
+        ]
 
     def crs(self):
         """Projected CRS (x, y) as a ``pyproj.CRS``.
@@ -1636,7 +1698,8 @@ class RadDB:
         spec = self._crs
         if spec is None and self.archive_dir is not None:
             from raddb.aoi import aoi_epsg
-            for radar in (self.radars() if self.data is not None else []):
+
+            for radar in self.radars() if self.data is not None else []:
                 try:
                     spec = aoi_epsg(self.archive_dir, radar)
                     break
@@ -1644,8 +1707,7 @@ class RadDB:
                     continue
         if spec is None:
             raise ValueError(
-                "no projected CRS: this object has none and no archive records "
-                "one. Pass RadDB(crs=<epsg>)."
+                "no projected CRS: this object has none and no archive records " "one. Pass RadDB(crs=<epsg>).",
             )
         return pyproj.CRS.from_user_input(spec)
 
@@ -1659,8 +1721,14 @@ class RadDB:
     # EXTRACT AREA OF INTEREST
     # ================================================================
 
-    def crop_by_bbox(self, bounds=None, extent=None, crs: int | str | None = None,
-                     quicklook: bool = False, aoi_crs=None) -> "RadDB":
+    def crop_by_bbox(
+        self,
+        bounds=None,
+        extent=None,
+        crs: int | str | None = None,
+        quicklook: bool = False,
+        aoi_crs=None,
+    ) -> RadDB:
         """Crop to a rectangle; returns a new RadDB.
 
         Give **exactly one** of ``bounds=(xmin, ymin, xmax, ymax)`` or
@@ -1680,19 +1748,27 @@ class RadDB:
         geom = _reproject_to_aoi(shapely.box(xmin, ymin, xmax, ymax), crs, epsg)
         return self._derive(self._crop_to_aoi(self._require_data(), geom, quicklook, epsg))
 
-    def crop_by_polygone(self, polygon, crs: int | str | None = None,
-                         quicklook: bool = False, aoi_crs=None) -> "RadDB":
-        """Crop to an arbitrary polygon (shapely, GeoDataFrame/GeoSeries, or a
-        ``.shp``/``.geojson`` path); returns a new RadDB.  ``crs=None`` auto-detects.
+    def crop_by_polygone(self, polygon, crs: int | str | None = None, quicklook: bool = False, aoi_crs=None) -> RadDB:
+        """Crop to an arbitrary polygon; returns a new RadDB.
+
+        ``polygon`` is a shapely geometry, a GeoDataFrame/GeoSeries, or a
+        ``.shp``/``.geojson`` path.  ``crs=None`` auto-detects.
         """
         epsg = self._aoi_epsg(aoi_crs)
         geom = _load_aoi_polygon(polygon, crs, epsg)
         return self._derive(self._crop_to_aoi(self._require_data(), geom, quicklook, epsg))
 
-    def crop_around_point(self, point, distance: float, crs: int | str | None = None,
-                          quicklook: bool = False, aoi_crs=None) -> "RadDB":
-        """Crop to a circle of radius ``distance`` (metres) around ``point``;
-        returns a new RadDB.  ``point`` is ``(x, y)`` or a shapely Point in ``crs``.
+    def crop_around_point(
+        self,
+        point,
+        distance: float,
+        crs: int | str | None = None,
+        quicklook: bool = False,
+        aoi_crs=None,
+    ) -> RadDB:
+        """Crop to a circle of radius ``distance`` (metres) around ``point``.
+
+        Returns a new RadDB.  ``point`` is ``(x, y)`` or a shapely Point in ``crs``.
         """
         if distance <= 0:
             raise ValueError(f"distance must be positive (metres); got {distance!r}.")
@@ -1720,8 +1796,7 @@ class RadDB:
         radars = _radars_from_gate_ids(data["gate_id"].to_numpy())
         return aoi_epsg_for(self._require_archive_dir(), radars, override=override)
 
-    def _crop_to_aoi(self, data: "pl.DataFrame", geom, quicklook: bool = False,
-                     epsg: int | None = None) -> "pl.DataFrame":
+    def _crop_to_aoi(self, data: pl.DataFrame, geom, quicklook: bool = False, epsg: int | None = None) -> pl.DataFrame:
         """Intersect ``geom`` (in the AOI CRS) with LUT centroids and keep matching rows.
 
         This **selects** rows, it never widens them: the LUT geometry stays in its
@@ -1738,15 +1813,17 @@ class RadDB:
 
         if quicklook:
             from raddb.viz.plot import plot_aoi_quicklook
+
             # ponytail: the quicklook is the one consumer that needs coordinates,
             # so join them for the plot only — never into the returned frame.
             # _lut_centroids returns the archive's projected pair as plain x/y,
             # whatever EPSG that is — the quicklook draws in the AOI frame.
             selected = data_aoi.join(
-                aoi_cen.select("gate_id", "x", "y"), on="gate_id", how="left",
+                aoi_cen.select("gate_id", "x", "y"),
+                on="gate_id",
+                how="left",
             )
-            plot_aoi_quicklook(geom, selected=selected, radars=radars,
-                               base_path=self.archive_dir, epsg=epsg)
+            plot_aoi_quicklook(geom, selected=selected, radars=radars, base_path=self.archive_dir, epsg=epsg)
         return data_aoi
 
     def interactive_crop(self, **kwargs):
@@ -1757,15 +1834,22 @@ class RadDB:
         """
         self._require_data()
         from raddb.viz.interactive import AOISelector
+
         return AOISelector(self, **kwargs).display()
 
     # ================================================================
     # EXTRACT CROSS-SECTION
     # ================================================================
 
-    def extract_cross_section(self, p1, p2, crs: int | str | None = None,
-                              beamwidth_deg: float = 1.0, quicklook: bool = False,
-                              aoi_crs=None) -> "RadDB":
+    def extract_cross_section(
+        self,
+        p1,
+        p2,
+        crs: int | str | None = None,
+        beamwidth_deg: float = 1.0,
+        quicklook: bool = False,
+        aoi_crs=None,
+    ) -> RadDB:
         """Extract a vertical cross-section along the line ``p1 -> p2``; returns a new RadDB.
 
         The line need not pass through a radar.  Each selected gate gets a polygon
@@ -1797,7 +1881,11 @@ class RadDB:
         base = self._require_archive_dir()
         cs_t = _lut_cs_table(base, radars, beamwidth_deg=beamwidth_deg, epsg=epsg)
         cs_geom = _cross_section_gates(
-            cs_t, (x1, y1), (x2, y2), beamwidth_deg=beamwidth_deg, base_path=base,
+            cs_t,
+            (x1, y1),
+            (x2, y2),
+            beamwidth_deg=beamwidth_deg,
+            base_path=base,
             epsg=epsg,
         )
 
@@ -1810,28 +1898,48 @@ class RadDB:
         # The geometry table computes in the projected frame under plain x/y.
         # Publish it as x_<epsg>/y_<epsg>, and give x/y back to the LUT's
         # radar-relative metres, so both meanings are unambiguous downstream.
-        cs_geom = cs_geom.rename(columns={
-            "x": f"x_{epsg}", "y": f"y_{epsg}", "x_rel": "x", "y_rel": "y",
-        })
+        cs_geom = cs_geom.rename(
+            columns={
+                "x": f"x_{epsg}",
+                "y": f"y_{epsg}",
+                "x_rel": "x",
+                "y_rel": "y",
+            },
+        )
         geom_cols = [
-            c for c in (
-                "radar", "sweep", "azimuth", "range", "elevation_angle",
-                "x", "y", f"x_{epsg}", f"y_{epsg}", "altitude",
-                "d_center", "z_center",
+            c
+            for c in (
+                "radar",
+                "sweep",
+                "azimuth",
+                "range",
+                "elevation_angle",
+                "x",
+                "y",
+                f"x_{epsg}",
+                f"y_{epsg}",
+                "altitude",
+                "d_center",
+                "z_center",
                 "cs_polygon",
             )
             if c in cs_geom.columns and (c == "cs_polygon" or c not in data_cs.columns)
         ]
         if not data_cs.is_empty() and len(cs_geom):
             data_cs = data_cs.join(
-                _to_polars(cs_geom[["gate_id", *geom_cols]]), on="gate_id", how="left",
+                _to_polars(cs_geom[["gate_id", *geom_cols]]),
+                on="gate_id",
+                how="left",
             )
 
         if quicklook:
             from raddb.viz.plot import plot_aoi_quicklook
+
             plot_aoi_quicklook(
                 shapely.LineString([(x1, y1), (x2, y2)]),
-                selected=data_cs, radars=radars, base_path=self.archive_dir,
+                selected=data_cs,
+                radars=radars,
+                base_path=self.archive_dir,
                 # The section was resolved in `epsg`; without it the quicklook
                 # falls back to LV95 and frames a non-Swiss archive over
                 # Switzerland.
@@ -1848,11 +1956,11 @@ class RadDB:
         if not save:
             return
         import matplotlib.pyplot as plt
+
         fig = getattr(ret, "figure", None) or getattr(getattr(ret, "axes", None), "figure", None) or plt.gcf()
         fig.savefig(save, bbox_inches="tight", dpi=kwargs.get("dpi", 150))
 
-    def plot_ppi(self, sweep: int | str = 1, variable: str = "DBZH", radar: str | None = None,
-                 timestep=None, **kwargs):
+    def plot_ppi(self, sweep: int | str = 1, variable: str = "DBZH", radar: str | None = None, timestep=None, **kwargs):
         """Plot a PPI of one sweep — one plot, one figure.
 
         Gate footprints come from the ``h_plane`` lattice, so a filtered, ``sel``-ed
@@ -1863,11 +1971,10 @@ class RadDB:
         (``coords``, ``context``, ``save``, ...).
         """
         from raddb.viz.plot import plot_ppi as _plot_ppi
-        return _plot_ppi(self, sweep=sweep, variable=variable, radar=radar,
-                         timestep=timestep, **kwargs)
 
-    def plot_rhi(self, azimuth: float = 0.0, variable: str = "DBZH", radar: str | None = None,
-                 timestep=None, **kwargs):
+        return _plot_ppi(self, sweep=sweep, variable=variable, radar=radar, timestep=timestep, **kwargs)
+
+    def plot_rhi(self, azimuth: float = 0.0, variable: str = "DBZH", radar: str | None = None, timestep=None, **kwargs):
         """Plot an RHI along one azimuth, stacking every sweep.
 
         Gate faces come from the ``v_plane`` lattice in the
@@ -1875,11 +1982,10 @@ class RadDB:
         :func:`raddb.viz.plot.plot_rhi` for the full parameter list.
         """
         from raddb.viz.plot import plot_rhi as _plot_rhi
-        return _plot_rhi(self, azimuth=azimuth, variable=variable, radar=radar,
-                         timestep=timestep, **kwargs)
 
-    def plot_cappi(self, altitude: float, variable: str = "DBZH", radar: str | None = None,
-                   timestep=None, **kwargs):
+        return _plot_rhi(self, azimuth=azimuth, variable=variable, radar=radar, timestep=timestep, **kwargs)
+
+    def plot_cappi(self, altitude: float, variable: str = "DBZH", radar: str | None = None, timestep=None, **kwargs):
         """Plot a CAPPI — a horizontal slice at constant ``altitude`` [m].
 
         Where :meth:`plot_ppi` fixes the sweep, this fixes the altitude and pulls
@@ -1888,11 +1994,10 @@ class RadDB:
         for ``overlap`` / ``fill_lowest``.
         """
         from raddb.viz.plot import plot_cappi as _plot_cappi
-        return _plot_cappi(self, altitude=altitude, variable=variable, radar=radar,
-                           timestep=timestep, **kwargs)
 
-    def plot_vcs(self, line=None, variable: str = "DBZH", radar: str | None = None,
-                 timestep=None, **kwargs):
+        return _plot_cappi(self, altitude=altitude, variable=variable, radar=radar, timestep=timestep, **kwargs)
+
+    def plot_vcs(self, line=None, variable: str = "DBZH", radar: str | None = None, timestep=None, **kwargs):
         """Plot a vertical cross-section along an arbitrary line.
 
         Either pass ``line=`` — ``(p1, p2)``, a shapely ``LineString``, or a
@@ -1902,16 +2007,16 @@ class RadDB:
         archive it first.  See :func:`raddb.viz.plot.plot_vcs`.
         """
         from raddb.viz.plot import plot_vcs as _plot_vcs
-        return _plot_vcs(self, line=line, variable=variable, radar=radar,
-                         timestep=timestep, **kwargs)
 
-    def plot_cross_section(self, variable: str = "DBZH", radar: str | None = None,
-                           timestep=None, **kwargs):
+        return _plot_vcs(self, line=line, variable=variable, radar=radar, timestep=timestep, **kwargs)
+
+    def plot_cross_section(self, variable: str = "DBZH", radar: str | None = None, timestep=None, **kwargs):
         """Deprecated alias of :meth:`plot_vcs`."""
         import warnings
+
         warnings.warn(
             "RadDB.plot_cross_section is deprecated; use plot_vcs() instead.",
-            DeprecationWarning, stacklevel=2,
+            DeprecationWarning,
+            stacklevel=2,
         )
         return self.plot_vcs(variable=variable, radar=radar, timestep=timestep, **kwargs)
-

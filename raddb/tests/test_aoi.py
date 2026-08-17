@@ -40,8 +40,8 @@ from raddb.aoi import (
 from raddb.main import RadDB
 from raddb.tests.conftest import RADAR, US_EPSG, US_SITE, relocate
 
+# The synthetic fixture's own site — ``(longitude, latitude)``.
 CH_SITE = (7.0, 46.0)
-"""The synthetic fixture's own site — ``(longitude, latitude)``."""
 
 
 # ---------------------------------------------------------------------------
@@ -114,10 +114,10 @@ def test_mixed_crs_radars_refuse_a_shared_aoi(tmp_path, make_datatree):
     """No silent reprojection: the user must name the common frame."""
     base = tmp_path / "mixed"
     RadDB(archive_dir=str(base), crs=SWISS_EPSG).archive(
-        datatree={"A": [make_datatree(n_az=24, n_rng=20, n_sweeps=2)]}
+        datatree={"A": [make_datatree(n_az=24, n_rng=20, n_sweeps=2)]},
     )
     RadDB(archive_dir=str(base), crs=US_EPSG).archive(
-        datatree={"D": [relocate(make_datatree(n_az=24, n_rng=20, n_sweeps=2), *US_SITE)]}
+        datatree={"D": [relocate(make_datatree(n_az=24, n_rng=20, n_sweeps=2), *US_SITE)]},
     )
 
     assert aoi_epsg_for(base, ["A"]) == SWISS_EPSG
@@ -229,7 +229,10 @@ def test_a_crop_radius_is_true_metres(us_archive_dir):
     lon = lut["longitude"].to_numpy()
     lat = lut["latitude"].to_numpy()
     _, _, ground = pyproj.Geod(ellps="WGS84").inv(
-        np.full(lon.size, US_SITE[0]), np.full(lat.size, US_SITE[1]), lon, lat
+        np.full(lon.size, US_SITE[0]),
+        np.full(lat.size, US_SITE[1]),
+        lon,
+        lat,
     )
 
     centroids = _lut_centroids(us_archive_dir, [RADAR])
@@ -574,7 +577,10 @@ def test_gate_footprints_come_from_the_h_plane_lattice(archive_dir):
 
     h_plane = RadDB(archive_dir=str(archive_dir)).get_h_plane(RADAR, per_gate=True)
     aligned = pl.DataFrame({"gate_id": cs_table["gate_id"].to_numpy()}).join(
-        h_plane, on="gate_id", how="left", maintain_order="left"
+        h_plane,
+        on="gate_id",
+        how="left",
+        maintain_order="left",
     )
     reference = shapely.polygons(
         np.stack(
@@ -583,7 +589,7 @@ def test_gate_footprints_come_from_the_h_plane_lattice(archive_dir):
                 for k in range(1, 5)
             ],
             axis=1,
-        ).astype(np.float64)
+        ).astype(np.float64),
     )
 
     assert np.allclose(shapely.get_coordinates(footprints), shapely.get_coordinates(reference))
@@ -611,14 +617,18 @@ def test_a_cross_section_height_follows_the_v_plane(plot_rdb, plot_archive_dir, 
     from raddb.tests.conftest import PLOT_RADAR
 
     cs = plot_rdb.extract_cross_section(
-        (plot_site[0] - 12_000, plot_site[1] - 12_000), (plot_site[0] + 12_000, plot_site[1] + 12_000)
+        (plot_site[0] - 12_000, plot_site[1] - 12_000),
+        (plot_site[0] + 12_000, plot_site[1] + 12_000),
     )
     pdf = _decode_geometry(cs.data.to_pandas()).head(200)
     heights = np.array([p.bounds[3] - p.bounds[1] for p in pdf["cs_polygon"]])
 
     v_plane = RadDB(archive_dir=str(plot_archive_dir)).get_v_plane(PLOT_RADAR, per_gate=True)
     aligned = pl.DataFrame({"gate_id": pdf["gate_id"].to_numpy()}).join(
-        v_plane, on="gate_id", how="left", maintain_order="left"
+        v_plane,
+        on="gate_id",
+        how="left",
+        maintain_order="left",
     )
     thickness = 0.5 * (
         np.abs(aligned["z_asl_4"].to_numpy() - aligned["z_asl_1"].to_numpy())

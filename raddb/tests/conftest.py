@@ -16,26 +16,26 @@ import pandas as pd
 import pytest
 import xarray as xr
 
+# Default radar name used across the suite.
 RADAR = "A"
-"""Default radar name used across the suite."""
 
+# Default number of azimuth rays in a synthetic sweep.
 N_AZ = 12
-"""Default number of azimuth rays in a synthetic sweep."""
 
+# Default number of range bins in a synthetic sweep.
 N_RNG = 24
-"""Default number of range bins in a synthetic sweep."""
 
+# Latitude of the synthetic radar site, in degrees north.
 SITE_LAT = 46.0
-"""Latitude of the synthetic radar site, in degrees north."""
 
+# Longitude of the synthetic radar site, in degrees east.
 SITE_LON = 7.0
-"""Longitude of the synthetic radar site, in degrees east."""
 
+# Altitude of the synthetic radar site, in metres above sea level.
 SITE_ALT = 1000.0
-"""Altitude of the synthetic radar site, in metres above sea level."""
 
+# CH1903+/LV95 — the projected CRS valid at the synthetic site.
 SWISS_EPSG = 2056
-"""CH1903+/LV95 — the projected CRS valid at the synthetic site."""
 
 
 @pytest.fixture(autouse=True)
@@ -148,16 +148,14 @@ def relocate(dt: xr.DataTree, longitude: float, latitude: float) -> xr.DataTree:
     return xr.DataTree.from_dict(out)
 
 
+# Rad4Alp antenna drift, measured from real METRANET files. Every ray is reported ~0.0327
+# degrees past its nominal angle, with a ~0.0069 degree spread. ``gate_id`` resolves azimuth to
+# 0.1 degrees, so an unsnapped drifting ray lands in a neighbouring bin and its gates match no
+# LUT row.
 MCH_BIAS, MCH_SPREAD = 0.0327, 0.0069
-"""Rad4Alp antenna drift, measured from real METRANET files.
 
-Every ray is reported ~0.0327 degrees past its nominal angle, with a ~0.0069 degree
-spread.  ``gate_id`` resolves azimuth to 0.1 degrees, so an unsnapped drifting ray lands
-in a neighbouring bin and its gates match no LUT row.
-"""
-
+# WSR-88D antenna drift: zero-mean, spread up to ~0.045 degrees.
 NEXRAD_SPREAD = 0.045
-"""WSR-88D antenna drift: zero-mean, spread up to ~0.045 degrees."""
 
 
 def jitter_azimuths(azimuths, rng, bias: float = 0.0, spread: float = MCH_SPREAD):
@@ -216,11 +214,11 @@ def retime(dt: xr.DataTree, when, rng, bias: float = 0.0, spread: float = MCH_SP
     return xr.DataTree.from_dict(out)
 
 
+# KTLX, Oklahoma — ``(longitude, latitude)``. UTM 14N (EPSG:32614) is valid here.
 US_SITE = (-97.2775, 35.3331)
-"""KTLX, Oklahoma — ``(longitude, latitude)``.  UTM 14N (EPSG:32614) is valid here."""
 
+# UTM zone 14N — the projected CRS valid at :data:`US_SITE`.
 US_EPSG = 32614
-"""UTM zone 14N — the projected CRS valid at :data:`US_SITE`."""
 
 
 @pytest.fixture
@@ -318,20 +316,18 @@ def archive_dir_two_radars(tmp_path, make_datatree):
 
     base = tmp_path / "archive_multi"
     RadDB(archive_dir=str(base), crs=SWISS_EPSG).archive(
-        datatree={RADAR: [make_datatree()], "D": [make_datatree()]}
+        datatree={RADAR: [make_datatree()], "D": [make_datatree()]},
     )
     return base
 
 
+# Volume shape used by the plotting fixtures. Six sweeps and 60 range bins are the minimum that
+# makes the CAPPI and RHI invariants meaningful — a two-sweep volume has no beam overlap to
+# resolve.
 PLOT_GEOMETRY = {"n_az": 72, "n_rng": 60, "n_sweeps": 6}
-"""Volume shape used by the plotting fixtures.
 
-Six sweeps and 60 range bins are the minimum that makes the CAPPI and RHI invariants
-meaningful — a two-sweep volume has no beam overlap to resolve.
-"""
-
+# Radar name used by the plotting fixtures.
 PLOT_RADAR = "L"
-"""Radar name used by the plotting fixtures."""
 
 
 @pytest.fixture(scope="session")
@@ -350,7 +346,7 @@ def plot_archive_dir(tmp_path_factory):
 
     base = tmp_path_factory.mktemp("plot_archive")
     RadDB(archive_dir=str(base), crs=SWISS_EPSG).archive(
-        datatree={PLOT_RADAR: [build_datatree(**PLOT_GEOMETRY)]}
+        datatree={PLOT_RADAR: [build_datatree(**PLOT_GEOMETRY)]},
     )
     return base
 

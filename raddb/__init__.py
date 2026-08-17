@@ -8,6 +8,7 @@ xradar coordinate layout can be archived and reconstructed.
 MCH/METRANET-specific ingestion code lives in the private ``raddb.mch``
 subpackage (gitignored in the public repository; never imported here).
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -19,92 +20,91 @@ from importlib.metadata import PackageNotFoundError, version
 # imported (by geopandas, cartopy, raddb.lut, ...).
 from raddb._proj import PROJ_DATA
 
-# High-level interface
-from raddb.main import RadDB
+# Discovery functions
+from raddb.discovery import find_datatree_files
 
 # Helper functions
+# Filtering & archiving functions
 from raddb.helper import (
+    FILTER_LOGICS,
     RADAR_ALPHABET,
     RADAR_CODE_LEN,
-    read_parquet_files,
+    StageTimer,
     check_dataframe,
+    filter_df,
+    filter_dt,
     is_valid_radar_name,
     list_sweep_names,
     normalize_radar_name,
-    StageTimer,
+    read_parquet_files,
 )
 
 # I/O functions
 from raddb.io_core import (
-    datatree_to_dataset,
+    add_feature_to_df,
+    add_feature_to_dt,
+    archive_multiple_volumes,
+    archive_volume,
+    archive_volumes_multi_radar,
+    dataframe_to_datatree,
     datatree_to_dataframe,
+    datatree_to_dataset,
     datatree_to_parquet,
+    join_labels_with_lut,
+    labels_to_dataframe,
     open_any_datatree,
     parquet_to_dataframe,
     parquet_to_datatree,
-    scan_polar_parquet,
-    dataframe_to_datatree,
-    labels_to_dataframe,
-    join_labels_with_lut,
-    reconstruct_sweep_dataset,
     reconstruct_datatree,
-    add_feature_to_df,
-    add_feature_to_dt,
+    reconstruct_sweep_dataset,
+    scan_polar_parquet,
 )
-
-# Discovery functions
-from raddb.discovery import find_datatree_files
 
 # LUT functions
 from raddb.lut import (
     AZIMUTH_SCALE,
+    DEFAULT_BEAMWIDTH_DEG,
     GATE_ID_RADAR_BASE,
-    azimuth_grid_tolerance,
-    load_azimuth_grids,
-    nominal_azimuth_grid,
-    snap_azimuths_to_grid,
     GATE_ID_VERSION,
+    LUT_FILES,
     MAX_RADAR_CODE,
     RADAR_TO_IDX,
-    DEFAULT_BEAMWIDTH_DEG,
-    decode_gate_radars,
-    decode_radar_code,
-    encode_radar_code,
-    LUT_FILES,
+    add_lut_projection,
     antenna_vectors_to_cartesian,
+    azimuth_grid_tolerance,
     build_gate_planes,
     cappi_chords,
     cartesian_to_geographic,
     compute_gate_xyz,
     compute_sweep_corners,
+    decode_gate_radars,
+    decode_radar_code,
+    encode_radar_code,
     ensure_gate_planes,
     gate_corner_table,
     generate_gate_id,
     generate_lut_from_datatree,
-    load_plane_nodes,
-    load_radar_lut,
-    load_radar_info,
-    lut_file_path,
     get_full_sweep_index,
-    add_lut_projection,
+    load_azimuth_grids,
+    load_plane_nodes,
+    load_radar_info,
+    load_radar_lut,
+    lut_file_path,
+    nominal_azimuth_grid,
+    snap_azimuths_to_grid,
 )
 
-# Filtering & archiving functions
-from raddb.helper import FILTER_LOGICS, filter_df, filter_dt
-from raddb.io_core import (
-    archive_volume,
-    archive_multiple_volumes,
-    archive_volumes_multi_radar,
-)
+# High-level interface
+from raddb.main import RadDB
 
 # Plotting functions
 from raddb.viz.plot import (
-    plot_ppi,
-    plot_rhi,
     plot_cappi,
-    plot_vcs,
     plot_cross_section,
     plot_latent_scatter,
+    plot_ppi,
+    plot_rhi,
+    plot_vcs,
 )
 
 __all__ = [

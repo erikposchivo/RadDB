@@ -1,7 +1,4 @@
-"""
-raddb/aoi.py
-------------
-Area-of-Interest (AOI) selection internals.
+"""Area-of-Interest (AOI) selection internals.
 
 These are the **private** building blocks behind the public ``RadDB.crop_*``
 methods.  The design is LUT-first: an AOI geometry is intersected once with the
@@ -24,6 +21,7 @@ The centroid tables are **polars** frames (the package-wide default); the spatia
 predicate itself runs on plain numpy arrays via shapely, so no geometry objects
 are ever materialised for the ~1.7M gates of a full LUT.
 """
+
 from __future__ import annotations
 
 import logging
@@ -77,7 +75,7 @@ def aoi_epsg(base_path: str | Path, radar: str) -> int:
         f"radar {radar!r} has no projected coordinates in its LUT, so AOI "
         f"operations (crop_*, extract_cross_section, plot_vcs) cannot run. "
         f"Re-archive it with a CRS valid at its site — RadDB(crs=<epsg>) — or "
-        f"pass aoi_crs=<epsg> for this call."
+        f"pass aoi_crs=<epsg> for this call.",
     )
 
 
@@ -104,9 +102,10 @@ def aoi_epsg_for(base_path: str | Path, radars: list[str], override=None) -> int
         raise ValueError(
             f"these radars were archived in different CRSs ({pairs}), so there is "
             f"no single frame to run the AOI in. Pass aoi_crs=<epsg> valid for all "
-            f"of them, or restrict the selection to radars sharing one."
+            f"of them, or restrict the selection to radars sharing one.",
         )
     return distinct.pop()
+
 
 # Per-radar centroid cache: {(base_path, radar): DataFrame}. LUTs are static, so
 # a radar's centroid table is loaded from disk at most once per session.
@@ -152,9 +151,15 @@ def _lut_centroids(base_path: str | Path, radars: list[str], epsg=None) -> pl.Da
         frames.append(cached)
     if not frames:
         return pl.DataFrame(
-            schema={"gate_id": pl.Int64, "radar": pl.String, "sweep": pl.Int32,
-                    "x": pl.Float64, "y": pl.Float64,
-                    "z": pl.Float64, "altitude": pl.Float64}
+            schema={
+                "gate_id": pl.Int64,
+                "radar": pl.String,
+                "sweep": pl.Int32,
+                "x": pl.Float64,
+                "y": pl.Float64,
+                "z": pl.Float64,
+                "altitude": pl.Float64,
+            },
         )
     return pl.concat(frames, how="vertical")
 
@@ -171,7 +176,7 @@ def _load_one_centroid_table(base: Path, radar: str, epsg: int) -> pl.DataFrame:
     lut_path = base / radar / "LUT" / f"{radar}_LUT.parquet"
     if not lut_path.exists():
         raise FileNotFoundError(
-            f"LUT not found at {lut_path}. Cannot resolve AOI for radar {radar!r}."
+            f"LUT not found at {lut_path}. Cannot resolve AOI for radar {radar!r}.",
         )
 
     # Column names come from the parquet footer — reading the whole LUT just to
@@ -183,8 +188,7 @@ def _load_one_centroid_table(base: Path, radar: str, epsg: int) -> pl.DataFrame:
         cols = [c for c in _CENTROID_BASE_COLS if c in available] + [xc, yc]
         lut = pl.read_parquet(lut_path, columns=cols).rename({xc: "x", yc: "y"})
     else:
-        cols = [c for c in (*_CENTROID_BASE_COLS, "latitude", "longitude")
-                if c in available]
+        cols = [c for c in (*_CENTROID_BASE_COLS, "latitude", "longitude") if c in available]
         lut = add_lut_projection(pl.read_parquet(lut_path, columns=cols), epsg=int(epsg))
         # Rename first: the select below must see the renamed columns, not x_<epsg>.
         lut = lut.rename({xc: "x", yc: "y"})
@@ -369,7 +373,9 @@ def _swiss_border_2056():
         from cartopy.io import shapereader as shpreader
 
         path = shpreader.natural_earth(
-            resolution="10m", category="cultural", name="admin_0_countries"
+            resolution="10m",
+            category="cultural",
+            name="admin_0_countries",
         )
         geom = None
         for rec in shpreader.Reader(path).records():
@@ -378,9 +384,8 @@ def _swiss_border_2056():
                 geom = rec.geometry
                 break
         # simplify (~300 m) to keep the outline light, then project to LV95.
-        _SWISS_BORDER = (None if geom is None
-                         else _reproject_to_aoi(geom.simplify(0.003), 4326, SWISS_EPSG))
-    except Exception as exc:  # noqa: BLE001 - context is optional; never fatal
+        _SWISS_BORDER = None if geom is None else _reproject_to_aoi(geom.simplify(0.003), 4326, SWISS_EPSG)
+    except Exception as exc:  # - context is optional; never fatal
         logger.warning("Swiss border context unavailable (%s); drawn without it.", exc)
         _SWISS_BORDER = None
     return _SWISS_BORDER
@@ -413,11 +418,11 @@ def _resolve_context(context, aoi_epsg: int = SWISS_EPSG):
     if isinstance(context, str):
         if context.lower() in ("switzerland", "ch", "suisse", "schweiz", "svizzera"):
             border = _swiss_border_2056()
-            if border is None or aoi_epsg == SWISS_EPSG:
-                return border
-            return _reproject_to_aoi(border, SWISS_EPSG, aoi_epsg)
+            if border is not None and aoi_epsg != SWISS_EPSG:
+                border = _reproject_to_aoi(border, SWISS_EPSG, aoi_epsg)
+            return border
         raise ValueError(
-            f"unknown context {context!r}; use 'switzerland', None, or a geometry."
+            f"unknown context {context!r}; use 'switzerland', None, or a geometry.",
         )
     if isinstance(context, _base.BaseGeometry):
         return context  # assume already in the quicklook frame
@@ -426,9 +431,8 @@ def _resolve_context(context, aoi_epsg: int = SWISS_EPSG):
             geom = context.union_all() if hasattr(context, "union_all") else context.unary_union
             crs = getattr(context, "crs", None)
             epsg = crs.to_epsg() if crs is not None else None
-            return (_reproject_to_aoi(geom, epsg, aoi_epsg)
-                    if epsg not in (None, aoi_epsg) else geom)
-        except Exception as exc:  # noqa: BLE001
+            return _reproject_to_aoi(geom, epsg, aoi_epsg) if epsg not in (None, aoi_epsg) else geom
+        except Exception as exc:
             logger.warning("could not resolve context geometry (%s); drawn without it.", exc)
             return None
     return None
@@ -437,6 +441,7 @@ def _resolve_context(context, aoi_epsg: int = SWISS_EPSG):
 # ============================================================================
 # Polygon AOI loading  (shapely / GeoDataFrame / shapefile / GeoJSON)
 # ============================================================================
+
 
 def _load_aoi_polygon(polygon, crs=None, aoi_epsg: int | None = None):
     """Resolve a polygon AOI to a shapely geometry in ``aoi_epsg``.
@@ -463,14 +468,14 @@ def _load_aoi_polygon(polygon, crs=None, aoi_epsg: int | None = None):
     else:
         raise TypeError(
             f"crop_polygon: unsupported polygon input {type(polygon).__name__}; pass a "
-            "shapely (Multi)Polygon, a GeoDataFrame, or a .shp / .geojson path."
+            "shapely (Multi)Polygon, a GeoDataFrame, or a .shp / .geojson path.",
         )
 
     if geom is None or geom.is_empty:
         raise ValueError("crop_polygon: the polygon AOI is empty.")
     if geom.geom_type not in ("Polygon", "MultiPolygon"):
         raise ValueError(
-            f"crop_polygon expects a Polygon/MultiPolygon; got {geom.geom_type}."
+            f"crop_polygon expects a Polygon/MultiPolygon; got {geom.geom_type}.",
         )
 
     # No fallback CRS: when neither the caller nor the file says, the geometry is
@@ -486,7 +491,7 @@ def _crs_to_spec(crs):
     try:
         epsg = crs.to_epsg()
         return epsg if epsg is not None else crs
-    except Exception:  # noqa: BLE001
+    except Exception:
         return crs
 
 
@@ -513,6 +518,7 @@ _read_polygon_file = _read_geometry_file
 
 def _read_geojson(path: Path):
     import json
+
     from shapely.geometry import shape
 
     data = json.loads(path.read_text())
@@ -521,15 +527,22 @@ def _read_geojson(path: Path):
         geoms = [shape(f["geometry"]) for f in data.get("features", []) if f.get("geometry")]
     elif kind == "Feature":
         geoms = [shape(data["geometry"])]
-    elif kind in ("Polygon", "MultiPolygon", "GeometryCollection", "LineString",
-                  "MultiLineString", "Point", "MultiPoint"):
+    elif kind in (
+        "Polygon",
+        "MultiPolygon",
+        "GeometryCollection",
+        "LineString",
+        "MultiLineString",
+        "Point",
+        "MultiPoint",
+    ):
         # A bare top-level geometry, as hand-written files and some exporters
         # produce.  Lines matter here: a cross-section is defined by one.
         geoms = [shape(data)]
     else:
         raise ValueError(
             f"Unrecognised GeoJSON object type {kind!r}; expected a "
-            "FeatureCollection, a Feature, or a bare geometry."
+            "FeatureCollection, a Feature, or a bare geometry.",
         )
     if not geoms:
         raise ValueError(f"No geometries found in {path}.")
@@ -554,8 +567,7 @@ def _read_shapefile(path: Path):
         import shapefile  # pyshp
     except ImportError as exc:
         raise ImportError(
-            "Reading .shp needs pyshp (or pass a GeoDataFrame / .geojson). "
-            "Install with: pip install pyshp"
+            "Reading .shp needs pyshp (or pass a GeoDataFrame / .geojson). " "Install with: pip install pyshp",
         ) from exc
     from shapely.geometry import shape
 
@@ -577,7 +589,7 @@ def _prj_crs(prj_path: Path):
         import pyproj
 
         return pyproj.CRS.from_wkt(wkt).to_epsg() or wkt
-    except Exception:  # noqa: BLE001 - broken PROJ db: sniff for Swiss LV95, else pass WKT
+    except Exception:  # - broken PROJ db: sniff for Swiss LV95, else pass WKT
         low = wkt.lower()
         if "2056" in wkt or "ch1903+" in low or "lv95" in low:
             return SWISS_EPSG
@@ -600,15 +612,23 @@ def _prj_crs(prj_path: Path):
 # ============================================================================
 
 _CS_LUT_BASE_COLS = [
-    "gate_id", "sweep", "azimuth", "range", "elevation_angle", "altitude",
+    "gate_id",
+    "sweep",
+    "azimuth",
+    "range",
+    "elevation_angle",
+    "altitude",
 ]
 # Per-radar cross-section geometry cache: {(base_path, radar, beamwidth): df}.
 _CS_CACHE: dict = {}
 
 
 def _lut_cs_table(
-    base_path: str | Path, radars: list[str], beamwidth_deg: float = 1.0, epsg=None
-) -> "pl.DataFrame":
+    base_path: str | Path,
+    radars: list[str],
+    beamwidth_deg: float = 1.0,
+    epsg=None,
+) -> pl.DataFrame:
     """Static per-gate geometry for cross-sections: centers + half-dimensions.
 
     Half-dimensions (prototype convention):
@@ -623,11 +643,10 @@ def _lut_cs_table(
         lut_path = Path(base_path) / radar / "LUT" / f"{radar}_LUT.parquet"
         if not lut_path.exists():
             raise FileNotFoundError(
-                f"LUT not found at {lut_path}. Cannot build cross-section for radar {radar!r}."
+                f"LUT not found at {lut_path}. Cannot build cross-section for radar {radar!r}.",
             )
         # mtime in the key: a LUT regenerated in a live session must invalidate.
-        key = (str(base_path), radar, float(beamwidth_deg), int(epsg),
-               lut_path.stat().st_mtime_ns)
+        key = (str(base_path), radar, float(beamwidth_deg), int(epsg), lut_path.stat().st_mtime_ns)
         t = _CS_CACHE.get(key)
         if t is None:
             available = set(pq.read_schema(lut_path).names)
@@ -658,16 +677,14 @@ def _lut_cs_table(
                 .sort(["sweep", "range"])
                 .group_by("sweep")
                 .agg(
-                    pl.col("range").cast(pl.Float64).diff().drop_nulls()
-                    .median().alias("_spacing")
+                    pl.col("range").cast(pl.Float64).diff().drop_nulls().median().alias("_spacing"),
                 )
             )
             t = (
                 t.join(spacing, on="sweep", how="left")
                 .with_columns(
                     (pl.col("_spacing") / 2.0).cast(pl.Float64).alias("dR"),
-                    (pl.col("range").cast(pl.Float64)
-                     * float(np.tan(np.deg2rad(beamwidth_deg / 2.0)))).alias("dA"),
+                    (pl.col("range").cast(pl.Float64) * float(np.tan(np.deg2rad(beamwidth_deg / 2.0)))).alias("dA"),
                     pl.lit(radar).alias("radar"),
                 )
                 .drop("_spacing")
@@ -679,8 +696,7 @@ def _lut_cs_table(
     return pl.concat(frames, how="vertical_relaxed")
 
 
-def _lut_corner_rings(base_path, sub: pd.DataFrame, kind: str, cols: tuple[str, str],
-                      epsg: int):
+def _lut_corner_rings(base_path, sub: pd.DataFrame, kind: str, cols: tuple[str, str], epsg: int):
     """Per-gate corner rings read from a LUT lattice, aligned to ``sub``'s rows.
 
     Returns an ``(n, 4, 2)`` array, or ``None`` when the lattice cannot supply
@@ -698,8 +714,10 @@ def _lut_corner_rings(base_path, sub: pd.DataFrame, kind: str, cols: tuple[str, 
             frames.append(gate_corner_table(radar, base_path, kind=kind))
         except (FileNotFoundError, KeyError) as exc:
             logger.warning(
-                "radar %s: %s lattice unavailable (%s); falling back to the "
-                "planar gate approximation.", radar, kind, exc,
+                "radar %s: %s lattice unavailable (%s); falling back to the " "planar gate approximation.",
+                radar,
+                kind,
+                exc,
             )
             return None
     tbl = pl.concat(frames, how="vertical_relaxed") if len(frames) > 1 else frames[0]
@@ -708,32 +726,38 @@ def _lut_corner_rings(base_path, sub: pd.DataFrame, kind: str, cols: tuple[str, 
     need = [f"{cols[0]}_{k}" for k in range(1, 5)] + [f"{cols[1]}_{k}" for k in range(1, 5)]
     if not all(c in tbl.columns for c in need):
         logger.warning(
-            "the %s lattice has no %s/%s columns; falling back to the planar "
-            "gate approximation.", kind, cols[0], cols[1],
+            "the %s lattice has no %s/%s columns; falling back to the planar " "gate approximation.",
+            kind,
+            cols[0],
+            cols[1],
         )
         return None
 
     # Left-join keeps ``sub``'s row order, which the callers index against.
     aligned = pl.DataFrame({"gate_id": gate_ids}).join(
-        tbl.select(["gate_id", *need]), on="gate_id", how="left", maintain_order="left"
+        tbl.select(["gate_id", *need]),
+        on="gate_id",
+        how="left",
+        maintain_order="left",
     )
-    ring = np.stack([
-        np.stack([aligned[f"{cols[0]}_{k}"].to_numpy(),
-                  aligned[f"{cols[1]}_{k}"].to_numpy()], axis=1)
-        for k in range(1, 5)
-    ], axis=1).astype(np.float64)
+    ring = np.stack(
+        [
+            np.stack([aligned[f"{cols[0]}_{k}"].to_numpy(), aligned[f"{cols[1]}_{k}"].to_numpy()], axis=1)
+            for k in range(1, 5)
+        ],
+        axis=1,
+    ).astype(np.float64)
     if not np.isfinite(ring).all():
         logger.warning(
-            "%d gate(s) have no %s geometry; falling back to the planar "
-            "approximation for this call.",
-            int((~np.isfinite(ring).all(axis=(1, 2))).sum()), kind,
+            "%d gate(s) have no %s geometry; falling back to the planar " "approximation for this call.",
+            int((~np.isfinite(ring).all(axis=(1, 2))).sum()),
+            kind,
         )
         return None
     return ring
 
 
-def _gate_footprints(sub: pd.DataFrame, half_bw_tan: float, base_path=None,
-                     epsg: int | None = None) -> np.ndarray:
+def _gate_footprints(sub: pd.DataFrame, half_bw_tan: float, base_path=None, epsg: int | None = None) -> np.ndarray:
     """Horizontal footprint quad per gate (the prototype's ``Eo_xyz`` face).
 
     Preferred source is the ``h_plane`` lattice, i.e. the same exact curved-beam
@@ -762,10 +786,15 @@ def _gate_footprints(sub: pd.DataFrame, half_bw_tan: float, base_path=None,
     for s_r, s_a in ((-1, -1), (-1, 1), (1, 1), (1, -1)):
         dr = s_r * dR
         da = s_a * (rng + dr) * half_bw_tan
-        rings.append(np.stack([
-            xc + dr * cos_el * sin_az + da * cos_az,
-            yc + dr * cos_el * cos_az - da * sin_az,
-        ], axis=1))
+        rings.append(
+            np.stack(
+                [
+                    xc + dr * cos_el * sin_az + da * cos_az,
+                    yc + dr * cos_el * cos_az - da * sin_az,
+                ],
+                axis=1,
+            ),
+        )
     return shapely.polygons(np.stack(rings, axis=1))
 
 
@@ -785,14 +814,11 @@ def _beam_profile(base_path, sub: pd.DataFrame, epsg: int):
     d_far = 0.5 * (ring[:, 1, 0] + ring[:, 2, 0])
     z_near = 0.5 * (ring[:, 0, 1] + ring[:, 3, 1])
     z_far = 0.5 * (ring[:, 1, 1] + ring[:, 2, 1])
-    half_thick = 0.5 * (
-        np.abs(ring[:, 3, 1] - ring[:, 0, 1]) + np.abs(ring[:, 2, 1] - ring[:, 1, 1])
-    ) * 0.5
+    half_thick = 0.5 * (np.abs(ring[:, 3, 1] - ring[:, 0, 1]) + np.abs(ring[:, 2, 1] - ring[:, 1, 1])) * 0.5
     return d_near, d_far, z_near, z_far, half_thick
 
 
-def _endpoint_d_z(pt_xy: np.ndarray, sub: pd.DataFrame, origin: tuple[float, float],
-                  profile=None):
+def _endpoint_d_z(pt_xy: np.ndarray, sub: pd.DataFrame, origin: tuple[float, float], profile=None):
     """(distance-along-line, altitude) of chord endpoints on the beam surface.
 
     With a ``profile`` from :func:`_beam_profile` the endpoint's altitude is
@@ -831,7 +857,7 @@ def _endpoint_d_z(pt_xy: np.ndarray, sub: pd.DataFrame, origin: tuple[float, flo
 
 
 def _cross_section_gates(
-    cs_t: "pl.DataFrame | pd.DataFrame",
+    cs_t: pl.DataFrame | pd.DataFrame,
     p1: tuple[float, float],
     p2: tuple[float, float],
     beamwidth_deg: float = 1.0,
@@ -866,8 +892,7 @@ def _cross_section_gates(
     # --- vectorised point-to-segment prefilter (replaces the KDTree) ---
     px = cs_t["x"].to_numpy(dtype=np.float64)
     py = cs_t["y"].to_numpy(dtype=np.float64)
-    diag = np.hypot(cs_t["dR"].to_numpy(dtype=np.float64),
-                    cs_t["dA"].to_numpy(dtype=np.float64)) * 1.05
+    diag = np.hypot(cs_t["dR"].to_numpy(dtype=np.float64), cs_t["dA"].to_numpy(dtype=np.float64)) * 1.05
     t_par = ((px - ox) * (ex - ox) + (py - oy) * (ey - oy)) / (length * length)
     t_par = np.clip(t_par, 0.0, 1.0)
     dist = np.hypot(px - (ox + t_par * (ex - ox)), py - (oy + t_par * (ey - oy)))
@@ -895,8 +920,7 @@ def _cross_section_gates(
         return sub.assign(cs_polygon=pd.Series(dtype=object))
 
     # --- endpoint (d, z) on the beam, ordered near/far along the line ---
-    profile = (_beam_profile(base_path, sub, epsg)
-               if base_path is not None and epsg is not None else None)
+    profile = _beam_profile(base_path, sub, epsg) if base_path is not None and epsg is not None else None
     d0, z0 = _endpoint_d_z(p0, sub, (ox, oy), profile)
     d1, z1 = _endpoint_d_z(p1_, sub, (ox, oy), profile)
     swap = d0 > d1
@@ -906,19 +930,20 @@ def _cross_section_gates(
     z_far = np.where(swap, z0, z1)
 
     # --- perpendicular ±dE offsets -> (d, z) polygon per gate ---
-    incl = np.arctan2(z_far - z_near, d_far - d_near)   # chord inclination
+    incl = np.arctan2(z_far - z_near, d_far - d_near)  # chord inclination
     s_i, c_i = np.sin(incl), np.cos(incl)
-    if profile is not None:
-        # Half the beam's real vertical extent at this gate, from v_plane.
-        dE = profile[4]
-    else:
-        dE = sub["dA"].to_numpy(dtype=np.float64)       # dE == dA (same beamwidth)
-    ring = np.stack([
-        np.stack([d_near - s_i * dE, z_near + c_i * dE], axis=1),   # near, top
-        np.stack([d_far - s_i * dE, z_far + c_i * dE], axis=1),     # far, top
-        np.stack([d_far + s_i * dE, z_far - c_i * dE], axis=1),     # far, bottom
-        np.stack([d_near + s_i * dE, z_near - c_i * dE], axis=1),   # near, bottom
-    ], axis=1)
+    # Half the beam's real vertical extent at this gate, from v_plane; without a
+    # profile fall back to dA (dE == dA, same beamwidth).
+    dE = profile[4] if profile is not None else sub["dA"].to_numpy(dtype=np.float64)
+    ring = np.stack(
+        [
+            np.stack([d_near - s_i * dE, z_near + c_i * dE], axis=1),  # near, top
+            np.stack([d_far - s_i * dE, z_far + c_i * dE], axis=1),  # far, top
+            np.stack([d_far + s_i * dE, z_far - c_i * dE], axis=1),  # far, bottom
+            np.stack([d_near + s_i * dE, z_near - c_i * dE], axis=1),  # near, bottom
+        ],
+        axis=1,
+    )
 
     out = sub.copy()
     # Only the gate centre and its footprint are published.  The chord endpoints

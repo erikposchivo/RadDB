@@ -16,8 +16,8 @@ from raddb.hc_mapping import (
     PYART_TO_OPE,
 )
 
+# Operational classes 0-8, stored in parquet as 1-9.
 N_CLASSES = 9
-"""Operational classes 0-8, stored in parquet as 1-9."""
 
 
 def test_hc_map_dict_is_a_contiguous_zero_based_range():
@@ -28,7 +28,7 @@ def test_hc_map_dict_is_a_contiguous_zero_based_range():
 
 def test_hc_classes_is_hc_map_dict_in_order():
     """``HC_CLASSES[i]`` is ``HC_MAP_DICT[i]``; index 0 corresponds to parquet 1."""
-    assert HC_CLASSES == [HC_MAP_DICT[k] for k in range(N_CLASSES)]
+    assert [HC_MAP_DICT[k] for k in range(N_CLASSES)] == HC_CLASSES
     assert len(HC_CLASSES) == N_CLASSES
 
 
@@ -53,7 +53,7 @@ def test_hc_colors_are_recognised_by_matplotlib():
 
 def test_hc_color_by_label_matches_the_two_lists():
     """The convenience lookup is exactly ``zip(HC_CLASSES, HC_COLORS)``."""
-    assert HC_COLOR_BY_LABEL == dict(zip(HC_CLASSES, HC_COLORS))
+    assert dict(zip(HC_CLASSES, HC_COLORS, strict=False)) == HC_COLOR_BY_LABEL
     assert len(HC_COLOR_BY_LABEL) == N_CLASSES
 
 

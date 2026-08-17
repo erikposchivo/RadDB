@@ -19,8 +19,8 @@ import pytest
 
 from raddb._proj import PROJ_DATA, fix_foreign_proj_data
 
+# This interpreter's own bundled PROJ data directory (may not exist).
 OWN_PROJ_DIR = Path(sys.prefix) / "share" / "proj"
-"""This interpreter's own bundled PROJ data directory (may not exist)."""
 
 
 def test_fix_foreign_proj_data(monkeypatch, tmp_path):
@@ -50,7 +50,8 @@ def test_fix_foreign_proj_data(monkeypatch, tmp_path):
         # 3b. No own data to point at, so the foreign variables are dropped entirely
         #     and pyproj falls back to the data it bundles.
         assert result is None
-        assert "PROJ_DATA" not in os.environ and "PROJ_LIB" not in os.environ
+        assert "PROJ_DATA" not in os.environ
+        assert "PROJ_LIB" not in os.environ
 
     # 4. An in-prefix directory is this environment's own -> left alone.
     if (OWN_PROJ_DIR / "proj.db").is_file():

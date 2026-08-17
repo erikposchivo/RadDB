@@ -73,7 +73,7 @@ def test_results_are_sorted_by_filename_timestamp(tmp_path):
     ]
 
 
-def test_unparseable_names_sort_last(tmp_path):
+def test_unparsable_names_sort_last(tmp_path):
     """A file with no timestamp is kept but pushed to the end, never interleaved."""
     (tmp_path / "aaa_no_timestamp.nc").touch()
     (tmp_path / "vol_20240101_000000.nc").touch()
@@ -81,8 +81,8 @@ def test_unparseable_names_sort_last(tmp_path):
     assert [p.name for p in find_datatree_files(tmp_path)][-1] == "aaa_no_timestamp.nc"
 
 
-def test_time_range_filters_and_keeps_unparseable_names(tmp_path):
-    """Out-of-range files drop out; an unparseable name survives by default."""
+def test_time_range_filters_and_keeps_unparsable_names(tmp_path):
+    """Out-of-range files drop out; an unparsable name survives by default."""
     for name in (
         "vol_20240101_000000.nc",
         "vol_20240101_010000.nc",
@@ -96,7 +96,7 @@ def test_time_range_filters_and_keeps_unparseable_names(tmp_path):
     assert [p.name for p in found] == ["vol_20240101_010000.nc", "no_timestamp_here.nc"]
 
 
-def test_strict_time_drops_unparseable_names(tmp_path):
+def test_strict_time_drops_unparsable_names(tmp_path):
     """``strict_time=True`` refuses to guess: no timestamp, no file."""
     (tmp_path / "vol_20240101_010000.nc").touch()
     (tmp_path / "no_timestamp_here.nc").touch()
@@ -243,23 +243,27 @@ def test_parse_volume_time_reads_a_metranet_stem():
     """``XXXYYJJJHHMM...``: 3-char prefix, 2-digit year, day-of-year, hour, minute."""
     # MLA 24 194 23 30 -> 2024, day 194, 23:30
     assert _parse_volume_time("MLA2419423300U") == datetime.datetime(2024, 1, 1) + datetime.timedelta(
-        days=193, hours=23, minutes=30
+        days=193,
+        hours=23,
+        minutes=30,
     )
     # HZT 21 240 10 00 -> 2021, day 240, 10:00
     assert _parse_volume_time("HZT2124010000L") == datetime.datetime(2021, 1, 1) + datetime.timedelta(
-        days=239, hours=10, minutes=0
+        days=239,
+        hours=10,
+        minutes=0,
     )
 
 
 def test_parse_volume_time_falls_back_to_the_epoch():
-    """An unparseable stem sorts first rather than raising mid-scan."""
+    """An unparsable stem sorts first rather than raising mid-scan."""
     assert _parse_volume_time("garbage") == datetime.datetime(1970, 1, 1)
 
 
 def test_group_files_by_volume():
     """Sweep files sharing a filename stem belong to one volume."""
     grouped = _group_files_by_volume(
-        ["/a/MLA2419423300U.001", "/b/MLA2419423300U.002", "/a/MLA2419423305U.001"]
+        ["/a/MLA2419423300U.001", "/b/MLA2419423300U.002", "/a/MLA2419423305U.001"],
     )
 
     assert sorted(grouped) == ["MLA2419423300U", "MLA2419423305U"]
