@@ -51,13 +51,15 @@ MAX_RADAR_CODE: int = 36 ** RADAR_CODE_LEN - 1
 #: 2. radar code = base-36 of the zero-padded 4-character name (``"A"`` ->
 #:    ``"000A"`` -> 10, ``"KTLX"`` -> 971493) — 1,679,616 radars.
 #:
-#: The two disagree for every name (``"L"`` is 11 under v1, 21 under v2), so a
-#: v1 archive must be migrated before it is read; see
-#: ``raddb/tools/migrate_gate_id_v2.py``.
+#: The two disagree for every name (``"L"`` is 11 under v1, 21 under v2).  Only
+#: v2 is ever written or read, and nothing detects v1 — a v1 archive loads
+#: silently and decodes to the wrong radar.  The migration script that used to
+#: convert one has been removed, so re-archive from the source volumes instead.
 GATE_ID_VERSION: int = 2
 
-#: The v1 radar index, kept only so the migration script can compute the offset
-#: between an archived ``gate_id`` and its v2 replacement.
+#: The v1 radar index, kept only so the offset between a v1 ``gate_id`` and its
+#: v2 replacement stays derivable (and testable) after the migration script was
+#: removed.
 LEGACY_RADAR_TO_IDX: dict[str, int] = {chr(ord("A") + i): i for i in range(26)}
 
 
@@ -358,6 +360,11 @@ def compute_gate_xyz(
 AZIMUTH_SCALE: int = 10
 AZIMUTH_STEPS: int = 360 * AZIMUTH_SCALE
 
+#: Smallest share of a rotation's grid points that must actually carry a ray.
+#: Real volumes drop the odd ray (718 of 720 on WSR-88D, 358 of 360), which is a
+#: full rotation with holes; a sector scan is not, and must still be refused.
+MIN_ROTATION_COVERAGE: float = 0.95
+
 
 def _round_half_up(values) -> np.ndarray:
     """``round`` that always breaks .5 upwards, unlike numpy's banker's rounding.
@@ -381,11 +388,19 @@ def nominal_azimuth_grid(azimuths) -> np.ndarray:
     LUT row — 6% of gates per volume on Rad4Alp, 35% on WSR-88D.
 
     So the grid is derived from the scan strategy rather than from one volume's
-    measurements: ``step = 360 / n_rays``, and the offset is the circular mean
-    of the measured residuals (circular because the offset is only defined
-    modulo one step).  That gives 1.0° for a 360-ray Rad4Alp sweep and 0.5° for
-    a 720-ray NEXRAD super-resolution sweep, from the same rule — which is why
-    no per-network resolution has to be configured.
+    measurements: the spacing is the **median gap between neighbouring rays**,
+    and the offset is the circular mean of the measured residuals (circular
+    because the offset is only defined modulo one step).  That gives 1.0° for a
+    360-ray Rad4Alp sweep and 0.5° for a 720-ray NEXRAD super-resolution sweep,
+    from the same rule — which is why no per-network resolution has to be
+    configured.
+
+    The spacing is a **median rather than ``360 / n_rays``** because a real
+    sweep drops the odd ray — 718 or 719 of 720 on WSR-88D, 358 of 360 — and
+    dividing by the ray count reads that as a 0.5014° strategy, refusing a
+    volume that is simply a rotation with holes.  The returned grid always
+    covers the whole rotation, so the missing rays keep their place in it and a
+    later volume that does record them still joins.
 
     Parameters
     ----------
@@ -395,52 +410,96 @@ def nominal_azimuth_grid(azimuths) -> np.ndarray:
     Returns
     -------
     np.ndarray of int64
-        ``n_rays`` sorted azimuths in tenths of a degree, in ``[0, 3600)``.
+        The rotation's ``n_grid`` sorted azimuths in tenths of a degree, in
+        ``[0, 3600)`` — ``n_grid >= n_rays``, and larger when rays are missing.
 
     Raises
     ------
     ValueError
         If the sweep has no rays, if the spacing is finer than the 0.1°
-        ``gate_id`` resolution, or if two grid points collide after rounding.
+        ``gate_id`` resolution, if two grid points collide after rounding, or if
+        the rays do not cover a full rotation (a sector scan).
     """
     az = np.asarray(azimuths, dtype=np.float64).ravel() % 360.0
     n = az.size
     if n == 0:
         raise ValueError("cannot derive an azimuth grid from a sweep with no rays.")
 
-    step = 360.0 / n
+    az_sorted = np.sort(az)
+    # Gaps around the circle, the wrap included, so one full turn is covered.
+    gaps = np.diff(np.append(az_sorted, az_sorted[0] + 360.0))
+    spacing = float(np.median(gaps))
+    if spacing <= 0.0:
+        raise ValueError(
+            f"the {n} rays of this sweep are not distinct enough to give a ray "
+            f"spacing (median gap {spacing:.6f}°)."
+        )
+
+    # How many ray slots each gap spans: 1 between neighbours, 2 or more across
+    # a hole.  Summing them counts the slots of the whole rotation, so the grid
+    # size is the ray count plus whatever is missing.  The median spacing on its
+    # own is too noisy to divide 360 by — antenna jitter alone turns a 360-ray
+    # Rad4Alp sweep into 361 — but it is easily good enough to tell a 1-slot gap
+    # from a 2-slot one.
+    slots_per_gap = _round_half_up(gaps / spacing).astype(np.int64)
+    n_grid = int(slots_per_gap.sum())
+    if n_grid < n:
+        raise ValueError(
+            f"the {n} rays of this sweep do not sit one per slot on a "
+            f"{spacing:.4f}° grid (two rays share a slot)."
+        )
+    step = 360.0 / n_grid
     if step * AZIMUTH_SCALE < 1.0:
         raise ValueError(
-            f"{n} rays give a {step:.4f}° ray spacing, finer than the "
+            f"{n_grid} rays give a {step:.4f}° ray spacing, finer than the "
             f"{1 / AZIMUTH_SCALE}° azimuth resolution of gate_id; two rays would "
             f"share one gate_id."
         )
 
-    # Residual of each ray against a step grid anchored at 0.  It is defined
-    # only modulo one step, so it is averaged as an angle on that period —
-    # a plain mean would be wrong whenever the residuals straddle the wrap.
-    resid = np.sort(az) - np.arange(n) * step
-    phase = 2.0 * np.pi * resid / step
-    offset = step * np.arctan2(np.sin(phase).mean(), np.cos(phase).mean()) / (2.0 * np.pi)
-
-    grid = (np.arange(n) * step + offset) % 360.0
-    az_int = np.sort(_round_half_up(grid * AZIMUTH_SCALE).astype(np.int64) % AZIMUTH_STEPS)
-    if np.unique(az_int).size != n:
+    # A rotation may have holes but must still be a rotation: a sector scan (or
+    # a sweep with a large gap) would otherwise be silently mangled — 90 rays
+    # over a 90° sector get a 4° grid and collapse onto 23 of its points.
+    if n > n_grid or n < MIN_ROTATION_COVERAGE * n_grid:
         raise ValueError(
-            f"the {n}-ray azimuth grid collides after rounding to "
+            f"these {n} rays do not form a full rotation of evenly spaced rays "
+            f"(they span {np.ptp(az_sorted):.1f}° with a derived spacing of "
+            f"{step:.4f}°, filling {n}/{n_grid} of the rotation), so they have no "
+            f"nominal azimuth grid. Sector scans and irregular sweeps are not "
+            f"supported."
+        )
+
+    # Residual of each ray against the slot it occupies on a step grid anchored
+    # at 0.  Slots, not ray indices: after a hole the two part company, and ray
+    # indices would drag every later residual a full step out.
+    slots = np.concatenate([[0], np.cumsum(slots_per_gap[:-1])])
+    resid = az_sorted - slots * step
+
+    # The residual is defined only modulo one step, so it is averaged about the
+    # first ray's own residual, with the rest wrapped into ±half a step of it.
+    # Averaging on the raw period instead would put the mean on the seam exactly
+    # when the rays are centred on half-steps — which is every 720-ray NEXRAD
+    # sweep — and a 1e-16 wobble there moves the whole grid by a tenth of a
+    # degree, differently for a volume that dropped a ray than for one that
+    # did not.
+    anchor = float(resid[0])
+    centred = (resid - anchor + step / 2.0) % step - step / 2.0
+    offset = anchor + float(centred.mean())
+
+    grid = (np.arange(n_grid) * step + offset) % 360.0
+    az_int = np.sort(_round_half_up(grid * AZIMUTH_SCALE).astype(np.int64) % AZIMUTH_STEPS)
+    if np.unique(az_int).size != n_grid:
+        raise ValueError(
+            f"the {n_grid}-ray azimuth grid collides after rounding to "
             f"{1 / AZIMUTH_SCALE}°; this scan strategy cannot be stored in gate_id."
         )
 
     # The grid is only meaningful if it actually fits the rays it came from.
-    # It assumes a full rotation of evenly spaced rays, so a sector scan (or a
-    # sweep with a large gap) would otherwise be silently mangled: 90 rays over
-    # a 90° sector get a 4° grid and collapse onto 23 of its points.
     snapped, dist = snap_azimuths_to_grid(az, az_int)
     tol = azimuth_grid_tolerance(az_int)
     if np.unique(snapped).size != n or (dist.size and dist.max() > tol):
         raise ValueError(
             f"these {n} rays do not form a full rotation of evenly spaced rays "
-            f"(they span {np.ptp(np.sort(az)):.1f}° with a derived spacing of "
+            f"(they span {np.ptp(az_sorted):.1f}° with a derived spacing of "
             f"{step:.4f}°), so they have no nominal azimuth grid. Sector scans and "
             f"irregular sweeps are not supported."
         )
@@ -840,7 +899,24 @@ def generate_lut_from_datatree(
                 f"grid (two rays snap together), so this sweep has no nominal "
                 f"azimuth grid."
             )
-        azimuths = snapped.astype(np.float64) / AZIMUTH_SCALE
+
+        elevation_angle = float(ds.coords.get("elevation_angle", np.mean(elevations)))
+
+        # The LUT covers the whole rotation, not only the rays this volume
+        # happened to record: a volume that drops a ray still defines the grid
+        # point, and a later volume that does record it must find a row to join.
+        # Empty for a complete sweep, so nothing changes for one.
+        absent = np.setdiff1d(az_grid, snapped)
+        azimuths = np.concatenate([snapped, absent]).astype(np.float64) / AZIMUTH_SCALE
+        elevations = np.concatenate(
+            [np.asarray(elevations, dtype=np.float64), np.full(absent.size, elevation_angle)]
+        )
+        if absent.size:
+            logger.info(
+                "sweep %d: %d of %d rays missing from this volume; their grid "
+                "points are still written to the LUT.",
+                sweep_idx, absent.size, az_grid.size,
+            )
         n_az, n_rng = len(azimuths), len(ranges)
         logger.debug(
             "sweep %d: %d rays snapped to the nominal grid, max move %.3f°.",
@@ -856,9 +932,6 @@ def generate_lut_from_datatree(
         site_lat = float(ds.coords.get("latitude", 0.0))
         site_lon = float(ds.coords.get("longitude", 0.0))
         site_alt = float(ds.coords.get("altitude", 0.0))
-        elevation_angle = float(
-            ds.coords.get("elevation_angle", np.mean(elevations))
-        )
 
         if radar_lat is None:
             radar_lat = site_lat

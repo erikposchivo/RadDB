@@ -268,14 +268,29 @@ def _ccw_polygons(polys: np.ndarray) -> np.ndarray:
     return np.where(ccw, polys, shapely.reverse(polys))
 
 
+_FILTER_KEYS = ("var", "logic", "threshold")
+
+
 def _resolve_filters(filters) -> list[tuple[str, str, float]]:
-    """Normalize a filter dict / list-of-dicts to ``[(var, logic, threshold), ...]``."""
+    """Normalize a filter dict / list-of-dicts to ``[(var, logic, threshold), ...]``.
+
+    Unknown keys are rejected rather than ignored: ``threshold`` defaults to 0,
+    so a misspelt one (``{"var": "DBZH", "logic": ">", "value": 45}``) would
+    otherwise silently become ``DBZH > 0`` — a filter that keeps everything and
+    looks like it ran.
+    """
     if filters is None:
         return []
     if isinstance(filters, dict):
         filters = [filters]
     specs = []
     for f in filters:
+        extra = [k for k in f if k not in _FILTER_KEYS]
+        if extra:
+            raise KeyError(
+                f"unknown filter key(s) {sorted(extra)} in {f!r}; "
+                f"a filter is {{{', '.join(repr(k) for k in _FILTER_KEYS)}}}."
+            )
         specs.append((f["var"], f.get("logic", ">"), f.get("threshold", 0.0)))
     return specs
 
@@ -543,7 +558,11 @@ class RadDB:
         Returns
         -------
         dict
-            ``{"n_archived": int, "n_failed": int, "radars": [...]}``.
+            ``{"n_archived": int, "n_failed": int, "n_skipped": int,
+            "radars": [...]}``.  The three counts sum to the number of volumes
+            attempted: ``n_skipped`` covers volumes that held nothing to
+            archive (every gate failed the filter, or an all-``NaT`` time),
+            which is neither a success nor a failure.
         """
         archive_dir = Path(archive_dir) if archive_dir is not None else self.archive_dir
         if archive_dir is None:
@@ -578,11 +597,11 @@ class RadDB:
 
         t0 = time.time()
         if datatree is not None:
-            radars_done, n_ok, n_fail = self._archive_in_memory(
+            radars_done, n_ok, n_fail, n_skip = self._archive_in_memory(
                 datatree, radar, archive_dir, crs, feat, logic, thr
             )
         else:
-            radars_done, n_ok, n_fail = self._archive_from_disk(
+            radars_done, n_ok, n_fail, n_skip = self._archive_from_disk(
                 datatree_dir, radar, archive_dir, crs, feat, logic, thr, time_period
             )
 
@@ -592,10 +611,18 @@ class RadDB:
         print(f"  crs         : {crs}")
         print(f"  radars      : {radars_done}")
         print(f"  filter      : keep {feat} {logic} {thr}")
-        print(f"  volumes     : {n_ok} archived, {n_fail} failed")
+        print(
+            f"  volumes     : {n_ok} archived, {n_fail} failed"
+            + (f", {n_skip} skipped (nothing to archive)" if n_skip else "")
+        )
         print(f"  elapsed     : {_format_elapsed_time(time.time() - t0)}")
         print("=" * 70)
-        return {"n_archived": n_ok, "n_failed": n_fail, "radars": radars_done}
+        return {
+            "n_archived": n_ok,
+            "n_failed": n_fail,
+            "n_skipped": n_skip,
+            "radars": radars_done,
+        }
 
     def _ensure_lut(self, radar: str, sample_dt, archive_dir: Path, crs) -> None:
         """Generate the per-radar LUT from a sample volume if it does not exist."""
@@ -640,7 +667,8 @@ class RadDB:
             # record an archive is how a broken volume gets announced as stored.
             flat = [r for v in results.values() for r in v]
             n_ok = sum(1 for r in flat if r.get("success"))
-            return list(results.keys()), n_ok, len(flat) - n_ok
+            n_skip = sum(1 for r in flat if r.get("skipped"))
+            return list(results.keys()), n_ok, len(flat) - n_ok - n_skip, n_skip
 
         if radar is None or not isinstance(radar, str):
             raise ValueError(
@@ -650,11 +678,13 @@ class RadDB:
         r = normalize_radar_name(radar)
         if isinstance(datatree, xr.DataTree):
             self._ensure_lut(r, datatree, archive_dir, crs)
-            archive_volume(
+            path = archive_volume(
                 dt=datatree, radar=r, base_output_path=str(archive_dir),
                 filter_feature=feat, filter_threshold=thr, filter_logic=logic,
             )
-            return [r], 1, 0
+            # A None path means the volume held nothing to archive; counting it
+            # as archived is how an empty volume gets reported as stored.
+            return ([r], 0, 0, 1) if path is None else ([r], 1, 0, 0)
         # list or {label: DataTree}
         first = next(iter(datatree.values())) if isinstance(datatree, dict) else datatree[0]
         self._ensure_lut(r, first, archive_dir, crs)
@@ -664,7 +694,8 @@ class RadDB:
             verbose=False,
         )
         n_ok = sum(1 for res in results if res.get("success"))
-        return [r], n_ok, len(results) - n_ok
+        n_skip = sum(1 for res in results if res.get("skipped"))
+        return [r], n_ok, len(results) - n_ok - n_skip, n_skip
 
     def _archive_from_disk(self, datatree_dir, radar, archive_dir, crs, feat, logic, thr, time_period):
         archive_dir = Path(archive_dir)
@@ -690,15 +721,16 @@ class RadDB:
                 wanted = {normalize_radar_name(x) for x in radar}
                 by_radar = {r: fs for r, fs in by_radar.items() if r in wanted}
 
-        radars_done, total_ok, total_fail = [], 0, 0
+        radars_done, total_ok, total_fail, total_skip = [], 0, 0, 0
         for r, rfiles in sorted(by_radar.items()):
-            n_ok, n_fail = self._archive_files_one_radar(
+            n_ok, n_fail, n_skip = self._archive_files_one_radar(
                 r, sorted(rfiles), archive_dir, crs, feat, logic, thr
             )
             radars_done.append(r)
             total_ok += n_ok
             total_fail += n_fail
-        return radars_done, total_ok, total_fail
+            total_skip += n_skip
+        return radars_done, total_ok, total_fail, total_skip
 
     def _archive_files_one_radar(self, radar, files, archive_dir, crs, feat, logic, thr):
         """Archive every saved DataTree file for one radar (LUT autogen, resume)."""
@@ -706,7 +738,7 @@ class RadDB:
             radar = normalize_radar_name(radar)
         except ValueError as exc:
             print(f"  [skip] {exc} Skipping {len(files)} file(s).")
-            return (0, 0)
+            return (0, 0, len(files))
         archive_dir.mkdir(parents=True, exist_ok=True)
         ckpt = archive_dir / f"_archive_checkpoint_datatrees_{radar}.txt"
         seen = _load_checkpoint(ckpt)
@@ -721,7 +753,7 @@ class RadDB:
             except Exception as e:  # noqa: BLE001
                 print(f"  [{radar}] LUT generation failed: {e}")
 
-        n_ok = n_fail = 0
+        n_ok = n_fail = n_skip = 0
         for f in files:
             stem = Path(f).stem
             key = f"{radar}:{stem}"
@@ -732,19 +764,25 @@ class RadDB:
                 dt = preopened.pop(f, None)
                 if dt is None:
                     dt = open_any_datatree(f)
-                archive_volume(
+                path = archive_volume(
                     dt=dt, radar=radar, base_output_path=str(archive_dir),
                     filter_feature=feat, filter_threshold=thr, filter_logic=logic,
                     volume=stem,
                 )
+                # Checkpoint either way: a volume with nothing to archive is
+                # settled, and re-reading it on resume would only skip again.
                 _append_checkpoint(ckpt, key)
                 seen.add(key)
-                n_ok += 1
+                if path is None:
+                    n_skip += 1
+                    print(f"  [{radar}] SKIP {stem}: no gates to archive")
+                else:
+                    n_ok += 1
                 del dt
             except Exception as e:  # noqa: BLE001
                 n_fail += 1
                 print(f"  [{radar}] FAIL {stem}: {e}")
-        return (n_ok, n_fail)
+        return (n_ok, n_fail, n_skip)
 
     # ---- LUT read accessors (archive-bound) ----
 

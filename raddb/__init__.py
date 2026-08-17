@@ -107,14 +107,6 @@ from raddb.viz.plot import (
     plot_latent_scatter,
 )
 
-# Profiling helpers
-from raddb.viz.profiling import (
-    plot_stage_totals,
-    plot_volume_timing,
-    plot_sweep_timing,
-    plot_profiling_dashboard,
-)
-
 __all__ = [
     # High-level API
     "RadDB",
@@ -191,11 +183,6 @@ __all__ = [
     "plot_vcs",
     "plot_cross_section",
     "plot_latent_scatter",
-    # Profiling helpers
-    "plot_stage_totals",
-    "plot_volume_timing",
-    "plot_sweep_timing",
-    "plot_profiling_dashboard",
 ]
 
 _root_path = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))

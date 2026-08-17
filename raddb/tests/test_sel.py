@@ -171,3 +171,18 @@ class TestSelErrors:
     def test_step_in_slice_raises_valueerror(self, rdf):
         with pytest.raises(ValueError):
             rdf.sel(DBZH=slice(0, 10, 2))
+
+
+class TestFilterKeys:
+    """`filter` rejects a misspelt key instead of silently defaulting it."""
+
+    def test_unknown_key_raises(self, rdf):
+        # "value" is not a filter key; threshold would default to 0 and the
+        # filter would keep every row while looking like it ran.
+        with pytest.raises(KeyError, match="unknown filter key"):
+            rdf.filter({"var": "DBZH", "logic": ">", "value": 10})
+
+    def test_correct_key_filters(self, rdf):
+        out = rdf.filter({"var": "DBZH", "logic": ">", "threshold": 10})
+        assert 0 < len(out) < len(rdf)
+        assert out.data["DBZH"].min() > 10

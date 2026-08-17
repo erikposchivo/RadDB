@@ -313,7 +313,6 @@ class StageTimer:
     >>> with timer.time_stage("my_stage", volume="vol_001", sweep=2):
     ...     do_work()
     >>> timer.print_summary()
-    >>> plot_profiling_dashboard(timer)
     """
 
     def __init__(self):

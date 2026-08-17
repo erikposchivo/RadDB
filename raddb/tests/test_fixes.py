@@ -295,3 +295,177 @@ class TestGenerateLutProjection:
         proj_y_cols = [c for c in lut.columns if c.startswith("y_")]
         assert len(proj_x_cols) == 1
         assert len(proj_y_cols) == 1
+
+
+# ===========================================================================
+# 4. datatree_to_dataframe — dimension coordinates that carry no index
+# ===========================================================================
+
+
+class TestUnindexedDimensionCoordinate:
+    """Raw NEXRAD Level II sweeps arrive with ``range`` as a coordinate that has
+    no index.  ``to_dataframe`` then indexes that dimension by position and emits
+    the true values as a column of the same name, which ``reset_index`` refuses
+    to insert.  The flattener rebuilds the index first.
+    """
+
+    @staticmethod
+    def _drop_range_index(dt: xr.DataTree) -> xr.DataTree:
+        """Reproduce the shape xradar hands back for a raw Level II volume."""
+        for name in dt.children:
+            dt[name].dataset = dt[name].to_dataset().drop_indexes("range")
+        return dt
+
+    def test_flatten_keeps_true_range_values(self):
+        from raddb.io_core import datatree_to_dataframe
+
+        expected = datatree_to_dataframe(_make_datatree())
+        got = datatree_to_dataframe(self._drop_range_index(_make_datatree()))
+
+        assert got.shape == expected.shape
+        # Metres, not the positions 0..n_rng-1 that the broken shape would give.
+        assert sorted(got["range"].unique().to_list()) == sorted(expected["range"].unique().to_list())
+        assert got["range"].min() == pytest.approx(1000.0)
+
+    def test_archive_accepts_it(self, tmp_path):
+        pytest.importorskip("pyproj")
+        from raddb.main import RadDB
+
+        dt = self._drop_range_index(_make_datatree())
+        result = RadDB(archive_dir=str(tmp_path), crs=2056).archive(datatree=dt, radar=RADAR)
+
+        assert result["n_archived"] == 1 and result["n_failed"] == 0
+
+
+# ===========================================================================
+# 6. A volume with nothing to archive is skipped, not a crash
+# ===========================================================================
+
+
+class TestEmptyVolumeIsSkipped:
+    """A clear-air volume used to crash the batch instead of being skipped.
+
+    ``_save_polar_parquet`` builds the output path out of the volume's own
+    time.  When every gate fails the filter the frame is empty, ``.min()`` is
+    ``None``, ``pd.to_datetime(None)`` is ``NaT``, and ``pd.NaT.month`` is
+    *nan* — a float — so ``f"{...:02d}"`` raised ``Unknown format code 'd' for
+    object of type 'float'``.  Two real Rad4Alp volumes hit this.
+    """
+
+    @staticmethod
+    def _blank_dbzh(dt: xr.DataTree) -> xr.DataTree:
+        """Null out DBZH everywhere, so the default ``DBZH > 0`` keeps nothing."""
+        for name in dt.children:
+            ds = dt[name].to_dataset()
+            ds["DBZH"] = ds["DBZH"].where(False)  # all-NaN, same shape/dtype
+            dt[name].dataset = ds
+        return dt
+
+    @staticmethod
+    def _blank_time(dt: xr.DataTree) -> xr.DataTree:
+        """Make every ray's time NaT while leaving DBZH intact."""
+        for name in dt.children:
+            ds = dt[name].to_dataset()
+            ds["time"] = xr.full_like(ds["time"], np.datetime64("NaT"))
+            dt[name].dataset = ds
+        return dt
+
+    def test_no_gates_survive_the_filter(self, tmp_path):
+        pytest.importorskip("pyproj")
+        from raddb.main import RadDB
+
+        dt = self._blank_dbzh(_make_datatree())
+        res = RadDB(archive_dir=str(tmp_path), crs=2056).archive(datatree=dt, radar=RADAR)
+
+        assert (res["n_archived"], res["n_failed"], res["n_skipped"]) == (0, 0, 1)
+        assert not list((tmp_path / RADAR).rglob("*_POL.parquet"))
+
+    def test_all_nat_time_is_skipped(self, tmp_path):
+        pytest.importorskip("pyproj")
+        from raddb.main import RadDB
+
+        dt = self._blank_time(_make_datatree())
+        res = RadDB(archive_dir=str(tmp_path), crs=2056).archive(datatree=dt, radar=RADAR)
+
+        assert (res["n_archived"], res["n_failed"], res["n_skipped"]) == (0, 0, 1)
+        assert not list((tmp_path / RADAR).rglob("*_POL.parquet"))
+
+    def test_counts_sum_to_the_volumes_attempted(self, tmp_path):
+        """One good volume + one empty: 1 archived, 0 failed, 1 skipped."""
+        pytest.importorskip("pyproj")
+        from raddb.main import RadDB
+
+        good = _make_datatree(vol_time=pd.Timestamp("2024-08-01 12:00:00"))
+        empty = self._blank_dbzh(_make_datatree(vol_time=pd.Timestamp("2024-08-01 12:05:00")))
+        res = RadDB(archive_dir=str(tmp_path), crs=2056).archive(
+            datatree=[good, empty], radar=RADAR
+        )
+
+        assert (res["n_archived"], res["n_failed"], res["n_skipped"]) == (1, 0, 1)
+        assert res["n_archived"] + res["n_failed"] + res["n_skipped"] == 2
+        assert len(list((tmp_path / RADAR).rglob("*_POL.parquet"))) == 1
+
+    def test_the_archive_stays_readable(self, tmp_path):
+        """A skipped volume must not poison the rest of the archive."""
+        pytest.importorskip("pyproj")
+        from raddb.main import RadDB
+
+        db = RadDB(archive_dir=str(tmp_path), crs=2056)
+        db.archive(datatree=_make_datatree(vol_time=pd.Timestamp("2024-08-01 12:00:00")),
+                   radar=RADAR)
+        db.archive(datatree=self._blank_dbzh(_make_datatree(
+            vol_time=pd.Timestamp("2024-08-01 12:05:00"))), radar=RADAR)
+
+        rdf = RadDB(archive_dir=str(tmp_path)).open(radars=RADAR)
+        assert len(rdf) > 0
+        assert rdf.radars() == [RADAR]
+
+    def test_save_polar_parquet_returns_none_directly(self):
+        """The guard itself, without going through archive()."""
+        import polars as pl
+
+        from raddb.io_core import _save_polar_parquet
+
+        empty = pl.DataFrame({"gate_id": [], "time": []})
+        assert _save_polar_parquet(empty, RADAR, "/nonexistent") is None
+
+    def test_disk_path_counts_and_checkpoints_a_skip(self, tmp_path):
+        """``datatree_dir=`` counts a skip separately and does not retry it."""
+        pytest.importorskip("pyproj")
+        from raddb.main import RadDB
+
+        src = tmp_path / "trees"
+        src.mkdir()
+        _make_datatree(vol_time=pd.Timestamp("2024-08-01 12:00:00")).to_netcdf(
+            src / f"{RADAR}_20240801_120000.nc"
+        )
+        self._blank_dbzh(_make_datatree(vol_time=pd.Timestamp("2024-08-01 12:05:00"))).to_netcdf(
+            src / f"{RADAR}_20240801_120500.nc"
+        )
+        arch = tmp_path / "arch"
+
+        res = RadDB(archive_dir=str(arch), crs=2056).archive(datatree_dir=str(src), radar=RADAR)
+        assert (res["n_archived"], res["n_failed"], res["n_skipped"]) == (1, 0, 1)
+        assert len(list((arch / RADAR).rglob("*_POL.parquet"))) == 1
+
+        # The skip is checkpointed, so a resume re-attempts nothing.
+        again = RadDB(archive_dir=str(arch), crs=2056).archive(datatree_dir=str(src), radar=RADAR)
+        assert (again["n_archived"], again["n_failed"], again["n_skipped"]) == (0, 0, 0)
+
+    def test_multi_radar_path_counts_a_skip(self, tmp_path):
+        """The ``{radar: [volumes]}`` form keeps the three counts separate too."""
+        pytest.importorskip("pyproj")
+        from raddb.main import RadDB
+
+        volumes = {
+            RADAR: [
+                _make_datatree(vol_time=pd.Timestamp("2024-08-01 12:00:00")),
+                self._blank_dbzh(_make_datatree(vol_time=pd.Timestamp("2024-08-01 12:05:00"))),
+            ],
+            "D": [_make_datatree(vol_time=pd.Timestamp("2024-08-01 12:00:00"))],
+        }
+        res = RadDB(archive_dir=str(tmp_path), crs=2056).archive(datatree=volumes)
+
+        assert (res["n_archived"], res["n_failed"], res["n_skipped"]) == (2, 0, 1)
+        assert res["n_archived"] + res["n_failed"] + res["n_skipped"] == 3
+        assert sorted(res["radars"]) == ["A", "D"]

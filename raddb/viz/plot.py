@@ -165,47 +165,86 @@ def _maybe_cartopy():
         return None, None
 
 
-_LV95_BORDERS = "unset"  # cache: list of country-border lines in EPSG:2056
+_NE_BORDERS = None  # cache: Natural Earth context lines with their style, in lon/lat
+_BORDER_LINES = {}  # cache: (crs, clip box) -> those lines in that frame
+
+# Natural Earth layers drawn by ``context=True``, with the style each gets.
+# Coastline and national borders alone leave a radar in the middle of a large
+# country — KTLX in Oklahoma, say — with nothing at all to draw, so state and
+# province lines are in there too, thinner and paler so they read as secondary.
+_NE_LAYERS = (
+    ("cultural", "admin_0_boundary_lines_land", {"color": "0.4", "linewidth": 0.6}),
+    ("physical", "coastline", {"color": "0.4", "linewidth": 0.6}),
+    ("cultural", "admin_1_states_provinces_lines", {"color": "0.65", "linewidth": 0.4}),
+)
 
 
-def _lv95_border_lines():
-    """Country-border lines near Switzerland, reprojected to EPSG:2056 (cached).
+def _ne_border_lines():
+    """Natural Earth 10 m context lines as ``[(geom, style), ...]`` in lon/lat (cached).
 
-    Sourced from cartopy's Natural Earth 10 m admin-0 boundary lines, clipped to
-    a lon/lat box around Switzerland before reprojection (LV95 is only valid near
-    CH).  Returns a list of shapely (Multi)LineStrings in LV95, or ``[]`` if
-    cartopy / the data is unavailable — so the swiss PPI still draws, just without
-    borders.  Drawn on a plain matplotlib axis, so no GeoAxes / extent quirks.
+    Read through cartopy's shapereader.  A missing cartopy or an uncached
+    download warns and yields nothing, so the plot still draws — just without
+    context.  Drawn on a plain matplotlib axis, so no GeoAxes / extent quirks.
     """
-    global _LV95_BORDERS
-    if _LV95_BORDERS != "unset":
-        return _LV95_BORDERS
-    lines = []
-    try:
+    global _NE_BORDERS
+    if _NE_BORDERS is None:
+        try:
+            from cartopy.io import shapereader as shpreader
+
+            _NE_BORDERS = []
+            for category, name, style in _NE_LAYERS:
+                path = shpreader.natural_earth(resolution="10m", category=category, name=name)
+                _NE_BORDERS.extend((g, style) for g in shpreader.Reader(path).geometries())
+        except Exception as exc:  # noqa: BLE001 - cartopy missing / data not cached
+            import warnings
+            warnings.warn(
+                f"cartopy country borders unavailable ({exc}); plotted without them.",
+                stacklevel=2,
+            )
+            _NE_BORDERS = []
+    return _NE_BORDERS
+
+
+def _border_lines(crs, clip):
+    """Context lines clipped to the lon/lat box ``clip``, in ``crs`` (cached).
+
+    ``crs`` is whatever frame the plot is drawn in — an EPSG int, or the proj4
+    string of the radar-centred azimuthal frame ``coords="xy"`` uses.  Clipping
+    before reprojecting keeps it local, which matters for frames that are only
+    valid near their own area (LV95, a single UTM zone).
+    """
+    key = (str(crs), tuple(round(float(v), 2) for v in clip))
+    if key not in _BORDER_LINES:
         import shapely
-        from cartopy.io import shapereader as shpreader
-        from raddb.aoi import _reproject_to_aoi, SWISS_EPSG
+        from raddb.aoi import _reproject_to_aoi
 
-        path = shpreader.natural_earth(
-            resolution="10m", category="cultural", name="admin_0_boundary_lines_land"
-        )
-        clip = shapely.box(3.0, 43.0, 13.5, 49.5)  # Switzerland + neighbours
-        for geom in shpreader.Reader(path).geometries():
-            piece = geom.intersection(clip)
+        box = shapely.box(*clip)
+        lines = []
+        for geom, style in _ne_border_lines():
+            piece = geom.intersection(box)
             if not piece.is_empty:
-                lines.append(_reproject_to_aoi(piece, 4326, SWISS_EPSG))
-    except Exception as exc:  # noqa: BLE001 - cartopy missing / data not cached
-        import warnings
-        warnings.warn(
-            f"cartopy country borders unavailable ({exc}); swiss PPI drawn without them.",
-            stacklevel=2,
-        )
-    _LV95_BORDERS = lines
-    return _LV95_BORDERS
+                lines.append((_reproject_to_aoi(piece, 4326, crs), style))
+        _BORDER_LINES[key] = lines
+    return _BORDER_LINES[key]
 
 
-def _draw_lv95_borders(ax):
-    """Plot the cached LV95 country borders as light lines (clipped to the axes)."""
+def _draw_borders(ax, mode, epsg, info, reach_deg: float = 3.0):
+    """Draw country borders around the radar site, in the plot's own frame.
+
+    Works for every ``coords`` value, not only the Swiss projected one: ``"xy"``
+    reprojects through an azimuthal-equidistant frame centred on the radar, which
+    is what the LUT's radar-relative metres already are.
+    """
+    if info is None:
+        return
+    lon, lat = float(info["longitude"]), float(info["latitude"])
+    if mode == "lonlat":
+        crs = 4326
+    elif mode == "xy":
+        crs = f"+proj=aeqd +lat_0={lat} +lon_0={lon} +datum=WGS84 +units=m +no_defs"
+    else:
+        crs = epsg
+
     def _iter_lines(g):
         if g.geom_type == "LineString":
             yield g
@@ -213,9 +252,11 @@ def _draw_lv95_borders(ax):
             for sub in g.geoms:
                 yield from _iter_lines(sub)
 
-    for geom in _lv95_border_lines():
+    dlon = reach_deg / max(np.cos(np.radians(lat)), 0.1)
+    clip = (lon - dlon, lat - reach_deg, lon + dlon, lat + reach_deg)
+    for geom, style in _border_lines(crs, clip):
         for line in _iter_lines(geom):
-            ax.plot(*line.xy, color="0.4", linewidth=0.6, zorder=1)
+            ax.plot(*line.xy, zorder=1, **style)
 
 
 def _add_colorbar(p, ax, is_discrete: bool, class_labels, label: str):
@@ -928,7 +969,7 @@ def _draw_polygons(ax, verts, values, plot_kwargs, edgecolor, rasterized):
 
 
 def _finish_map_axes(ax, mode, epsg, verts, site_xy, xlim, ylim,
-                     add_range_rings=True, context=False):
+                     add_range_rings=True, context=False, info=None):
     """Labels, tick formatting, aspect, range rings and limits for a map plot."""
     if mode == "lonlat":
         ax.set_xlabel("Longitude [°]")
@@ -947,8 +988,8 @@ def _finish_map_axes(ax, mode, epsg, verts, site_xy, xlim, ylim,
             ax.set_ylabel("North [km]")
         scale = 1e3
 
-    if context and mode == "projected" and epsg == 2056:
-        _draw_lv95_borders(ax)
+    if context:
+        _draw_borders(ax, mode, epsg, info)
 
     if site_xy is not None:
         ax.plot(*site_xy, "kx", markersize=7, markeredgewidth=2, zorder=5)
@@ -1488,7 +1529,7 @@ def plot_ppi(
     p = _draw_polygons(ax, verts, values, resolved, edgecolor, rasterized)
 
     _finish_map_axes(ax, mode, epsg, verts, _site_xy(src.info, mode, epsg),
-                     xlim, ylim, add_range_rings, context)
+                     xlim, ylim, add_range_rings, context, src.info)
 
     if add_colorbar:
         _add_colorbar(p, ax, is_discrete, class_labels, cbar_label)
@@ -1749,7 +1790,7 @@ def plot_cappi(
 
     p = _draw_polygons(ax, verts, values, resolved, edgecolor, rasterized)
     _finish_map_axes(ax, mode, epsg, verts, _site_xy(src.info, mode, epsg),
-                     xlim, ylim, add_range_rings, context)
+                     xlim, ylim, add_range_rings, context, src.info)
 
     if add_colorbar:
         _add_colorbar(p, ax, is_discrete, class_labels, cbar_label)

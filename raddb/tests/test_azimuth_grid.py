@@ -120,6 +120,46 @@ class TestNominalGrid:
         with pytest.raises(ValueError, match="full rotation"):
             nominal_azimuth_grid(az)
 
+    @pytest.mark.parametrize("dropped", [[7], [7, 8], [0, 359], [3, 100, 250]])
+    def test_a_rotation_with_holes_keeps_the_full_grid(self, dropped):
+        """718 of 720 is a rotation with holes, not a 0.5014 deg scan strategy."""
+        nominal = np.arange(720) * 0.5 + 0.25
+        recorded = np.delete(nominal, dropped)
+        grid = nominal_azimuth_grid(recorded)
+        assert grid.size == 720                     # the missing rays keep their slots
+        assert np.all(np.diff(grid) == 5)
+        assert np.array_equal(grid, nominal_azimuth_grid(nominal))
+
+    def test_holes_survive_antenna_drift(self):
+        """The real case: WSR-88D drift plus two dropped rays.
+
+        The grid is the same rotation, but not necessarily the same integers: a
+        720-ray grid is centred on ``x.x5``, exactly the 0.1° rounding boundary,
+        so the ~0.002° the two ray sets differ by can tip the whole grid one
+        tenth either way.  That is a tenth of a degree against a half-spacing
+        tolerance of 0.25°, so every ray still snaps to its own point.
+        """
+        rng = np.random.default_rng(7)
+        nominal = np.arange(720) * 0.5 + 0.25
+        recorded = np.delete(_jitter(nominal, rng, 0.0, NEXRAD_SPREAD), [11, 12])
+
+        grid = nominal_azimuth_grid(recorded)
+        assert grid.size == 720
+        assert np.all(np.diff(grid) == 5)
+
+        shift = (grid - nominal_azimuth_grid(nominal) + AZIMUTH_STEPS // 2) % AZIMUTH_STEPS
+        assert np.all(np.abs(shift - AZIMUTH_STEPS // 2) <= 1)      # at most one tenth
+
+        _, dist = snap_azimuths_to_grid(recorded, grid)
+        assert dist.max() <= azimuth_grid_tolerance(grid)
+
+    def test_too_many_holes_is_not_a_rotation(self):
+        """Past the coverage floor it is indistinguishable from a sector scan."""
+        nominal = np.arange(360) + 0.5
+        recorded = np.delete(nominal, np.arange(0, 100))     # 260 of 360
+        with pytest.raises(ValueError, match="full rotation"):
+            nominal_azimuth_grid(recorded)
+
 
 # ===========================================================================
 # snap_azimuths_to_grid
@@ -268,6 +308,43 @@ class TestScanStrategyGuardrails:
                                         vol_time=pd.Timestamp("2024-08-01 14:00")),
                 radar="A",
             )
+
+    def test_accepts_a_volume_that_dropped_rays(self, db):
+        """A volume short of a ray or two is a rotation with holes, not a new strategy."""
+        rng = np.random.default_rng(21)
+        base = _retime(_make_datatree(n_az=360, n_rng=20, n_sweeps=2),
+                       pd.Timestamp("2024-08-01 18:00"), rng, MCH_BIAS)
+        holed = xr.DataTree.from_dict({
+            name: node.to_dataset().isel(azimuth=np.delete(np.arange(360), [5, 6, 200]))
+            for name, node in base.children.items()
+        })
+        res = db.archive(datatree=holed, radar="A")
+        assert (res["n_archived"], res["n_failed"]) == (1, 0)
+
+    def test_a_lut_built_from_a_holed_volume_still_holds_every_ray(self, tmp_path):
+        """The LUT is the rotation, not one volume: the dropped rays keep their rows,
+        so a later complete volume joins 100%."""
+        complete = _make_datatree(n_az=360, n_rng=20, n_sweeps=2)
+        holed = xr.DataTree.from_dict({
+            name: node.to_dataset().isel(azimuth=np.delete(np.arange(360), [5, 6, 200]))
+            for name, node in complete.children.items()
+        })
+
+        db = RadDB(archive_dir=str(tmp_path / "a"), crs=2056)
+        db.archive(datatree=holed, radar="A")                     # LUT from the holed volume
+        lut = db.get_lut("A")
+        assert lut.filter(pl.col("sweep") == 1)["azimuth"].n_unique() == 360
+
+        res = db.archive(
+            datatree=_retime(complete, pd.Timestamp("2024-08-01 19:00"),
+                             np.random.default_rng(22), MCH_BIAS),
+            radar="A",
+        )
+        assert (res["n_archived"], res["n_failed"]) == (1, 0)
+
+        data = db.open(radars="A")
+        lut_ids = set(lut["gate_id"].to_list())
+        assert all(g in lut_ids for g in data.data["gate_id"].to_list())
 
     def test_accepts_ordinary_drift(self, db):
         rng = np.random.default_rng(11)

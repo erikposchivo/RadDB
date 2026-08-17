@@ -166,7 +166,15 @@ def datatree_to_dataframe(
     names = list_sweep_names(dt)
 
     def _flatten(name):
-        df = dt[name].to_dataset().to_dataframe().reset_index()
+        ds = dt[name].to_dataset()
+        # A dimension coordinate can exist without an index — raw NEXRAD Level II
+        # sweeps arrive that way for ``range``.  ``to_dataframe`` then indexes that
+        # dimension by position and emits the real values as a *column* of the same
+        # name, which ``reset_index`` cannot insert.  Re-assigning rebuilds the index.
+        unindexed = [d for d in ds.sizes if d in ds.coords and d not in ds.xindexes]
+        if unindexed:
+            ds = ds.assign_coords({d: ds[d].values for d in unindexed})
+        df = ds.to_dataframe().reset_index()
         df["sweep"] = int(name.split("_")[-1])
         return df
 
@@ -181,13 +189,35 @@ def datatree_to_dataframe(
 
 def _save_polar_parquet(
     df_polar: "pl.DataFrame | pd.DataFrame", radar: str, base_path: str
-) -> str:
+) -> str | None:
     """Save a POLAR DataFrame to the standard directory layout.
 
     Accepts polars (the native write-path format) or pandas.
+
+    Returns ``None`` — writing nothing — when the volume carries no usable
+    timestamp to build a path from.  That happens for a clear-air volume whose
+    every gate fails the filter (``DBZH`` all-null), and for one whose ``time``
+    is all-``NaT``.  Both used to crash here rather than being skipped:
+    ``.min()`` on an empty column is ``None``, ``pd.to_datetime(None)`` is
+    ``NaT``, and ``pd.NaT.month`` is *nan* (a float), so the ``:02d`` below
+    raised ``Unknown format code 'd' for object of type 'float'`` — an error
+    naming neither the volume nor the cause.
     """
     df_polar = _to_polars_frame(df_polar)
+    if df_polar.is_empty():
+        logger.info(
+            "radar %s: no gates satisfied the filter; no POL file written.", radar
+        )
+        return None
+
     vol_time = pd.to_datetime(df_polar["time"].min())
+    if pd.isna(vol_time):
+        logger.warning(
+            "radar %s: volume time is NaT for all %d surviving gates; "
+            "no POL file written.", radar, len(df_polar),
+        )
+        return None
+
     save_dir = (
         Path(base_path)
         / radar
@@ -273,7 +303,11 @@ def _snap_volume_azimuths(sweeps, azimuths, grids, radar):
             )
         sel = sweeps == sweep
         n_rays = np.unique(out[sel]).size
-        if n_rays != len(grid):
+        # Fewer rays than the grid is a rotation with holes — a volume that
+        # dropped a ray or two, which every network does — and each surviving ray
+        # still snaps to its own grid point, so it archives correctly.  More rays
+        # than the grid cannot: they have nowhere to go.
+        if n_rays > len(grid):
             raise ValueError(
                 f"radar {radar!r} sweep {int(sweep)}: volume has {n_rays} rays, "
                 f"the LUT was built for {len(grid)} — a different scan strategy. "
@@ -380,7 +414,7 @@ def archive_volume(
     filter_logic: str = ">",
     timer=None,
     volume: str | None = None,
-) -> str:
+) -> str | None:
     """Archive a single DataTree volume to Parquet format.
 
     Converts the DataTree to a DataFrame, generates a ``gate_id`` for each
@@ -417,8 +451,11 @@ def archive_volume(
 
     Returns
     -------
-    str
-        Path to the saved POL parquet file.
+    str or None
+        Path to the saved POL parquet file, or ``None`` when the volume held
+        nothing to archive — every gate failed the filter, or its ``time`` was
+        all-``NaT``.  That is a *skip*, not a failure: callers should count it
+        separately rather than treating it as either stored or broken.
     """
     radar = normalize_radar_name(radar)
     resolve_filter_logic(filter_logic)  # fail fast before flattening
@@ -484,7 +521,10 @@ def archive_multiple_volumes(
     Returns
     -------
     list of dict
-        Results with keys: label, success, error, polar_path, n_gates.
+        Results with keys: label, success, skipped, error, polar_path, n_gates.
+        ``skipped`` marks a volume that held nothing to archive (every gate
+        failed the filter, or an all-``NaT`` time); it has ``success=False``
+        and ``error=None``, so the three states stay distinguishable.
     """
     radar = normalize_radar_name(radar)
 
@@ -503,6 +543,7 @@ def archive_multiple_volumes(
             "label": label,
             "radar": radar,
             "success": False,
+            "skipped": False,
             "error": None,
             "n_gates": 0,
         }
@@ -525,18 +566,29 @@ def archive_multiple_volumes(
                     volume=label,
                 )
 
-            result["success"] = True
-            result["polar_path"] = polar_path
-
-            df_polar = pd.read_parquet(polar_path)
-            result["n_gates"] = len(df_polar)
-
             vol_elapsed = _time.perf_counter() - vol_t0
-            _vprint(
-                f"OK  Volume {i}/{len(items)} done in "
-                f"{vol_elapsed:.1f}s -- {result['n_gates']:,} gates saved",
-                verbose,
-            )
+            if polar_path is None:
+                # Nothing to archive — not an error, so it must not be counted
+                # as one; see archive_volume's return contract.
+                result["skipped"] = True
+                result["polar_path"] = None
+                _vprint(
+                    f"SKIP  Volume {i}/{len(items)} held no gates to archive "
+                    f"({vol_elapsed:.1f}s)",
+                    verbose,
+                )
+            else:
+                result["success"] = True
+                result["polar_path"] = polar_path
+
+                df_polar = pd.read_parquet(polar_path)
+                result["n_gates"] = len(df_polar)
+
+                _vprint(
+                    f"OK  Volume {i}/{len(items)} done in "
+                    f"{vol_elapsed:.1f}s -- {result['n_gates']:,} gates saved",
+                    verbose,
+                )
 
         except Exception as e:
             vol_elapsed = _time.perf_counter() - vol_t0
@@ -552,9 +604,11 @@ def archive_multiple_volumes(
 
     total_elapsed = _time.perf_counter() - pipeline_t0
     n_ok = sum(1 for r in results if r["success"])
+    n_skip = sum(1 for r in results if r["skipped"])
     _vprint(
         f"\nArchiving complete: {n_ok}/{len(results)} volumes "
-        f"in {total_elapsed:.1f}s",
+        f"in {total_elapsed:.1f}s"
+        + (f" ({n_skip} skipped, nothing to archive)" if n_skip else ""),
         verbose,
     )
     return results
