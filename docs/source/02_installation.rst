@@ -5,7 +5,7 @@ Installation
 
 We define here two types of installation:
 
-- `Installation for standard users`_: for users who want to process data.
+- `Installation for standard users`_: for users who want to archive and query radar volumes.
 
 - `Installation for contributors`_: for contributors who want to enrich the project (eg. add a new features).
 
@@ -31,17 +31,17 @@ or `conda <https://docs.conda.io/en/latest/>`__ (recommended).
   or `anaconda <https://docs.anaconda.com/anaconda/install/>`__
   if you don't have it already installed.
 
-* Create the *radar-api-py311* (or any other custom name) conda environment:
+* Create the *raddb-py311* (or any other custom name) conda environment:
 
 .. code-block:: bash
 
-	conda create --name radar-api-py311 python=3.11 --no-default-packages
+	conda create --name raddb-py311 python=3.11 --no-default-packages
 
-* Activate the *radar-api-py311* conda environment:
+* Activate the *raddb-py311* conda environment:
 
 .. code-block:: bash
 
-	conda activate radar-api-py311
+	conda activate raddb-py311
 
 
 **With venv:**
@@ -50,8 +50,8 @@ or `conda <https://docs.conda.io/en/latest/>`__ (recommended).
 
 .. code-block:: bash
 
-   python -m venv radar-api-pyXXX
-   cd radar-api-pyXXX/Scripts
+   python -m venv raddb-pyXXX
+   cd raddb-pyXXX/Scripts
    activate
 
 
@@ -59,8 +59,8 @@ or `conda <https://docs.conda.io/en/latest/>`__ (recommended).
 
 .. code-block:: bash
 
-   virtualenv -p python3 radar-api-pyXXX
-   source radar-api-pyXXX/bin/activate
+   virtualenv -p python3 raddb-pyXXX
+   source raddb-pyXXX/bin/activate
 
 .. _installation_standard:
 
@@ -68,8 +68,8 @@ Installation for standard users
 ==================================
 
 The latest RadDB stable version is available
-on the `Python Packaging Index (PyPI) <https://pypi.org/project/radar-api/>`__
-and on the `conda-forge channel <https://anaconda.org/conda-forge/radar-api>`__.
+on the `Python Packaging Index (PyPI) <https://pypi.org/project/raddb/>`__
+and on the `conda-forge channel <https://anaconda.org/conda-forge/raddb>`__.
 
 Please install the package in the virtual environment you created before!
 
@@ -77,7 +77,7 @@ Please install the package in the virtual environment you created before!
 
 .. code-block:: bash
 
-   conda install -c conda-forge radar-api
+   conda install -c conda-forge raddb
 
 .. note::
    In an alternative to conda, if you are looking for a lightweight package manager you could use `micromamba <https://micromamba.readthedocs.io/en/latest/>`__.
@@ -86,14 +86,14 @@ Please install the package in the virtual environment you created before!
 
 .. code-block:: bash
 
-   pip install radar-api
+   pip install raddb
 
 .. _installation_contributor:
 
 Installation for contributors
 ================================
 
-The latest RadDB version is available on the GitHub repository `raddb <https://github.com/erikposchivo/raddb>`_.
+The latest RadDB version is available on the GitHub repository `raddb <https://github.com/ltelab/raddb>`_.
 You can install the package in editable mode, so that you can modify the code and see the changes immediately.
 The following steps guides to the package installation in editable mode.
 
@@ -119,15 +119,15 @@ You can create a conda environment (i.e. with python 3.11) with:
 
 .. code-block:: bash
 
-	conda create --name radar-api-dev-py311 python=3.11 --no-default-packages
-	conda activate radar-api-dev-py311
+	conda create --name raddb-dev-py311 python=3.11 --no-default-packages
+	conda activate raddb-dev-py311
 
 Install the package dependencies
 ............................................
 
 .. code-block:: bash
 
-	conda install --only-deps radar-api
+	conda install --only-deps raddb
 
 
 Install the package in editable mode
@@ -154,7 +154,7 @@ Pre-commit hooks are automated scripts that run during each commit to detect bas
 If a hook identifies an issue (signified by the pre-commit script exiting with a non-zero status), it halts the commit process and displays the error messages.
 
 .. note::
-	The versions of the software used in the pre-commit hooks are specified in the `.pre-commit-config.yaml <https://github.com/erikposchivo/raddb/blob/main/.pre-commit-config.yaml>`__ file. This file serves as a configuration guide, ensuring that the hooks are executed with the correct versions of each tool, thereby maintaining consistency and reliability in the code quality checks.
+	The versions of the software used in the pre-commit hooks are specified in the `.pre-commit-config.yaml <https://github.com/ltelab/raddb/blob/main/.pre-commit-config.yaml>`__ file. This file serves as a configuration guide, ensuring that the hooks are executed with the correct versions of each tool, thereby maintaining consistency and reliability in the code quality checks.
 
 Further details about pre-commit hooks can be found in the Contributors Guidelines, specifically in the provided in the :ref:`Code quality control <code_quality_control>` section.
 
@@ -168,7 +168,30 @@ The following bash code allow to install all optional dependencies:
 
 .. code-block:: bash
 
-   conda install -c conda-forge jupyter spyder xradar wradlib arm_pyart flox numbagg bottleneck opt-einsum python-graphviz bokeh
+   pip install "raddb[viz]"
+   conda install -c conda-forge jupyter spyder xradar arm_pyart
+
+
+Package extras
+..................
+
+Everything in the tutorials works from a plain ``pip install raddb``.
+Two optional dependency groups add the rest:
+
+* ``viz`` installs `cartopy <https://scitools.org.uk/cartopy/>`_,
+  `pyproj <https://pyproj4.github.io/pyproj/>`_,
+  `shapely <https://shapely.readthedocs.io/>`_,
+  `lonboard <https://developmentseed.org/lonboard/>`_ and
+  `geoarrow-pyarrow <https://geoarrow.org/geoarrow-python/>`_,
+  used by the plotting, cross-section and interactive AOI selection functionalities.
+
+* ``io`` installs `pyshp <https://pypi.org/project/pyshp/>`_, needed only to read
+  an area of interest from an ESRI ``.shp`` file.
+
+.. code-block:: bash
+
+   pip install "raddb[viz]"
+   pip install "raddb[io]"
 
 
 IDE Tools
@@ -185,39 +208,16 @@ For an improved development experience, consider installing the intuitive `Jupyt
 Radar Processing
 ...................................
 
-To read and process ground and spaceborne radar data, install
-`xradar <https://docs.openradarscience.org/projects/xradar/en/stable/>`_,
-`wradlib <https://docs.wradlib.org/en/latest/>`_.
-`pyart <https://arm-doe.github.io/pyart/>`_ and
-`gpm-api <https://gpm-api.readthedocs.io/>`_.
+RadDB archives any `xarray.DataTree <https://docs.xarray.dev/en/stable/generated/xarray.DataTree.html>`_
+following the `xradar <https://docs.openradarscience.org/projects/xradar/en/stable/>`_
+coordinate layout: ``xarray`` provides the container, ``xradar`` defines the radar
+sweep-group layout inside it and reads a raw volume into one.
+`Py-ART <https://arm-doe.github.io/pyart/>`_ is optional: RadDB imports it only to register
+its colormaps (e.g. ``HomeyerRainbow``) with matplotlib.
 
 .. code-block:: bash
 
-   conda install -c conda-forge xradar wradlib arm_pyart gpm-api
-
-
-Speed Up Xarray Computations
-..........................................
-
-To speed up arrays computations with xarray, install
-`flox <https://flox.readthedocs.io/en/latest/>`_,
-`numbagg <https://github.com/numbagg/numbagg>`_,
-`bottleneck <https://bottleneck.readthedocs.io/en/latest/intro.html>`_ and
-`opt-einsum <https://optimized-einsum.readthedocs.io/en/stable/>`_:
-
-.. code-block:: bash
-
-   conda install -c conda-forge flox numbagg bottleneck opt-einsum
-
-Dask Operations
-......................
-
-To visualize `Dask Task Graphs  <https://docs.dask.org/en/stable/10-minutes-to-dask.html>`_ and monitor
-computations through the `Dask Dashboard <https://docs.dask.org/en/stable/dashboard.html>`_, please install:
-
-.. code-block:: bash
-
-   conda install -c conda-forge python-graphviz bokeh
+   conda install -c conda-forge xradar arm_pyart
 
 
 Run on Jupyter Notebooks
@@ -226,10 +226,10 @@ Run on Jupyter Notebooks
 If you want to run RadDB on a `Jupyter Notebook <https://jupyter.org/>`__,
 you have to take care to set up the IPython kernel environment where RadDB is installed.
 
-For example, if your conda/virtual environment is named ``radar-api-dev``, run:
+For example, if your conda/virtual environment is named ``raddb-dev``, run:
 
 .. code-block:: bash
 
-   python -m ipykernel install --user --name=radar-api-dev
+   python -m ipykernel install --user --name=raddb-dev
 
-When you will use the Jupyter Notebook, by clicking on ``Kernel`` and then ``Change Kernel``, you will be able to select the ``radar-api-dev`` kernel.
+When you will use the Jupyter Notebook, by clicking on ``Kernel`` and then ``Change Kernel``, you will be able to select the ``raddb-dev`` kernel.

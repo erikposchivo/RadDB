@@ -1,4 +1,4 @@
-# RadDB — generic radar data archiving & analysis
+# RadDB — radar volumes as a Parquet archive
 
 |                   |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -16,18 +16,15 @@
 | Citation          | [![DOI](XXX)](XXX)          |                                                                                                                                                                                                                                                                                                                                                                                                                                                               [**Documentation**](https://raddb.readthedocs.io/en/latest/)
 
 RadDB archives xarray **DataTree** radar volumes as compact Parquet files and
-gives you a small, fluent object API to load, filter, crop, cross-section and
+gives you a small, fluent interface to load, filter, crop, extract cross-section and
 plot them.  It is **network-agnostic**: any DataTree with the standard
 [xradar](https://docs.openradarscience.org/projects/xradar/) coordinate layout
-(MeteoSwiss, NEXRAD, …) can be archived and analysed — no pyart required.
-
-MeteoSwiss/METRANET-specific ingestion (pyart + radar_api) lives in the private
-`raddb.mch` subpackage and is kept out of the generic core.
+(NEXRAD, ODIM, IRIS, …) can be archived and analysed.
 
 ## Storage model
 
 A radar is stored as a **static LUT** (per-gate geometry, generated once) plus one
-**POL parquet per volume** (the dynamic moments), linked by an integer `gate_id`:
+**POL parquet per volume** (the variables), linked by an integer `gate_id`:
 
 ```
 {archive_dir}/{radar}/LUT/{radar}_LUT.parquet          # gate_id, lat/lon/alt, x_<epsg>/y_<epsg>, sweep, …
@@ -35,16 +32,16 @@ A radar is stored as a **static LUT** (per-gate geometry, generated once) plus o
 ```
 
 No-echo gates are dropped at archive time (default `DBZH > 0`), so the archive
-stays small.
+stays small: a 12-sweep WSR-88D volume of 8,791,200 polar gates becomes 8.2 MB.
 
 ## Installation
 
 ```bash
-pip install -e .            # core
-pip install -e ".[viz]"     # + cartopy / pyproj / shapely for maps
+pip install raddb              # everything in this README works
+pip install "raddb[viz]"       # + the interactive Jupyter map and cartopy basemaps
 ```
 
-Core runtime deps: `numpy, pandas, polars, geopandas, xarray, pyarrow, dask, fsspec, s3fs, matplotlib`.
+Core runtime dependencies: `numpy, pandas, polars, geopandas, shapely, pyproj, xarray, pyyaml, pyarrow, matplotlib, netcdf4, zarr`.
 
 ## Quick start
 
@@ -59,102 +56,140 @@ Core runtime deps: `numpy, pandas, polars, geopandas, xarray, pyarrow, dask, fss
 ```python
 import raddb
 
-db = raddb.RadDB(archive_dir="/data/raddb", crs=2056)  # 2056 = CH1903+/LV95
+db = raddb.RadDB(archive_dir="/data/raddb", crs=32614)  # 32614 = UTM zone 14N
+```
 
-# --- archive -----------------------------------------------------------------
+A **projected CRS is mandatory to write** an archive and never needed to read one.
+There is no default: the wrong projection is silently wrong.
+`raddb.lut.suggest_crs(longitude, latitude)` tells you which one to pass.
+
+### Archive
+
+```python
 # From saved DataTree files on disk (.zarr / .nc); the LUT is auto-generated:
-db.archive(datatree_dir="/data/MCH_datatree")  # radar inferred per file
-# ...or archive in-memory DataTrees directly:
-# db.archive(datatree=dt, radar="A")
-# db.archive(datatree=[dt1, dt2], radar="A")
-# db.archive(datatree={"A": [dt1], "D": [dt2]})         # multi-radar
+db.archive(datatree_dir="/data/NEXRAD_datatree")  # radar inferred per file
 
-# --- open --------------------------------------------------------------------
-rdf = db.open(time_period=("2024-08-26", "2024-08-27"), radars="L")
+# ...or archive in-memory DataTrees directly:
+db.archive(datatree=dt, radar="KTLX")
+db.archive(datatree=[dt1, dt2], radar="KTLX")
+db.archive(datatree={"KTLX": [dt1], "KMLB": [dt2]})  # multi-radar
+```
+
+Pass `filter=` to decide which gates ever reach the disk — the main control on
+archive size:
+
+```python
+db.archive(
+    datatree=dt, radar="KTLX", filter={"var": "DBZH", "logic": ">", "threshold": 20}
+)
+```
+
+### Open
+
+```python
+rdf = db.open(time_period=("2024-06-12", "2024-06-13"), radars="KTLX")
 print(rdf)  # rich summary: gates, radars, time range, columns
+
 len(rdf), rdf.columns(), rdf.radars()
 rdf.start_time(), rdf.end_time()
 rdf.extent()  # [xmin, xmax, ymin, ymax] in `crs`
 rdf.geographic_extent()  # [lon_min, lon_max, lat_min, lat_max]
 rdf.crs(), rdf.geographic_crs()
+```
 
-# --- filter / convert --------------------------------------------------------
-strong = rdf.filter({"var": "DBZH", "logic": ">", "threshold": 20})
-strong = rdf.filter(
+`columns=` and `filters=` are pushed down into the scan, so only the rows you
+asked for are ever materialised.
+
+### Filter and convert
+
+```python
+filtered_rdf = rdf.filter({"var": "DBZH", "logic": ">", "threshold": 20})
+filtered_rdf = rdf.filter(
     [
         {"var": "DBZH", "logic": ">", "threshold": 20},
         {"var": "RHOHV", "logic": ">", "threshold": 0.9},
     ]
 )  # AND
-pdf = rdf.to_pandas(with_geometry=True)  # pandas + gate coordinates
+
+df = rdf.to_pandas(with_geometry=True)  # pandas + gate coordinates
 gdf = rdf.to_geopandas()  # GeoDataFrame (with CRS)
-dt = rdf.to_datatree()  # xarray DataTree (for plotting)
-
-# --- area of interest --------------------------------------------------------
-box = rdf.crop_by_bbox(
-    extent=[2.60e6, 2.62e6, 1.11e6, 1.13e6]
-)  # or bounds=(xmin,ymin,xmax,ymax)
-poly = rdf.crop_by_polygone("catchment.geojson")
-disc = rdf.crop_around_point((2.61e6, 1.12e6), distance=20_000)  # metres
-# rdf.interactive_crop()      # draw an AOI on a Jupyter map (needs ipyleaflet)
-
-# --- cross-section -----------------------------------------------------------
-cs = rdf.extract_cross_section(p1=(2.60e6, 1.12e6), p2=(2.63e6, 1.12e6))
-
-# --- plot --------------------------------------------------------------------
-rdf.plot_ppi(sweep=1, variable="DBZH", save="ppi.png")
-cs.plot_cross_section(variable="DBZH", save="xsec.png")
-rdf.plot_rhi(azimuth=270, variable="DBZH")
-
-# fluent: open -> filter -> crop -> plot
-rdf.filter({"var": "DBZH", "logic": ">", "threshold": 20}).crop_by_bbox(
-    extent=rdf.extent()
-).plot_ppi(variable="DBZH", save="strong.png")
+dt = rdf.to_datatree()  # back to xarray
 ```
 
-`filter` / `crs` argument shapes: filters are `{"var", "logic", "threshold"}`
-dicts (`logic` ∈ `==,!=,>,>=,<,<=`); `crs` is an EPSG int (e.g. `2056`), a
-CRS-coercible object, or `None`.
+Filters are `{"var", "logic", "threshold"}` dicts, where `logic` is one of
+`==`, `!=`, `>`, `>=`, `<`, `<=`.  `crs` is an EPSG int (e.g. `32614`), a
+CRS object, or `None`.
+
+### Crop to an area of interest
+
+```python
+box = rdf.crop_by_bbox(extent=[636_504, 676_504, 3_891_333, 3_931_333])
+poly = rdf.crop_by_polygone("catchment.geojson")
+disc = rdf.crop_around_point((656_504, 3_911_333), distance=20_000)  # metres
+# rdf.interactive_crop()   # draw an AOI on a Jupyter map
+```
+
+### Cut a cross-section
+
+```python
+cs = rdf.extract_cross_section(p1=(626_504, 3_911_333), p2=(686_504, 3_911_333))
+```
+
+### Plot
+
+```python
+rdf.plot_ppi(sweep=1, variable="DBZH", save="ppi.png")
+rdf.plot_rhi(azimuth=270, variable="DBZH")
+rdf.plot_cappi(altitude=3000, variable="DBZH")
+cs.plot_cross_section(variable="DBZH", save="xsec.png")
+```
+
+Each plot draws into one `Axes` and returns the matplotlib artist, so you compose
+panels by passing `ax=`.
+
+### Chain them
+
+```python
+rdf.filter({"var": "DBZH", "logic": ">", "threshold": 20}).crop_by_bbox(
+    extent=rdf.extent()
+).plot_ppi(variable="DBZH", save="ppi_plot_example.png")
+```
 
 ### What is on disk? (archive-bound)
 
 ```python
 db.inventory()  # radars, volume counts, time ranges, size
-db.inventory(detailed=True)  # + LUT info, stored moments, day-by-day counts
-db.inventory(datatree_dir="/data/MCH_datatree")  # DataTree files not archived yet
+db.inventory(detailed=True)  # + LUT info, stored variables, day-by-day counts
+db.inventory(datatree_dir="/data/NEXRAD_datatree")  # DataTree files not archived yet
 ```
 
 ### LUT accessors (archive-bound)
 
 ```python
 db.list_radars()  # radars present in the archive
-db.get_lut("L")  # the static LUT (pandas)
-db.get_radar_info("L")  # site location / sweep geometry
-db.add_lut_projection("L", epsg=2056)
+db.get_lut("KTLX")  # the static LUT (polars)
+db.get_radar_info("KTLX")  # site location / sweep geometry
+db.add_lut_projection("KTLX", epsg=32614)
 ```
 
 ## Module structure
 
 ```
 raddb/
-├── __init__.py     # public API surface
-├── main.py         # the RadDB class (this API)
+├── __init__.py     # the public interface
+├── main.py         # the RadDB class
 ├── io_core.py      # DataTree <-> DataFrame <-> Parquet + archive backends
 ├── lut.py          # LUT generation / geo projection
 ├── aoi.py          # AOI / crop / cross-section geometry
 ├── discovery.py    # find_datatree_files + filename-time parsing
 ├── helper.py       # filters, radar-name normalisation, timers
-├── viz/            # plot.py (PPI/RHI/cross-section), interactive.py
-└── mch/            # private MeteoSwiss/METRANET ingestion (pyart) — not in the public wheel
+└── viz/            # plot.py (PPI/RHI/CAPPI/cross-section), interactive.py
 ```
-
-Sample-data scripts live under `scripts/` (`make_sample_mch_datatrees.py`,
-`download_nexrad_datatree.py`).
 
 ## Notes
 
 - **Projected coordinates / `crs`.** Generating a LUT with a projection (e.g.
-  `crs=2056`) and the projected accessors (`extent`, `to_geopandas`) use `pyproj`,
+  `crs=32614`) and the projected accessors (`extent`, `to_geopandas`) use `pyproj`,
   which needs the PROJ database.  A `PROJ_DATA` / `PROJ_LIB` inherited from another
   environment (a conda base env, a system PROJ) points at a proj.db of the wrong
   PROJ version and makes every projection fail with *"no database context

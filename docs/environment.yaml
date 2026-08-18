@@ -1,4 +1,4 @@
-name: build-doc-radar-api
+name: build-doc-raddb
 channels: [conda-forge]
 dependencies:
   - docutils
@@ -12,6 +12,6 @@ dependencies:
   - sphinx-mdinclude==0.5.3
   - sphinx==7.2.6
   - sphinxcontrib-youtube
-  - radar-api
+  - raddb
   - arm_pyart
   - xradar

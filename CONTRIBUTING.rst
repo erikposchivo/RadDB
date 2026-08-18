@@ -5,10 +5,9 @@ Hi! Thanks for taking the time to contribute to RadDB.
 
 You can contribute in many ways:
 
-- Join the `GitHub Discussions <https://github.com/erikposchivo/raddb/discussions>`__
+- Join the `GitHub Discussions <https://github.com/ltelab/raddb/discussions>`__
 - Report `issues <#issue-reporting>`__
 - Add new features
-- Add new retrievals
 - Add new visualization tools
 - Any others code improvements are welcome !
 
@@ -25,7 +24,7 @@ Before adding your contribution, please take a moment to read through the follow
 - The :ref:`Installation for contributors <installation_contributor>` help you to set up the developing environment and the pre-commit hooks.
 - The section `Contributing process <#contributing-process>`__ provides you with a brief overview of the steps that each RadDB developer must follow to contribute to the repository.
 - The `Code review checklist <#code-review-checklist>`__ enable to speed up the code review process.
-- The `Code of conduct <https://github.com/erikposchivo/raddb/blob/main/CODE_OF_CONDUCT.md>`__ details the expected behavior of all contributors.
+- The `Code of conduct <https://github.com/ltelab/raddb/blob/main/CODE_OF_CONDUCT.md>`__ details the expected behavior of all contributors.
 
 Initiating a discussion about your ideas or proposed implementations is a vital step before starting your contribution !
 Engaging with the community early on can provide valuable insights, ensure alignment with the project's goals, and prevent potential overlap with existing work.
@@ -33,7 +32,7 @@ Here are some guidelines to facilitate this process:
 
 1. Start with a conversation
 
-   Before start coding, open a `GitHub Discussion <https://github.com/erikposchivo/raddb/discussions>`__, a `GitHub Feature Request Issue <https://github.com/erikposchivo/raddb/issues/new/choose>`__ or
+   Before start coding, open a `GitHub Discussion <https://github.com/ltelab/raddb/discussions>`__, a `GitHub Feature Request Issue <https://github.com/ltelab/raddb/issues/new/choose>`__ or
    just start a discussion in the `Open Radar Science Discourse Group <https://openradar.discourse.group/>`__.
    These channels of communication provides an opportunity to gather feedback, understand the project's current state, and improve your contributions.
 
@@ -48,8 +47,8 @@ Here are some guidelines to facilitate this process:
 
 By following these steps, you not only enhance the quality and relevance of your contribution but also become an integral part of the project's collaborative ecosystem.
 
-If you have any questions, please do not hesitate to ask in the `GitHub Discussions <https://github.com/erikposchivo/raddb/discussions>`__ or in the
-`Open Radar Science Discord Group <https://openradar.discourse.group/>`__.
+If you have any questions, please do not hesitate to ask in the `GitHub Discussions <https://github.com/ltelab/raddb/discussions>`__ or in the
+`Open Radar Science Discourse Group <https://openradar.discourse.group/>`__.
 
 
 Issue Reporting
@@ -57,7 +56,7 @@ Issue Reporting
 
 To facilitate and enhance the issue reporting process, it is important to utilize the predefined GitHub Issue Templates.
 These templates are designed to ensure you provide all the essential information in your report, allowing for a faster and more effective response from the maintainers.
-You can access and use these templates by visiting the `GitHub Issue Templates page here <https://github.com/erikposchivo/raddb/issues/new/choose>`__.
+You can access and use these templates by visiting the `GitHub Issue Templates page here <https://github.com/ltelab/raddb/issues/new/choose>`__.
 
 However, if you find that the existing templates don't quite match the specifics of the issue you're encountering, please feel free to suggest a new template.
 Your feedback is invaluable in refining our processes and ensuring we address a broader spectrum of concerns.
@@ -134,7 +133,7 @@ Another relevant style guide can be found in the `The Hitchhiker's Guide to Pyth
 
 To ensure a minimal style consistency, we use `black <https://black.readthedocs.io/en/stable/>`__ to auto-format the source code.
 The *black* configuration used in the RadDB project is
-defined in the `pyproject.toml <https://github.com/erikposchivo/raddb/blob/main/pyproject.toml>`__.
+defined in the `pyproject.toml <https://github.com/ltelab/raddb/blob/main/pyproject.toml>`__.
 
 
 **Code Documentation**
@@ -200,17 +199,17 @@ If a hook identifies an issue (signified by the pre-commit script exiting with a
 Currently, RadDB tests that the code to be committed complies with `black's  <https://github.com/psf/black>`__ format style,
 the `ruff <https://github.com/charliermarsh/ruff>`__ linter and the `codespell <https://github.com/codespell-project/codespell>`__ spelling checker.
 
-+-----------------------------------------------------------------------------------------------+------------------------------------------------------------------+------------+-------+
-|  Tool                                                                                         | Aim                                                              | pre-commit | CI/CD |
-+===============================================================================================+==================================================================+============+=======+
-| `Black <https://black.readthedocs.io/en/stable/>`__                                           | Python code formatter                                            | 👍         | 👍    |
-+-----------------------------------------------------------------------------------------------+------------------------------------------------------------------+------------+-------+
-| `Ruff  <https://github.com/charliermarsh/ruff>`__                                             | Python linter                                                    | 👍         | 👍    |
-+-----------------------------------------------------------------------------------------------+------------------------------------------------------------------+------------+-------+
-| `Codespell  <https://github.com/codespell-project/codespell>`__                               | Spelling checker                                                 | 👍         | 👍    |
-+-----------------------------------------------------------------------------------------------+------------------------------------------------------------------+------------+-------+
++-----------------------------------------------------------------+-----------------------+------------+-------+
+| Tool                                                            | Aim                   | pre-commit | CI/CD |
++=================================================================+=======================+============+=======+
+| `Black <https://black.readthedocs.io/en/stable/>`__             | Python code formatter | yes        | yes   |
++-----------------------------------------------------------------+-----------------------+------------+-------+
+| `Ruff  <https://github.com/charliermarsh/ruff>`__               | Python linter         | yes        | yes   |
++-----------------------------------------------------------------+-----------------------+------------+-------+
+| `Codespell  <https://github.com/codespell-project/codespell>`__ | Spelling checker      | yes        | yes   |
++-----------------------------------------------------------------+-----------------------+------------+-------+
 
-The versions of the software used in the pre-commit hooks is specified in the `.pre-commit-config.yaml <https://github.com/erikposchivo/raddb/blob/main/.pre-commit-config.yaml>`__ file.
+The versions of the software used in the pre-commit hooks is specified in the `.pre-commit-config.yaml <https://github.com/ltelab/raddb/blob/main/.pre-commit-config.yaml>`__ file.
 This file serves as a configuration guide, ensuring that the hooks are executed with the correct versions of each tool, thereby maintaining consistency and reliability in the code quality checks.
 
 If a commit is blocked due to these checks, you can manually correct the issues by running locally the appropriate tool: ``black .`` for Black, ``ruff check .`` for Ruff, or ``codespell`` for Codespell.
@@ -223,19 +222,19 @@ These tools, which are not installable on a local setup, perform advanced code q
 
 Refer to the table below for a comprehensive summary of all CI tools employed to assess the code quality of a Pull Request.
 
-+----------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------+
-| Tool                                               | Aim                                                                                                                                 |
-+====================================================+=====================================================================================================================================+
-| `pre-commit.ci <https://pre-commit.ci/>`__         | Run pre-commit (as defined in `.pre-commit-config.yaml <https://github.com/erikposchivo/raddb/blob/main/.pre-commit-config.yaml>`__)  |
-+----------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------+
-| `CodeBeat <https://codebeat.co/>`__                | Automated code review and analysis tools                                                                                            |
-+----------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------+
-| `CodeScene <https://codescene.com/>`__             | Automated code review and analysis tools                                                                                            |
-+----------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------+
-| `CodeFactor <https://www.codefactor.io/>`__        | Automated code review and analysis tools                                                                                            |
-+----------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------+
-| `Codacy <https://www.codacy.com/>`__               | Automated code review and analysis tools                                                                                            |
-+----------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------+
++---------------------------------------------+------------------------------------------------------------+
+| Tool                                        | Aim                                                        |
++=============================================+============================================================+
+| `pre-commit.ci <https://pre-commit.ci/>`__  | Run pre-commit (as defined in ``.pre-commit-config.yaml``) |
++---------------------------------------------+------------------------------------------------------------+
+| `CodeBeat <https://codebeat.co/>`__         | Automated code review and analysis tools                   |
++---------------------------------------------+------------------------------------------------------------+
+| `CodeScene <https://codescene.com/>`__      | Automated code review and analysis tools                   |
++---------------------------------------------+------------------------------------------------------------+
+| `CodeFactor <https://www.codefactor.io/>`__ | Automated code review and analysis tools                   |
++---------------------------------------------+------------------------------------------------------------+
+| `Codacy <https://www.codacy.com/>`__        | Automated code review and analysis tools                   |
++---------------------------------------------+------------------------------------------------------------+
 
 5. Check code functionality
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -267,7 +266,7 @@ The following tools are used:
 
 For contributors interested in running the tests locally:
 
-1. Ensure you have the :ref:`development environment <installation_contributor>` correctly set up. Make sure you also downloaded the additional test data.
+1. Ensure you have the :ref:`development environment <installation_contributor>` correctly set up.
 2. Navigate to the RadDB root directory.
 3. Execute the following command to run the entire test suite:
 
@@ -278,17 +277,17 @@ For contributors interested in running the tests locally:
 For more focused testing or during specific feature development, you may run subsets of tests.
 This can be done by specifying either a sub-directory or a particular test module.
 
-Run tests in a specific sub-directory:
-
-.. code-block:: bash
-
-    pytest raddb/tests/<test_subdirectory>/
-
 Run a particular test module:
 
 .. code-block:: bash
 
-    pytest raddb/tests/<test_subdirectory>/test_<module_name>.py
+    pytest raddb/tests/test_<module_name>.py
+
+Run a single test:
+
+.. code-block:: bash
+
+    pytest raddb/tests/test_<module_name>.py::test_<callable>
 
 These options provide flexibility, allowing you to efficiently target and validate specific components of the RadDB software.
 
@@ -306,7 +305,7 @@ allowed only if quality requirements are fulfilled.
 
 If you encounter errors, you can attempt to fix the formatting errors with the following command:
 
-:: code-block:: bash
+.. code-block:: bash
 
    pre-commit run --all-files
 
@@ -323,7 +322,7 @@ Recommendation for the Pull Requests:
 -  It is perfectly fine to make many small commits as you work on a Pull Request. GitHub will automatically squash all the commits before merging the Pull Request.
 -  If adding a new feature:
 
-   -  Provide a convincing reason to add the new feature. Ideally, propose your idea through a `Feature Request Issue <https://github.com/erikposchivo/raddb/issues/new/choose>`__ and obtain approval before starting work on it. Alternatively, you can present your ideas in the `GitHub Discussions <https://github.com/erikposchivo/raddb/discussions>`__ or in the `Open Radar Science Discourse Group <https://openradar.discourse.group/>`__.
+   -  Provide a convincing reason to add the new feature. Ideally, propose your idea through a `Feature Request Issue <https://github.com/ltelab/raddb/issues/new/choose>`__ and obtain approval before starting work on it. Alternatively, you can present your ideas in the `GitHub Discussions <https://github.com/ltelab/raddb/discussions>`__ or in the `Open Radar Science Discourse Group <https://openradar.discourse.group/>`__.
    -  Implement unit tests to verify the functionality of the new feature. This ensures that your addition works as intended and maintains the quality of the codebase.
 
 -  If fixing bug:
@@ -350,4 +349,4 @@ Credits
 
 Thank you to all the people who have already contributed to RadDB repository!
 
-If you have contributed code or documentation to RadDB, add your name to the `AUTHORS.md <https://github.com/erikposchivo/raddb/blob/main/AUTHORS.md>`__ file.
+If you have contributed code or documentation to RadDB, add your name to the `AUTHORS.md <https://github.com/ltelab/raddb/blob/main/AUTHORS.md>`__ file.

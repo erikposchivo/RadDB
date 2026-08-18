@@ -10,7 +10,7 @@ Core Contributors
 ====================
 
 * Current Release Manager : Ghiggi Gionata
-* Testing Team : Ghiggi Gionata, Son Pham-Ba
+* Testing Team : Ghiggi Gionata, Andrea Giacobbi
 
 
 Versions Guidelines
@@ -20,7 +20,7 @@ RadDB uses  `Semantic <https://semver.org/>`_ Versioning. Each release is associ
 
 Given a version number in the MAJOR.MINOR.PATCH (eg., X.Y.Z) format, here are the differences in these terms:
 
-- MAJOR version - make breaking/incompatible API changes
+- MAJOR version - make breaking/incompatible changes
 - MINOR version - add functionality in a backwards compatible manner.
 - PATCH version - make backwards compatible bug fixes
 
@@ -28,22 +28,22 @@ Given a version number in the MAJOR.MINOR.PATCH (eg., X.Y.Z) format, here are th
 Breaking vs. non-breaking changes
 -----------------------------------
 
-Since RadDB is used by a broad ecosystem of both API consumers and implementers,
+Since RadDB is used by a broad ecosystem of both consumers and implementers,
 it needs a strict definition of what changes are “non-breaking” and are therefore allowed in MINOR and PATCH releases.
 
 In the RadDB spec, a breaking change is any change that requires either consumers or implementers to modify their code for it to continue to function correctly.
 
 Examples of breaking changes include:
 
-- Adding new functionalities to the RadDB that affect the behavior of the software directly.
+- Adding new functionalities to the RadDB that affect the behavior of the package directly.
 
 
 Examples of non-breaking changes include :
 
 - Fix a bug.
-- Adding new functionalities to RadDB that don't affect the behavior of the API directly.
+- Adding new functionalities to RadDB that don't affect the behavior of the package directly.
 - Updating the documentation.
-- Internal function refactoring that doesn't affect the behavior of the software directly.
+- Internal function refactoring that doesn't affect the behavior of the package directly.
 
 
 Ongoing version support
@@ -75,7 +75,7 @@ To build the documentation locally, follow the next three steps.
 1. Set up the python environment for building the documentation
 
 	The python packages required to build the documentation are listed in the
-	`environment.yaml <https://github.com/erikposchivo/raddb/blob/main/docs/environment.yaml>`_ file.
+	`environment.yaml <https://github.com/ltelab/raddb/blob/main/docs/environment.yaml>`_ file.
 
 	For an efficient setup, it is recommended to create a dedicated virtual environment.
 	Navigate to the ``docs/`` directory and execute the following command.
@@ -83,7 +83,7 @@ To build the documentation locally, follow the next three steps.
 
 	.. code-block:: bash
 
-		conda create -f environment.yaml
+		conda env create -f environment.yaml
 
 2. Activate the virtual environment
 
@@ -91,7 +91,7 @@ To build the documentation locally, follow the next three steps.
 
 	.. code-block:: bash
 
-	   	conda activate build-doc-radar-api
+		conda activate build-doc-raddb
 
 
 3. Generate the documentation
@@ -127,12 +127,12 @@ Ghiggi Gionata owns the `ReadTheDocs <https://readthedocs.org/>`__ account.
 Package Release
 =================
 
-A `GitHub Action <https://github.com/erikposchivo/raddb/actions>`_ is configured to automate the packaging and uploading process to `PyPI <https://pypi.org/project/radar-api/>`_.
-This action, detailed `here <https://github.com/erikposchivo/raddb/blob/main/.github/workflows/release_to_pypi.yaml>`_, triggers the packaging workflow depicted in the following image:
+A `GitHub Action <https://github.com/ltelab/raddb/actions>`_ is configured to automate the packaging and uploading process to `PyPI <https://pypi.org/project/raddb/>`_.
+This action, detailed `here <https://github.com/ltelab/raddb/blob/main/.github/workflows/release_to_pypi.yaml>`_, triggers the packaging workflow depicted in the following image:
 
 .. image:: /static/package_release.png
 
-Upon the release of the package on PyPI, a conda-forge bot attempts to automatically update the `conda-forge recipe <https://github.com/conda-forge/radar-api-feedstock/>`__.
+Upon the release of the package on PyPI, a conda-forge bot attempts to automatically update the `conda-forge recipe <https://github.com/conda-forge/raddb-feedstock/>`__.
 Once the conda-forge recipe is updated, a new conda-forge package is released.
 
 The PyPI project and the conda-forge recipes are collaboratively maintained by core contributors of the project.
@@ -144,7 +144,8 @@ Release Process
 Before releasing a new version, the ``CHANGELOG.md`` file should be updated.
 
 Execute ``git tag`` to identify the last version and determine the new ``X.Y.Z`` version number.
-Then, run ``make changelog X.Y.Z`` to update the ``CHANGELOG.md`` file with the list of issues and pull requests that have been closed since the last release.
+Then, run ``loghub ltelab/raddb --milestone vX.Y.Z`` to generate the list of issues and pull
+requests closed since the last release, and paste it into ``CHANGELOG.md``.
 Manually edit the ``CHANGELOG.md`` if necessary.
 
 Then, commit the new ``CHANGELOG.md`` file.
@@ -190,28 +191,28 @@ and performs various checks to catch issues early in the development lifecycle.
 
 The table below summarizes the software tools utilized in our CI pipeline, describes their respective aims and project pages.
 
-+----------------------------------------------------------------------------------------------------+------------------------------------------------------------------+----------------------------------------------------------------------------------------------+
-|  Tools                                                                                             | Aim                                                              | Project page                                                                                 |
-+====================================================================================================+==================================================================+==============================================================================================+
-| `Pytest  <https://docs.pytest.org>`__                                                              | Execute unit tests and functional tests                          |                                                                                              |
-+----------------------------------------------------------------------------------------------------+------------------------------------------------------------------+----------------------------------------------------------------------------------------------+
-| `Black <https://black.readthedocs.io/en/stable/>`__                                                | Python code formatter                                            |                                                                                              |
-+----------------------------------------------------------------------------------------------------+------------------------------------------------------------------+----------------------------------------------------------------------------------------------+
-| `Ruff  <https://github.com/charliermarsh/ruff>`__                                                  | Python linter                                                    |                                                                                              |
-+----------------------------------------------------------------------------------------------------+------------------------------------------------------------------+----------------------------------------------------------------------------------------------+
-| `pre-commit.ci   <https://pre-commit.ci/>`__                                                       | Run pre-commit as defined in `.pre-commit-config.yaml <https://github.com/erikposchivo/raddb/blob/main/.pre-commit-config.yaml>`__                                |
-+----------------------------------------------------------------------------------------------------+------------------------------------------------------------------+----------------------------------------------------------------------------------------------+
-| `Coverage   <https://coverage.readthedocs.io/>`__                                                  | Measure the code coverage of the project's unit tests            |                                                                                              |
-+----------------------------------------------------------------------------------------------------+------------------------------------------------------------------+----------------------------------------------------------------------------------------------+
-| `CodeCov    <https://about.codecov.io/>`__                                                         | Uses the "coverage" package to generate a code coverage report.  | `RadDB  <https://app.codecov.io/gh/erikposchivo/raddb>`__                                  |
-+----------------------------------------------------------------------------------------------------+------------------------------------------------------------------+----------------------------------------------------------------------------------------------+
-| `Coveralls    <https://coveralls.io/>`__                                                           | Uses the "coverage" to track the quality of your code over time. | `RadDB  <https://coveralls.io/github/erikposchivo/raddb>`__                                |
-+----------------------------------------------------------------------------------------------------+------------------------------------------------------------------+----------------------------------------------------------------------------------------------+
-| `CodeBeat      <https://codebeat.co/>`__                                                           | Automated code review and analysis tools                         | `RadDB <https://codebeat.co/projects/github-com-erikposchivo-raddb-main>`__                |
-+----------------------------------------------------------------------------------------------------+------------------------------------------------------------------+----------------------------------------------------------------------------------------------+
-| `CodeScene <https://codescene.com/>`__                                                             | Automated code review and analysis tools                         | `RadDB  <https://codescene.io/projects/63299/>`__                                        |
-+----------------------------------------------------------------------------------------------------+------------------------------------------------------------------+----------------------------------------------------------------------------------------------+
-| `CodeFactor <https://www.codefactor.io/>`__                                                        | Automated code review and analysis tools                         | `RadDB <https://www.codefactor.io/repository/github/erikposchivo/raddb>`__                 |
-+----------------------------------------------------------------------------------------------------+------------------------------------------------------------------+----------------------------------------------------------------------------------------------+
-| `Codacy      <https://www.codacy.com/>`__                                                          | Automated code review and analysis tools                         | `RadDB <https://app.codacy.com/gh/erikposchivo/raddb/dashboard>`__                         |
-+----------------------------------------------------------------------------------------------------+------------------------------------------------------------------+----------------------------------------------------------------------------------------------+
++-----------------------------------------------------+------------------------------------------------------------------+--------------------------------------------------------------------------------+
+| Tools                                               | Aim                                                              | Project page                                                                   |
++=====================================================+==================================================================+================================================================================+
+| `Pytest  <https://docs.pytest.org>`__               | Execute unit tests and functional tests                          |                                                                                |
++-----------------------------------------------------+------------------------------------------------------------------+--------------------------------------------------------------------------------+
+| `Black <https://black.readthedocs.io/en/stable/>`__ | Python code formatter                                            |                                                                                |
++-----------------------------------------------------+------------------------------------------------------------------+--------------------------------------------------------------------------------+
+| `Ruff  <https://github.com/charliermarsh/ruff>`__   | Python linter                                                    |                                                                                |
++-----------------------------------------------------+------------------------------------------------------------------+--------------------------------------------------------------------------------+
+| `pre-commit.ci   <https://pre-commit.ci/>`__        | Run pre-commit as defined in ``.pre-commit-config.yaml``         | `config <https://github.com/ltelab/raddb/blob/main/.pre-commit-config.yaml>`__ |
++-----------------------------------------------------+------------------------------------------------------------------+--------------------------------------------------------------------------------+
+| `Coverage   <https://coverage.readthedocs.io/>`__   | Measure the code coverage of the project's unit tests            |                                                                                |
++-----------------------------------------------------+------------------------------------------------------------------+--------------------------------------------------------------------------------+
+| `CodeCov    <https://about.codecov.io/>`__          | Uses the "coverage" package to generate a code coverage report.  | `RadDB <https://app.codecov.io/gh/ltelab/raddb>`__                             |
++-----------------------------------------------------+------------------------------------------------------------------+--------------------------------------------------------------------------------+
+| `Coveralls    <https://coveralls.io/>`__            | Uses the "coverage" to track the quality of your code over time. | `RadDB <https://coveralls.io/github/ltelab/raddb>`__                           |
++-----------------------------------------------------+------------------------------------------------------------------+--------------------------------------------------------------------------------+
+| `CodeBeat      <https://codebeat.co/>`__            | Automated code review and analysis tools                         | `RadDB <https://codebeat.co/projects/github-com-ltelab-raddb-main>`__          |
++-----------------------------------------------------+------------------------------------------------------------------+--------------------------------------------------------------------------------+
+| `CodeScene <https://codescene.com/>`__              | Automated code review and analysis tools                         |                                                                                |
++-----------------------------------------------------+------------------------------------------------------------------+--------------------------------------------------------------------------------+
+| `CodeFactor <https://www.codefactor.io/>`__         | Automated code review and analysis tools                         | `RadDB <https://www.codefactor.io/repository/github/ltelab/raddb>`__           |
++-----------------------------------------------------+------------------------------------------------------------------+--------------------------------------------------------------------------------+
+| `Codacy      <https://www.codacy.com/>`__           | Automated code review and analysis tools                         | `RadDB <https://app.codacy.com/gh/ltelab/raddb/dashboard>`__                   |
++-----------------------------------------------------+------------------------------------------------------------------+--------------------------------------------------------------------------------+

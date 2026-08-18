@@ -11,7 +11,6 @@
 # documentation root, use os.path.abspath to make it absolute, like shown here.
 #
 import os
-import shutil
 import sys
 import inspect
 import raddb
@@ -36,7 +35,6 @@ extensions = [
     "sphinx.ext.coverage",
     "sphinx.ext.viewcode",
     "sphinx.ext.intersphinx",
-    "sphinx.ext.coverage",
     "sphinx.ext.linkcode",
     # "sphinx_design",
     # "sphinx_gallery.gen_gallery",
@@ -52,20 +50,16 @@ extensions = [
 
 # Set up mapping for other projects' docs
 intersphinx_mapping = {
-    "cartopy": ("https://scitools.org.uk/cartopy/docs/latest/", None),
     "matplotlib": ("https://matplotlib.org/stable/", None),
     "numpy": ("https://numpy.org/doc/stable/", None),
     "pandas": ("https://pandas.pydata.org/docs/", None),
+    "polars": ("https://docs.pola.rs/api/python/stable/", None),
     "pyproj": ("https://pyproj4.github.io/pyproj/stable/", None),
     "python": ("https://docs.python.org/3/", None),
-    "scipy": ("https://docs.scipy.org/doc/scipy/", None),
     "xarray": ("https://docs.xarray.dev/en/stable/", None),
-    "pyvista": ("https://docs.pyvista.org/version/stable/", None),
-    "pyresample": ("https://pyresample.readthedocs.io/en/stable/", None),
     "dask": ("https://docs.dask.org/en/stable/", None),
     "shapely": ("https://shapely.readthedocs.io/en/stable/", None),
     "geopandas": ("https://geopandas.org/en/stable/", None),
-    "xvec": ("https://xvec.readthedocs.io/en/stable/", None),
     "xradar": ("https://docs.openradarscience.org/projects/xradar/en/stable/", None),
     "pyart": ("https://arm-doe.github.io/pyart/", None),
     "fsspec": ("https://filesystem-spec.readthedocs.io/en/stable/", None),
@@ -101,9 +95,6 @@ napoleon_include_init_with_doc = False
 # The name of the Pygments (syntax highlighting) style to use.
 pygments_style = "sphinx"
 
-# Add any paths that contain templates here, relative to this directory.
-templates_path = ["_templates"]
-
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
 # This pattern also affects html_static_path and html_extra_path.
@@ -121,8 +112,9 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 html_theme = "sphinx_book_theme"
 html_title = "RadDB"
 html_theme_options = {
-    "repository_url": "https://github.com/erikposchivo/raddb",
+    "repository_url": "https://github.com/ltelab/raddb",
     "repository_branch": "main",
+    "path_to_docs": "docs/source",
     "use_repository_button": True,
     "use_edit_page_button": True,
     # "use_source_button": True,
@@ -209,6 +201,6 @@ def linkcode_resolve(domain, info):
     fn = os.path.relpath(fn, start=os.path.dirname(raddb.__file__))
 
     if "+" in raddb.__version__:
-        return f"https://github.com/erikposchivo/raddb/blob/main/raddb/{fn}{linespec}"
+        return f"https://github.com/ltelab/raddb/blob/main/raddb/{fn}{linespec}"
     else:
-        return f"https://github.com/erikposchivo/raddb/blob/" f"v{raddb.__version__}/raddb/{fn}{linespec}"
+        return f"https://github.com/ltelab/raddb/blob/" f"v{raddb.__version__}/raddb/{fn}{linespec}"

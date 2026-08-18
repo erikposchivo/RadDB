@@ -13,22 +13,22 @@ To build the documentation locally, follow the next three steps.
 
 **1. Set up the python environment for building the documentation**
 
-The python packages required to build the documentation are listed in the [environment.yaml](https://github.com/erikposchivo/raddb/blob/main/docs/environment.yaml) file.
+The python packages required to build the documentation are listed in the [environment.yaml](https://github.com/ltelab/raddb/blob/main/docs/environment.yaml) file.
 
 For an efficient setup, we recommend creating a dedicated virtual environment.
 Navigate to the `docs/` directory and execute the following command.
 This will create a new environment and install the required packages:
 
-```
-conda create -f environment.yaml
+```bash
+conda env create -f environment.yaml
 ```
 
 **2. Activate the virtual environment**
 
 Once the environment is ready, activate it using:
 
-```
-conda activate build-doc-radar-api
+```bash
+conda activate build-doc-raddb
 ```
 
 **3. Generate the documentation**
@@ -36,7 +36,7 @@ conda activate build-doc-radar-api
 With the environment set and activated, you're ready to generate the documentation.
 Execute:
 
-```
+```bash
 make clean html
 ```
 
