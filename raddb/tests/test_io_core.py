@@ -17,6 +17,8 @@ used to crash the batch on ``pd.NaT.month``.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import polars as pl
@@ -258,7 +260,7 @@ def test_the_output_path_encodes_the_volume_time(lut_base, make_datatree):
     path = datatree_to_parquet(dt, radar=RADAR, base_output_path=lut_base)
 
     assert path.endswith(f"{RADAR}_20240826_025000_POL.parquet")
-    assert "/2024/08/26/" in path
+    assert Path(path).parts[-4:-1] == ("2024", "08", "26")
 
 
 def test_save_polar_parquet_returns_none_on_an_empty_frame():

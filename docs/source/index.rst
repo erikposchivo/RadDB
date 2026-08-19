@@ -32,6 +32,7 @@ Documentation
 
    02_installation
    03_quickstart
+   04_tutorials
    06_contributors_guidelines
    07_maintainers_guidelines
    08_authors

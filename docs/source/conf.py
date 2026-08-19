@@ -11,6 +11,7 @@
 # documentation root, use os.path.abspath to make it absolute, like shown here.
 #
 import os
+import shutil
 import sys
 import inspect
 import raddb
@@ -25,6 +26,21 @@ sys.path.insert(0, os.path.join(os.path.abspath("../.."), "raddb"))
 project = "raddb"
 copyright = "Gionata Ghiggi"
 author = "Gionata Ghiggi"
+
+
+# -- Copy Jupyter Notebook Tutorials -----------------------------------------
+_source_dir = os.path.abspath(os.path.dirname(__file__))
+_root_dir = os.path.dirname(os.path.dirname(_source_dir))
+_tutorials_dir = os.path.join(_source_dir, "tutorials")
+os.makedirs(_tutorials_dir, exist_ok=True)
+for _filename in [
+    "01_archiving.ipynb",
+    "02_opening_and_filtering.ipynb",
+    "03_area_of_interest.ipynb",
+    "04_plots.ipynb",
+    "05_demo_pipeline.ipynb",
+]:
+    shutil.copyfile(os.path.join(_root_dir, "tutorial", _filename), os.path.join(_tutorials_dir, _filename))
 
 # -- General configuration ---------------------------------------------------
 
@@ -99,6 +115,9 @@ pygments_style = "sphinx"
 # directories to ignore when looking for source files.
 # This pattern also affects html_static_path and html_extra_path.
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+
+# Render the notebooks as archived: never execute them at build time.
+nbsphinx_execute = "never"
 
 # # Controlling automatically generating summary tables in the docs
 # autosummary_generate = True
