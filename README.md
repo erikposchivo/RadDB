@@ -1,4 +1,4 @@
-# RadDB — radar volumes as a Parquet archive
+# RadDB: Radar Database
 
 |                   |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -37,8 +37,8 @@ stays small: a 12-sweep WSR-88D volume of 8,791,200 polar gates becomes 8.2 MB.
 ## Installation
 
 ```bash
-pip install raddb              # everything in this README works
-pip install "raddb[viz]"       # + the interactive Jupyter map and cartopy basemaps
+pip install raddb
+pip install "raddb[viz]"       # interactive Jupyter map and cartopy basemaps
 ```
 
 Core runtime dependencies: `numpy, pandas, polars, geopandas, shapely, pyproj, xarray, pyyaml, pyarrow, matplotlib, netcdf4, zarr`.
@@ -56,7 +56,7 @@ Core runtime dependencies: `numpy, pandas, polars, geopandas, shapely, pyproj, x
 ```python
 import raddb
 
-db = raddb.RadDB(archive_dir="/data/raddb", crs=32614)  # 32614 = UTM zone 14N
+db = raddb.RadDB(archive_dir="/data/raddb", crs=32614)
 ```
 
 A **projected CRS is mandatory to write** an archive and never needed to read one.
@@ -88,7 +88,7 @@ db.archive(
 
 ```python
 rdf = db.open(time_period=("2024-06-12", "2024-06-13"), radars="KTLX")
-print(rdf)  # rich summary: gates, radars, time range, columns
+print(rdf)  # summary: gates, radars, time range, columns
 
 len(rdf), rdf.columns(), rdf.radars()
 rdf.start_time(), rdf.end_time()
@@ -109,7 +109,7 @@ filtered_rdf = rdf.filter(
         {"var": "DBZH", "logic": ">", "threshold": 20},
         {"var": "RHOHV", "logic": ">", "threshold": 0.9},
     ]
-)  # AND
+)
 
 df = rdf.to_pandas(with_geometry=True)  # pandas + gate coordinates
 gdf = rdf.to_geopandas()  # GeoDataFrame (with CRS)
@@ -176,7 +176,7 @@ db.add_lut_projection("KTLX", epsg=32614)
 
 ```
 raddb/
-├── __init__.py     # the public interface
+├── __init__.py
 ├── main.py         # the RadDB class
 ├── io_core.py      # DataTree <-> DataFrame <-> Parquet + archive backends
 ├── lut.py          # LUT generation / geo projection

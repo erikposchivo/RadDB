@@ -16,7 +16,7 @@ To build the documentation locally, follow the next three steps.
 The python packages required to build the documentation are listed in the [environment.yaml](https://github.com/ltelab/raddb/blob/main/docs/environment.yaml) file.
 
 For an efficient setup, we recommend creating a dedicated virtual environment.
-Navigate to the `docs/` directory and execute the following command.
+**Navigate to the `docs/` directory and execute the following command.**
 This will create a new environment and install the required packages:
 
 ```bash
