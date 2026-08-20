@@ -1,16 +1,15 @@
-"""
-raddb/helper.py
----------------
-Shared utilities and configuration for RadDB.
-"""
-import re
-import time as _time
+"""Shared utilities and configuration for RadDB."""
+
 import contextlib as _contextlib
 import datetime as _dt
+import re
+import time as _time
 from pathlib import Path
 
 import pandas as pd
+import polars as pl
 import xarray as xr
+
 
 # --- DataTree Helpers ---
 def list_sweep_names(dt: xr.DataTree) -> list[str]:
@@ -18,11 +17,10 @@ def list_sweep_names(dt: xr.DataTree) -> list[str]:
     pat = re.compile(r"^sweep_\d+$")
     return sorted(s.lstrip("/") for s in dt.groups if pat.match(s.lstrip("/")))
 
+
 # --- Parquet Helpers ---
 def ensure_utc(dt_input):
-    """
-    Ensure a datetime-like input is timezone-aware and in UTC.
-    """
+    """Ensure a datetime-like input is timezone-aware and in UTC."""
     if dt_input is None:
         return None
 
@@ -37,43 +35,87 @@ def read_parquet_files(
     pattern: str = "**/*POL.parquet",
     columns: list[str] | None = None,
     verbose: bool = True,
-) -> pd.DataFrame:
+) -> "pl.DataFrame":
+    """Read matching parquet files into a single **polars** DataFrame."""
     files = sorted(Path(base_path).rglob(pattern))
     if not files:
-        if verbose: print(f"[RadDB] No files found matching '{pattern}' in {base_path}")
-        return pd.DataFrame()
-    if verbose: print(f"[RadDB] Found {len(files)} file(s) — loading...")
-    return pd.concat([pd.read_parquet(f, columns=columns, engine="pyarrow") for f in files], ignore_index=True)
+        if verbose:
+            print(f"[RadDB] No files found matching '{pattern}' in {base_path}")
+        return pl.DataFrame()
+    if verbose:
+        print(f"[RadDB] Found {len(files)} file(s) — loading...")
+    return pl.concat(
+        [pl.read_parquet(f, columns=columns) for f in files],
+        how="vertical_relaxed",
+    )
 
-def check_dataframe(df: pd.DataFrame) -> None:
+
+def check_dataframe(df: "pl.DataFrame | pd.DataFrame") -> None:
+    """Print a quick structural summary; accepts polars or pandas."""
     print("-" * 50)
     print(f"Shape:   {df.shape}")
-    print(f"Columns: {df.columns.tolist()}")
+    print(f"Columns: {list(df.columns)}")
     print("-" * 50)
-    print(f"Missing values:\n{df.isnull().sum()}")
+    if isinstance(df, pl.DataFrame):
+        nulls = df.null_count().to_dicts()[0] if len(df.columns) else {}
+        print("Missing values:")
+        for k, v in nulls.items():
+            print(f"{k}    {v}")
+    else:
+        print(f"Missing values:\n{df.isna().sum()}")
     print("-" * 50)
     print(df.head())
     print("-" * 50)
 
+
 # --- Radar Name Normalization ---
+
+#: Characters a radar name may be built from, in the order that gives each its
+#: numeric value in the base-36 ``gate_id`` radar code (see
+#: :func:`raddb.lut.encode_radar_code`).
+RADAR_ALPHABET: str = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+#: Maximum radar-name length.  Four base-36 characters is what the ``gate_id``
+#: layout can hold: ``36**4 = 1_679_616`` codes against the ``9_223_371`` slots
+#: int64 leaves above the ``10**12`` gate field, whereas ``36**5`` would need
+#: 60 million.  It fits every single-letter (MeteoSwiss) and four-letter
+#: (NEXRAD ``KTLX``) identifier; five-character ODIM NOD codes such as
+#: ``chlem`` must be aliased to four and kept in the info YAML's ``network``.
+RADAR_CODE_LEN: int = 4
+
+_RADAR_NAME_RE = re.compile(rf"^[{RADAR_ALPHABET}]{{1,{RADAR_CODE_LEN}}}$")
+
+
 def normalize_radar_name(radar: str) -> str:
     """
-    Normalize radar name to use only the single letter identifier.
+    Normalize a radar name to its canonical archive form.
 
-    Handles both formats:
-    - "MLA" -> "A"
-    - "A" -> "A"
-    - "MLW" -> "W"
+    The canonical form is upper-case, 1 to :data:`RADAR_CODE_LEN` characters
+    drawn from :data:`RADAR_ALPHABET`, with leading zeros stripped (they are
+    padding in the ``gate_id`` radar code, not part of the name, so ``"0A"``
+    and ``"A"`` are the same radar).
+
+    A three-character ``ML*`` name is the MeteoSwiss convention for a
+    single-letter radar and is reduced to that letter (``"MLA"`` -> ``"A"``).
+    Every other name is kept **whole** — ``"KTLX"`` stays ``"KTLX"``.
 
     Parameters
     ----------
     radar : str
-        Radar name (can be "ML*" format or just the letter)
+        Radar name, e.g. ``"A"``, ``"MLA"`` or ``"KTLX"``.
 
     Returns
     -------
     str
-        Normalized single-letter radar name (uppercase)
+        Canonical radar name.
+
+    Raises
+    ------
+    ValueError
+        If the name is empty, too long, or uses characters outside
+        :data:`RADAR_ALPHABET`.  It is raised rather than silently truncating:
+        two sites reduced to the same letter would overwrite each other's
+        archive.
 
     Examples
     --------
@@ -81,26 +123,49 @@ def normalize_radar_name(radar: str) -> str:
     'A'
     >>> normalize_radar_name("A")
     'A'
-    >>> normalize_radar_name("MLW")
-    'W'
+    >>> normalize_radar_name("KTLX")
+    'KTLX'
     """
-    radar_upper = radar.upper().strip()
+    if not isinstance(radar, str):
+        raise ValueError(f"radar name must be a string, got {type(radar).__name__}.")
 
-    # If it starts with "ML", extract the last character
-    if radar_upper.startswith("ML") and len(radar_upper) > 2:
-        return radar_upper[-1]
+    name = radar.upper().strip()
 
-    # Otherwise, return the last character (or the string if it's already a single char)
-    return radar_upper[-1] if len(radar_upper) > 0 else radar_upper
+    # MeteoSwiss "ML<letter>".  Restricted to exactly three characters so that a
+    # genuine four-character name beginning with "ML" is not mistaken for one.
+    if len(name) == 3 and name.startswith("ML"):
+        name = name[-1]
+
+    # Leading zeros are gate_id padding ("000A"), never part of the name.
+    stripped = name.lstrip("0")
+    if stripped:
+        name = stripped
+
+    if not _RADAR_NAME_RE.match(name):
+        raise ValueError(
+            f"radar name {radar!r} is not usable: a radar name must be 1 to "
+            f"{RADAR_CODE_LEN} characters from [0-9A-Z] (e.g. 'A', 'KTLX'). "
+            f"Longer identifiers must be aliased to {RADAR_CODE_LEN} characters.",
+        )
+    return name
+
+
+def is_valid_radar_name(radar) -> bool:
+    """``True`` when :func:`normalize_radar_name` would accept *radar*."""
+    try:
+        normalize_radar_name(radar)
+    except ValueError:
+        return False
+    return True
 
 
 # --- Filter Logic Registry ---
 FILTER_LOGICS: dict[str, callable] = {
     "==": lambda a, b: a == b,
     "!=": lambda a, b: a != b,
-    ">":  lambda a, b: a > b,
+    ">": lambda a, b: a > b,
     ">=": lambda a, b: a >= b,
-    "<":  lambda a, b: a < b,
+    "<": lambda a, b: a < b,
     "<=": lambda a, b: a <= b,
 }
 
@@ -116,22 +181,25 @@ def resolve_filter_logic(logic: str):
     fn = FILTER_LOGICS.get(logic)
     if fn is None:
         raise ValueError(
-            f"Unknown logic '{logic}'. Choose from: {list(FILTER_LOGICS)}"
+            f"Unknown logic '{logic}'. Choose from: {list(FILTER_LOGICS)}",
         )
     return fn
 
 
 def filter_df(
-    df: pd.DataFrame,
+    df: "pl.DataFrame | pd.DataFrame",
     feature: str = "DBZH",
     threshold: float = 0.0,
     logic: str = ">",
-) -> pd.DataFrame:
+) -> "pl.DataFrame | pd.DataFrame":
     """Filter a DataFrame, keeping rows where ``feature [logic] threshold``.
+
+    Accepts polars or pandas and returns the **same kind**, so an existing
+    pandas caller keeps getting pandas back.
 
     Parameters
     ----------
-    df : pd.DataFrame
+    df : pl.DataFrame or pd.DataFrame
         Input DataFrame.
     feature : str
         Column name to filter on (default ``"DBZH"``).
@@ -143,8 +211,8 @@ def filter_df(
 
     Returns
     -------
-    pd.DataFrame
-        Filtered DataFrame with non-matching rows dropped (index reset).
+    pl.DataFrame or pd.DataFrame
+        Filtered DataFrame with non-matching rows dropped (pandas index reset).
 
     Raises
     ------
@@ -157,6 +225,8 @@ def filter_df(
     if feature not in df.columns:
         raise KeyError(f"Feature '{feature}' not found in DataFrame columns.")
     mask = fn(df[feature].to_numpy(), threshold)
+    if isinstance(df, pl.DataFrame):
+        return df.filter(pl.Series(mask))
     return df[mask].reset_index(drop=True)
 
 
@@ -215,11 +285,9 @@ def filter_dt(
             # is meaningless and broadcasting the mask onto them explodes
             # memory (dims are disjoint).
             mask_dims = set(keep_mask.dims)
-            ds = ds.assign({
-                name: var.where(keep_mask)
-                for name, var in ds.data_vars.items()
-                if mask_dims & set(var.dims)
-            })
+            ds = ds.assign(
+                {name: var.where(keep_mask) for name, var in ds.data_vars.items() if mask_dims & set(var.dims)},
+            )
         dict_ds[sweep_name] = ds
 
     return xr.DataTree.from_dict(dict_ds)
@@ -228,6 +296,7 @@ def filter_dt(
 # ============================================================
 # --- Profiling Utilities ---
 # ============================================================
+
 
 def _vprint(msg: str, verbose: bool = False) -> None:
     """Print a timestamped progress message to stdout when verbose is True."""
@@ -244,8 +313,8 @@ class StageTimer:
     >>> timer = StageTimer()
     >>> with timer.time_stage("my_stage", volume="vol_001", sweep=2):
     ...     do_work()
+    ...
     >>> timer.print_summary()
-    >>> plot_profiling_dashboard(timer)
     """
 
     def __init__(self):
@@ -258,17 +327,28 @@ class StageTimer:
         try:
             yield
         finally:
-            self.records.append({
-                "volume": volume,
-                "sweep": sweep,
-                "stage": stage,
-                "t_start": t0,
-                "duration": _time.perf_counter() - t0,
-            })
+            self.records.append(
+                {
+                    "volume": volume,
+                    "sweep": sweep,
+                    "stage": stage,
+                    "t_start": t0,
+                    "duration": _time.perf_counter() - t0,
+                },
+            )
 
-    def record(self, stage: str, duration: float, volume: str | None = None, sweep: int | None = None, t_start: float | None = None):
+    def record(
+        self,
+        stage: str,
+        duration: float,
+        volume: str | None = None,
+        sweep: int | None = None,
+        t_start: float | None = None,
+    ):
         """Manually append a pre-measured timing entry."""
-        self.records.append({"volume": volume, "sweep": sweep, "stage": stage, "t_start": t_start, "duration": duration})
+        self.records.append(
+            {"volume": volume, "sweep": sweep, "stage": stage, "t_start": t_start, "duration": duration},
+        )
 
     def to_dataframe(self) -> pd.DataFrame:
         """Return all records as a DataFrame with columns [volume, sweep, stage, duration]."""
@@ -302,8 +382,7 @@ class StageTimer:
         for stage, row in summary.iterrows():
             pct = 100.0 * row["sum"] / total if total > 0 else 0.0
             print(
-                f"  {stage:<34} {row['sum']:>6.2f}s  {row['mean']:>5.2f}s"
-                f"  {int(row['count']):>5}  {pct:>4.1f}%"
+                f"  {stage:<34} {row['sum']:>6.2f}s  {row['mean']:>5.2f}s" f"  {int(row['count']):>5}  {pct:>4.1f}%",
             )
         print("-" * 68)
         print(f"  {'TOTAL':<34} {total:>6.2f}s")

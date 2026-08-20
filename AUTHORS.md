@@ -11,3 +11,4 @@ The following people have made contributions to this project:
 <!--- See https://gist.github.com/djhoese/52220272ec73b12eb8f4a29709be110d for auto-generating parts of this list --->
 
 - [(erikposchivo)](https://github.com/erikposchivo) - EPFL
+- \[(ghiggi)\] (https://github.com/ghiggi) - EPFL

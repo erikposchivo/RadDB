@@ -2,157 +2,161 @@
 Quick Start
 ===========
 
-RadDB allows to download weather radar data from various cloud buckets of several
-meteorological offices.
-To download the data, it is necessary to create the RadDB configuration file.
+RadDB turns radar **volumes** into a compact **tabular archive**: one Parquet
+file per volume, one row per radar gate.  Once archived, a whole campaign is
+queried like a dataframe — filter it, crop it, plot it — without ever
+re-reading the source files.
 
-Create the RadDB configuration file
----------------------------------------
+This page walks through the shortest useful path; the notebooks in the
+repository's ``tutorial/`` directory cover each step in depth.
 
-The RadDB configuration file records the directory on your local machine where to
-save the radar data of interest.
+What RadDB stores
+-----------------
 
-To facilitate the creation of the configuration file, you can adapt and run the following script in Python.
-The configuration file will be created in the user's home directory under the name ``.config_raddb.yaml``.
+A radar is written as one **static look-up table** (the per-gate geometry,
+generated once) plus one **Parquet file per volume** (the variables that change
+from scan to scan)::
 
-.. code-block:: python
+    {archive_dir}/KTLX/LUT/KTLX_LUT.parquet          # gate geometry, written once
+    {archive_dir}/KTLX/LUT/KTLX_info.yaml            # site, CRS, scan strategy
+    {archive_dir}/KTLX/2024/06/12/KTLX_20240612_220324_POL.parquet
 
-    import raddb
+The two are linked by an integer ``gate_id``.  Because the geometry is stored
+once and never repeated, a volume file holds only the measurements — which is
+what makes the archive small.
 
-    base_dir = "<path/to/a/local/directory/>"  # where to download all RADAR data
-    raddb.define_configs(
-        base_dir=base_dir,
-    )
-
-Now please close and restart the python session to make sure that the configuration file is correctly loaded.
-You can check that the configuration file has been correctly created with:
-
-.. code-block:: python
-
-    import raddb
-
-    configs = raddb.read_configs()
-    print(configs)
-
-
-Search the radar of interest
-----------------------------------------
-
-To list the available radars, you can use the following command:
-
-.. code-block:: python
-
-    import raddb
-
-    raddb.available_radars()
-
-
-You can also search which radars of a specific network are available during
-a given time period:
-
-
-.. code-block:: python
-
-    raddb.available_radars(network="NEXRAD", start_time="1992-01-01", end__time="1993-01-01")
-
-
-The available radar networks can be listed using:
-
-.. code-block:: python
-
-    raddb.available_networks()
-
-
-Download the data
---------------------
-
-To download the data, you can adapt the following code snippet:
-
-.. code-block:: python
-
-    import raddb
-
-    radar = "KABR"
-    network = "NEXRAD"
-
-    start_time = "2021-02-01 12:00:00"
-    end_time = "2021-02-01 13:00:00"
-
-    raddb.download(
-        network=network,
-        radar=radar,
-        start_time=start_time,
-        end_time=end_time,
-    )
-
-Search the data
---------------------
-
-RadDB enables to search files files which have been downloaded locally,
-or files which are located into a cloud bucket. To search for file locally,
-specify ``procol="local"``, while to retrieve the file path of cloud bucket files,
-specify ``procol="s3"``.
-
-.. code-block:: python
-
-    # Search for files on cloud bucket
-    filepaths = raddb.find_files(
-        network=network,
-        radar=radar,
-        start_time=start_time,
-        end_time=end_time,
-        fs_args=fs_args,
-        protocol="s3",
-        verbose=verbose,
-    )
-    print(filepaths)
-
-    # Search for files locally
-    filepaths = raddb.find_files(
-        network=network,
-        radar=radar,
-        start_time=start_time,
-        end_time=end_time,
-        fs_args=fs_args,
-        protocol="local",
-        verbose=verbose,
-    )
-    print(filepaths)
-
-
-RadDB provide an utility to group filepaths by temporal interval,
-radar volume identifiers, etc.
-
-.. code-block:: python
-
-    dict_filepaths = raddb.group_filepaths(filepaths, network=network, groups="volume_identifier")
-    dict_filepaths = raddb.group_filepaths(filepaths, network=network, groups=["day", "hour"])
-
-
-Open the data
+Archive a volume
 ----------------
 
-RadDB enables to open radars files into various objects by simply providing a
-local or cloud file path.
+RadDB is **network-agnostic**: any
+`xarray.DataTree <https://docs.xarray.dev/en/stable/generated/xarray.DataTree.html>`_
+with the standard
+`xradar <https://docs.openradarscience.org/projects/xradar/en/stable/>`_
+coordinate layout can be archived, whether it comes from NEXRAD,
+ODIM or IRIS.
 
-- ``raddb.open_datatree(filepath, network)`` opens a file into a ``xarray.DataTree`` object using the appropriate ``xradar`` reader. Typically, an ``xarray.DataTree`` object contains multiple radar sweeps.
+.. code-block:: python
 
-- ``raddb.open_dataset(filepath, network, sweep="sweep_0")`` opens a file and extract a single radar sweep into a ``xarray.Dataset`` object. The name of the radar sweep must be known beforehand !
+    import raddb
 
-- ``raddb.open_pyart(filepath, network)`` opens a file into a ``pyart.Radar``  object.
+    db = raddb.RadDB(archive_dir="/path/to/archive", crs=32614)  # UTM 14N, the KTLX zone
 
+    # a single in-memory volume
+    dt = raddb.open_any_datatree("KTLX_20240612_220324.zarr")
+    db.archive(datatree=dt, radar="KTLX")
 
-Further documentation
---------------------------
+    # or a whole directory of saved volumes, grouped by radar from the filename
+    db.archive(datatree_dir="/path/to/datatrees", time_period=("2024-06-01", "2024-07-01"))
 
-For radar data processing, please have a look at
+.. note::
+   A **projected CRS is mandatory to write** an archive and never needed to
+   read one.  There is no default, because a wrong projection is silently
+   wrong. Use ``raddb.lut.suggest_crs(longitude, latitude)`` if you are
+   unsure which one to pass.
+
+Filter while archiving
+----------------------
+
+Most gates in a radar volume contain no echo.  The ``filter`` argument decides
+which gates ever reach the disk, so it is the main control on archive size.
+It takes a ``{"var", "logic", "threshold"}`` dictionary:
+
+.. code-block:: python
+
+    # the default: drop no-echo gates
+    db.archive(datatree=dt, radar="KTLX", filter={"var": "DBZH", "logic": ">", "threshold": 0})
+
+    # keep only significant echo — a much smaller archive
+    db.archive(datatree=dt, radar="KTLX", filter={"var": "DBZH", "logic": ">", "threshold": 20})
+
+Measured on ``KTLX_20240612_220324``, a 12-sweep WSR-88D volume of
+8,791,200 polar gates:
+
+=========================  ==============  ==========
+filter                     gates archived  Parquet
+=========================  ==============  ==========
+``DBZH > 0`` (default)     1,424,223       8.22 MB
+``DBZH > 20``              12,642          0.11 MB
+=========================  ==============  ==========
+
+The filter is irreversible — discarded gates are not in the archive — so choose
+the threshold against what you intend to analyse.
+
+Inspect the archive
+-------------------
+
+.. code-block:: python
+
+    db = raddb.RadDB(archive_dir="/path/to/archive")  # reading needs no CRS
+
+    db.list_radars()  # ['FANJ', 'KDVN', 'KLOT', 'KMLB', 'KTLX', ...]
+    db.inventory()  # volumes, time range and size per radar
+    db.get_radar_info("KTLX")  # site, CRS, beamwidth, sweep geometry
+
+Open and query
+--------------
+
+``open()`` returns a **data-carrying** ``RadDB`` holding a
+`polars <https://pola.rs/>`_ DataFrame.  Time, radar, columns and gate filters
+are all pushed down into the scan, so only the rows you asked for are ever
+materialised:
+
+.. code-block:: python
+
+    rdf = db.open(
+        radars="KTLX",
+        time_period=("2024-06-12", "2024-06-13"),
+        columns=["DBZH", "ZDR"],  # fewer columns to read
+        filters=[{"var": "DBZH", "logic": ">", "threshold": 20}],  # applied during the scan
+    )
+
+    len(rdf)  # 70359
+    rdf.columns()  # ['gate_id', 'DBZH', 'ZDR', 'volume_time', 'radar']
+    rdf.head()
+
+Every operation returns a **new** ``RadDB``, so calls chain:
+
+.. code-block:: python
+
+    heavy_rain = (
+        db.open(radars="KTLX")
+        .filter({"var": "DBZH", "logic": ">", "threshold": 30})
+        .sel(volume_time="2024-06-12 22:03:24")
+        .crop_around_point(point=(-97.278, 35.333), distance=25_000, crs=4326)
+    )
+
+Alongside ``crop_around_point`` there are ``crop_by_bbox``, ``crop_by_polygone``
+(shapely geometry, GeoDataFrame or a ``.shp`` / ``.geojson`` path) and
+``extract_cross_section`` for a vertical slice along an arbitrary line.
+
+Plot
+----
+
+Four plots, each drawing into one ``Axes`` and returning the matplotlib artist,
+so you compose panels by passing ``ax=``.  They read the exact gate geometry
+from the look-up table and draw only the gates the object holds:
+
+.. code-block:: python
+
+    rdf.plot_ppi(sweep=1, variable="DBZH")  # one sweep
+    rdf.plot_rhi(azimuth=90)  # one azimuth
+    rdf.plot_cappi(altitude=3000)  # constant-ppi slice
+    rdf.plot_vcs(line="section.geojson")  # vertical cross-section
+
+Convert
+-------
+
+.. code-block:: python
+
+    rdf.to_pandas(with_geometry=True)  # + latitude / longitude / altitude / sweep
+    rdf.to_geopandas()  # a GeoDataFrame of gate centroids
+    rdf.to_datatree()  # back to xarray, on the full polar grid
+
+Further reading
+---------------
+
+If you are new to the ecosystem, the
 `xradar <https://docs.openradarscience.org/projects/xradar/en/stable/>`_,
-`pyart <https://arm-doe.github.io/pyart/>`_ and
-`wradlib <https://docs.wradlib.org/en/latest/>`_ software.
-
-
-If you are not familiar with `xarray <http://xarray.pydata.org/en/stable/>`_,
-`numpy <https://numpy.org/doc/stable/index.html>`_,
-`pandas <https://pandas.pydata.org/>`_, and
-`dask <https://docs.dask.org/en/stable/array.html>`_,
-it is highly suggested to first have a look also at the documentation of these software.
+`xarray <https://docs.xarray.dev/en/stable/>`_ and
+`polars <https://docs.pola.rs/>`_ documentation are the useful companions to
+this one.

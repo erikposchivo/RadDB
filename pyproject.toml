@@ -1,7 +1,7 @@
 # pyproject.toml
 
 [build-system]
-requires = ["setuptools>=61.0.0", "setuptools_scm[toml]>=6.2", "wheel"]
+requires = ["setuptools>=77.0.0", "setuptools_scm[toml]>=6.2", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -15,21 +15,18 @@ authors = [
 license = "MIT"
 license-files = ["LICENSE"]
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
     "Intended Audience :: Education",
     "Natural Language :: English",
     "Operating System :: OS Independent",
-    "Operating System :: Unix",
-    "Operating System :: Microsoft",
-    "Operating System :: MacOS",
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering",
     "Topic :: Scientific/Engineering :: Atmospheric Science",
 ]
@@ -39,14 +36,14 @@ dependencies = [
     "pandas",
     "polars",
     "geopandas",
+    "shapely>=2.0",
+    "pyproj>=3.0",
     "xarray",
     "pyyaml",
     "pyarrow",
-    "dask",
-    "distributed",
-    "fsspec",
-    "s3fs",
     "matplotlib",
+    "netcdf4",
+    "zarr",
 ]
 requires-python = ">=3.11"
 # version="0.0.1"
@@ -62,15 +59,16 @@ exclude = ["raddb.mch*", "raddb.tests*"]
 write_to = "raddb/_version.py"
 
 [project.optional-dependencies]
-viz = ["cartopy>=0.22", "pyproj>=3.0", "shapely>=2.0"]
-io = ["netcdf4", "zarr"]
+viz = ["cartopy>=0.22", "lonboard>=0.10", "geoarrow-pyarrow>=0.2",
+       "ipyleaflet>=0.18", "ipywidgets>=8.0"]
+io = ["pyshp"]  # reading .shp areas of interest
 dev = ["pre-commit", "loghub",
        "black[jupyter]", "blackdoc", "codespell", "ruff",
-       "pytest", "pytest-cov", "pytest-mock", "pytest-check", "pytest-sugar",
-       "pytest-watcher", "deepdiff",
-       "netcdf4", "zarr",
-       "pip-tools", "bumpver", "twine", "wheel", "build", "setuptools>=61.0.0",
-       "sphinx", "sphinx-gallery", "sphinx-book-theme", "nbsphinx", "sphinx_mdinclude"]
+       "pytest", "pytest-cov", "pytest-check", "pytest-sugar",
+       "pytest-watcher",
+       "pip-tools", "twine", "wheel", "build", "setuptools>=77.0.0",
+       "sphinx", "sphinx-gallery", "sphinx-book-theme", "nbsphinx", "sphinx_mdinclude",
+       "sphinxcontrib-youtube"]
 
 [project.urls]
 homepage = "https://github.com/ltelab/raddb"
@@ -78,7 +76,6 @@ repository = "https://github.com/ltelab/raddb"
 source = "https://github.com/ltelab/raddb"
 tracker = "https://github.com/ltelab/raddb/issues"
 documentation = "https://raddb.readthedocs.io"
-changelog = "https://github.com/ltelab/raddb/blob/main/CHANGELOG.md"
 
 [tool.pytest.ini_options]
 minversion = "7"
@@ -94,9 +91,9 @@ testpaths = [
 line-length = 120
 # skip-string-normalization = true
 target-version = [
-    "py39",
-    "py310",
     "py311",
+    "py312",
+    "py313",
 ]
 
 [tool.ruff]
@@ -231,42 +228,5 @@ convention = "numpy"
 "setup.py" = ["D100"]
 "*__init__.py" = ["D104"]
 
-[tool.doc8]
-ignore-path = [
-    "docs/build",
-    "docs/api/generated",
-    "docs/_templates",
-    "docs/tutorials",
-    "docs/examples",
-]
-file-encoding = "utf8"
-max-line-length = 120
-ignore = ["D001"]
-
 [tool.codespell]
 ignore-words-list = "ges,nd"
-
-[tool.bumpver]
-current_version = "2025.1002-alpha"
-version_pattern = "YYYY.BUILD[-TAG]"
-commit_message = "bump version {old_version} -> {new_version}"
-tag_message = "{new_version}"
-tag_scope = "default"
-pre_commit_hook = ""
-post_commit_hook = ""
-commit = true
-tag = true
-push = true
-
-[tool.bumpver.file_patterns]
-"pyproject.toml" = [
-    'current_version = "{version}"',
-]
-"setup.py" = [
-    "{version}",
-    "{pep440_version}",
-]
-"README.md" = [
-    "{version}",
-    "{pep440_version}",
-]

@@ -1,7 +1,4 @@
-"""
-raddb/viz/interactive.py
-------------------------
-Interactive Area-of-Interest selection on an ipyleaflet map (Jupyter).
+"""Interactive Area-of-Interest selection on an ipyleaflet map (Jupyter).
 
 Draw a shape on the map and it is dispatched to the matching RadDB method:
 
@@ -18,15 +15,18 @@ The map is WGS-84 (lon/lat), so the drawn coordinates are passed with ``crs=4326
 This is an **optional** UI layer — it needs ``ipyleaflet`` + ``ipywidgets`` and a
 Jupyter frontend.  The hand-typed / shapefile crop methods are unaffected.
 """
+
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
+import numpy as np
 
 # ============================================================================
 # GeoJSON feature -> crop dispatch  (pure, unit-testable — no widgets)
 # ============================================================================
+
 
 def _is_axis_aligned_box(ring: list) -> bool:
     """True if a polygon ring is an axis-aligned rectangle (a drawn 'rectangle')."""
@@ -83,16 +83,15 @@ def _crop_from_feature(db, feature, distance_m: float = 15_000.0):
 
 def _feature_collection(feature) -> dict:
     """Wrap a drawn feature as a GeoJSON FeatureCollection (WGS-84) for saving."""
-    if feature.get("type") == "Feature":
-        feat = feature
-    else:  # bare geometry
-        feat = {"type": "Feature", "properties": {}, "geometry": feature}
-    return {"type": "FeatureCollection", "features": [feat]}
+    if feature.get("type") != "Feature":  # bare geometry
+        feature = {"type": "Feature", "properties": {}, "geometry": feature}
+    return {"type": "FeatureCollection", "features": [feature]}
 
 
 # ============================================================================
 # The ipyleaflet widget
 # ============================================================================
+
 
 class AOISelector:
     """Interactive map to draw an AOI and crop a DataFrame with it.
@@ -117,15 +116,13 @@ class AOISelector:
         Default distance (metres) for the marker (point) crop.
     """
 
-    def __init__(self, db, radars=None, center=None, zoom=8,
-                 point_radius_m=15_000.0):
+    def __init__(self, db, radars=None, center=None, zoom=8, point_radius_m=15_000.0):
         try:
             import ipywidgets as W
-            from ipyleaflet import Map, DrawControl, Marker, AwesomeIcon
+            from ipyleaflet import AwesomeIcon, DrawControl, Map, Marker
         except ImportError as exc:  # pragma: no cover - optional dependency
             raise ImportError(
-                "interactive_crop needs ipyleaflet + ipywidgets. "
-                "Install with: pip install ipyleaflet ipywidgets"
+                "interactive_crop needs ipyleaflet + ipywidgets. " "Install with: pip install ipyleaflet ipywidgets",
             ) from exc
 
         self.db = db
@@ -137,34 +134,42 @@ class AOISelector:
         sites = self._radar_sites(radars)
         if center is None:
             center = (
-                (sum(s[0] for s in sites.values()) / len(sites),
-                 sum(s[1] for s in sites.values()) / len(sites))
-                if sites else (46.82, 8.23)
+                (sum(s[0] for s in sites.values()) / len(sites), sum(s[1] for s in sites.values()) / len(sites))
+                if sites
+                else (46.82, 8.23)
             )
 
         self.map = Map(center=center, zoom=zoom, scroll_wheel_zoom=True)
         for r, (lat, lon) in sites.items():
-            self.map.add(Marker(location=(lat, lon), title=f"radar {r}", draggable=False,
-                                icon=AwesomeIcon(name="broadcast-tower", marker_color="red")))
+            self.map.add(
+                Marker(
+                    location=(lat, lon),
+                    title=f"radar {r}",
+                    draggable=False,
+                    icon=AwesomeIcon(name="broadcast-tower", marker_color="red"),
+                ),
+            )
 
         self.draw = DrawControl(
             rectangle={"shapeOptions": {"color": "#e31a1c", "weight": 2, "fillOpacity": 0.05}},
             polygon={"shapeOptions": {"color": "#e31a1c", "weight": 2, "fillOpacity": 0.05}},
             polyline={"shapeOptions": {"color": "#e31a1c", "weight": 3}},
             marker={"shapeOptions": {}},
-            circle={}, circlemarker={},
+            circle={},
+            circlemarker={},
         )
         self.draw.on_draw(self._on_draw)
         self.map.add(self.draw)
 
         # --- controls ---
-        self.radius = W.FloatText(value=float(point_radius_m), description="point r [m]",
-                                  style={"description_width": "initial"},
-                                  layout=W.Layout(width="180px"))
-        self.apply_btn = W.Button(description="Apply crop", button_style="primary",
-                                  icon="scissors")
-        self.save_path = W.Text(value="aoi.geojson", description="save as",
-                                layout=W.Layout(width="240px"))
+        self.radius = W.FloatText(
+            value=float(point_radius_m),
+            description="if marker → radius [m]",
+            style={"description_width": "initial"},
+            layout=W.Layout(width="320px"),
+        )
+        self.apply_btn = W.Button(description="Apply crop", button_style="primary", icon="scissors")
+        self.save_path = W.Text(value="aoi.geojson", description="save as", layout=W.Layout(width="240px"))
         self.save_btn = W.Button(description="Save GeoJSON", icon="save")
         self.out = W.Output()
         self.apply_btn.on_click(self._apply)
@@ -173,15 +178,17 @@ class AOISelector:
         instructions = W.HTML(
             "<b>Draw an AOI</b> with the toolbar (top-left): "
             "▭ rectangle → <code>crop_by_bbox</code>, ⬠ polygon → <code>crop_by_polygone</code>, "
-            "📍 marker → <code>crop_around_point</code> (uses <i>point r</i>), "
-            "／ line → <code>extract_cross_section</code>. Then <b>Apply crop</b>."
+            "📍 marker → <code>crop_around_point</code> (uses the radius box below), "
+            "/ line → <code>extract_cross_section</code>. Then <b>Apply crop</b>.",
         )
-        self._widget = W.VBox([
-            instructions,
-            self.map,
-            W.HBox([self.radius, self.apply_btn, self.save_path, self.save_btn]),
-            self.out,
-        ])
+        self._widget = W.VBox(
+            [
+                instructions,
+                self.map,
+                W.HBox([self.radius, self.apply_btn, self.save_path, self.save_btn]),
+                self.out,
+            ],
+        )
 
     # -- radar site coords (lat, lon) --
     def _radar_sites(self, radars):
@@ -190,12 +197,12 @@ class AOISelector:
             try:
                 info = self.db.get_radar_info(r)
                 sites[r] = (float(info["latitude"]), float(info["longitude"]))
-            except Exception:  # noqa: BLE001 - a missing radar shouldn't break the map
+            except Exception:  # - a missing radar shouldn't break the map
                 continue
         return sites
 
     # -- draw callback: keep the last drawn feature --
-    def _on_draw(self, target, action, geo_json):
+    def _on_draw(self, _target, action, geo_json):
         if action in ("created", "edited"):
             self.feature = geo_json
 
@@ -207,17 +214,26 @@ class AOISelector:
                 return
             try:
                 self.kind, self.result = _crop_from_feature(
-                    self.db, self.feature, distance_m=self.radius.value,
+                    self.db,
+                    self.feature,
+                    distance_m=self.radius.value,
                 )
-            except Exception as exc:  # noqa: BLE001 - surface errors in the widget
+            except Exception as exc:  # - surface errors in the widget
                 print(f"crop failed: {exc}")
                 return
             r = self.result
             try:
                 radars = r.radars() if len(r) else []
-            except Exception:  # noqa: BLE001
+            except Exception:
                 radars = []
-            sweeps = r.data["sweep"].n_unique() if "sweep" in r.columns() else "?"
+            # `sweep` is a LUT column, never stored per gate, so reading it off
+            # r.columns() always missed and printed "?".  It is decoded from the
+            # gate_id instead, which every row carries.
+            sweeps = 0
+            if len(r):
+                from raddb.lut import decode_gate_ids
+
+                sweeps = int(np.unique(decode_gate_ids(r.data["gate_id"].to_numpy())[0]).size)
             print(f"{self.kind} -> {len(r):,} gates | radars {radars} | {sweeps} sweeps")
             print("result is available as  <selector>.result  (a cropped RadDB).")
 
@@ -231,10 +247,13 @@ class AOISelector:
             print(f"saved AOI -> {path}  (reload with db.crop_by_polygone('{path}') for polygons)")
 
     def display(self):
+        """Render the widget in the notebook and return ``self``."""
         from IPython.display import display
+
         display(self._widget)
         return self
 
     def _ipython_display_(self):
         from IPython.display import display
+
         display(self._widget)

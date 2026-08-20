@@ -3,6 +3,7 @@
 Importing this module must happen *before* anything imports pyproj (directly
 or through geopandas / cartopy); ``raddb/__init__.py`` imports it first.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -43,7 +44,8 @@ def fix_foreign_proj_data() -> str | None:
         return None
 
     prefix = Path(sys.prefix).resolve()
-    with contextlib.suppress(OSError):
+    # RuntimeError as well as OSError: pathlib re-raises a symlink loop as RuntimeError.
+    with contextlib.suppress(OSError, RuntimeError):
         if Path(current).resolve().is_relative_to(prefix):
             return None  # this environment's own PROJ data — leave it alone
 

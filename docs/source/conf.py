@@ -27,6 +27,21 @@ project = "raddb"
 copyright = "Gionata Ghiggi"
 author = "Gionata Ghiggi"
 
+
+# -- Copy Jupyter Notebook Tutorials -----------------------------------------
+_source_dir = os.path.abspath(os.path.dirname(__file__))
+_root_dir = os.path.dirname(os.path.dirname(_source_dir))
+_tutorials_dir = os.path.join(_source_dir, "tutorials")
+os.makedirs(_tutorials_dir, exist_ok=True)
+for _filename in [
+    "01_archiving.ipynb",
+    "02_opening_and_filtering.ipynb",
+    "03_area_of_interest.ipynb",
+    "04_plots.ipynb",
+    "05_demo_pipeline.ipynb",
+]:
+    shutil.copyfile(os.path.join(_root_dir, "tutorial", _filename), os.path.join(_tutorials_dir, _filename))
+
 # -- General configuration ---------------------------------------------------
 
 # Add any Sphinx extension module names here, as strings. They can be
@@ -36,7 +51,6 @@ extensions = [
     "sphinx.ext.coverage",
     "sphinx.ext.viewcode",
     "sphinx.ext.intersphinx",
-    "sphinx.ext.coverage",
     "sphinx.ext.linkcode",
     # "sphinx_design",
     # "sphinx_gallery.gen_gallery",
@@ -52,20 +66,16 @@ extensions = [
 
 # Set up mapping for other projects' docs
 intersphinx_mapping = {
-    "cartopy": ("https://scitools.org.uk/cartopy/docs/latest/", None),
     "matplotlib": ("https://matplotlib.org/stable/", None),
     "numpy": ("https://numpy.org/doc/stable/", None),
     "pandas": ("https://pandas.pydata.org/docs/", None),
+    "polars": ("https://docs.pola.rs/api/python/stable/", None),
     "pyproj": ("https://pyproj4.github.io/pyproj/stable/", None),
     "python": ("https://docs.python.org/3/", None),
-    "scipy": ("https://docs.scipy.org/doc/scipy/", None),
     "xarray": ("https://docs.xarray.dev/en/stable/", None),
-    "pyvista": ("https://docs.pyvista.org/version/stable/", None),
-    "pyresample": ("https://pyresample.readthedocs.io/en/stable/", None),
     "dask": ("https://docs.dask.org/en/stable/", None),
     "shapely": ("https://shapely.readthedocs.io/en/stable/", None),
     "geopandas": ("https://geopandas.org/en/stable/", None),
-    "xvec": ("https://xvec.readthedocs.io/en/stable/", None),
     "xradar": ("https://docs.openradarscience.org/projects/xradar/en/stable/", None),
     "pyart": ("https://arm-doe.github.io/pyart/", None),
     "fsspec": ("https://filesystem-spec.readthedocs.io/en/stable/", None),
@@ -101,13 +111,13 @@ napoleon_include_init_with_doc = False
 # The name of the Pygments (syntax highlighting) style to use.
 pygments_style = "sphinx"
 
-# Add any paths that contain templates here, relative to this directory.
-templates_path = ["_templates"]
-
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
 # This pattern also affects html_static_path and html_extra_path.
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+
+# Render the notebooks as archived: never execute them at build time.
+nbsphinx_execute = "never"
 
 # # Controlling automatically generating summary tables in the docs
 # autosummary_generate = True
@@ -121,8 +131,9 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 html_theme = "sphinx_book_theme"
 html_title = "RadDB"
 html_theme_options = {
-    "repository_url": "https://github.com/erikposchivo/raddb",
+    "repository_url": "https://github.com/ltelab/raddb",
     "repository_branch": "main",
+    "path_to_docs": "docs/source",
     "use_repository_button": True,
     "use_edit_page_button": True,
     # "use_source_button": True,
@@ -209,6 +220,6 @@ def linkcode_resolve(domain, info):
     fn = os.path.relpath(fn, start=os.path.dirname(raddb.__file__))
 
     if "+" in raddb.__version__:
-        return f"https://github.com/erikposchivo/raddb/blob/main/raddb/{fn}{linespec}"
+        return f"https://github.com/ltelab/raddb/blob/main/raddb/{fn}{linespec}"
     else:
-        return f"https://github.com/erikposchivo/raddb/blob/" f"v{raddb.__version__}/raddb/{fn}{linespec}"
+        return f"https://github.com/ltelab/raddb/blob/" f"v{raddb.__version__}/raddb/{fn}{linespec}"

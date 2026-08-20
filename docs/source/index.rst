@@ -3,24 +3,25 @@ Welcome to RadDB !
 ========================
 
 
-**RadDB** is a Python package designed to make your life easier, whether you aim to download some weather radar data, search for specific files, or jump into scientific analysis.
-Our goal is to empower you to focus more on what you can discover and create with the data, rather than getting bogged down by the process of searching and handling it.
+**RadDB** archives weather radar volumes as compact **Parquet** tables — one row per
+radar gate — and gives you a small fluent interface to load, filter, crop, cut
+cross-sections and plot them.
 
-We're excited to see how you'll use this tool to push the boundaries of what's possible,
-all while making your workflow smoother, enjoyable, and more productive.
-Let's get started and unlock the full potential of weather radar data archive together!
+It is **network-agnostic**: any `xarray.DataTree <https://docs.xarray.dev/en/stable/generated/xarray.DataTree.html>`__
+following the `xradar <https://docs.openradarscience.org/projects/xradar/en/stable/>`__
+coordinate layout can be archived, whether it comes from NEXRAD, ODIM, IRIS or any
+other network.
+
+Each radar is stored once as a static look-up table holding the per-gate geometry, plus
+one Parquet file per volume holding only the variables that change. Gates without echo are
+dropped at archive time, so a whole campaign stays small enough to query like a dataframe —
+no re-reading of the source files, and no fixed grid imposed on the measurements.
 
 
 **Ready to jump in?**
 
 Consider joining the `Open Radar Science Discourse Group <https://openradar.discourse.group/>`__ to say hi or ask questions.
 It's a great place to connect with others and get support.
-
-
-The map here below displays the radars currently accessible through RadDB.
-
-.. image:: /static/raddb_coverage.png
-
 
 
 Documentation
@@ -31,18 +32,19 @@ Documentation
 
    02_installation
    03_quickstart
+   04_tutorials
    06_contributors_guidelines
    07_maintainers_guidelines
    08_authors
 
 
-API Reference
-===============
+Package Reference
+==================
 
 .. toctree::
    :maxdepth: 1
 
-   API <api/modules>
+   Modules <api/modules>
 
 
 Indices and tables
