@@ -813,7 +813,7 @@ def generate_lut_from_datatree(
 
     Parameters
     ----------
-    dt : xr.DataTree
+    dt : xarray.DataTree
         DataTree with ``sweep_N`` groups, each containing ``azimuth``,
         ``range``, and ``elevation`` coordinates.
     radar : str

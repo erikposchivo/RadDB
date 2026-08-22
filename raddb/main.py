@@ -533,7 +533,7 @@ class RadDB:
         ----------
         datatree_dir : str, optional
             Directory of saved DataTree files to archive.
-        datatree : xr.DataTree, list, or dict, optional
+        datatree : xarray.DataTree, list, or dict, optional
             In-memory volume(s) to archive.
         archive_dir, crs : optional
             Override the instance defaults for this call.

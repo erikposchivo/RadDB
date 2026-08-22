@@ -1116,7 +1116,7 @@ def plot_aoi_quicklook(
     aoi_geom : shapely geometry
         AOI footprint in the AOI frame (Polygon for bbox/polygon/point AOIs;
         LineString for a cross-section line).
-    selected : pd.DataFrame, optional
+    selected : pandas.DataFrame, optional
         Selected gates carrying ``x`` / ``y`` in the AOI CRS.  Only scattered when
         ``show_gates=True`` — off by default so the map stays readable.
     radars : list of str, optional
@@ -1352,7 +1352,7 @@ def plot_cross_section(
 
     Parameters
     ----------
-    df_cs : pd.DataFrame
+    df_cs : pandas.DataFrame
         Output of :meth:`RadDB.crop_cross_section` (needs ``cs_polygon`` +
         ``variable`` columns).
     variable : str
@@ -1927,16 +1927,15 @@ def plot_vcs(
 
     Which combinations are accepted:
 
-    =====================  ==========================  =========================
+    =====================  ==========================  =================================
     ``data``               ``line``                    result
-    =====================  ==========================  =========================
+    =====================  ==========================  =================================
     RadDB / frame / gdf    file, points or LineString  section is cut, then drawn
-                           (a bare frame needs archive_dir=)
     RadDB / frame / gdf    omitted, has cs_polygon     drawn directly
     RadDB / frame / gdf    omitted, no cs_polygon      **error** — undefined
     RadDB / frame / gdf    given *and* has cs_polygon  **error** — ambiguous
     ``xr.DataTree``        anything                    **error** — archive first
-    =====================  ==========================  =========================
+    =====================  ==========================  =================================
 
     The third row is the common mistake: an AOI crop (rectangle, polygon, marker)
     selects an *area*, not a line, so its result has no section to draw.

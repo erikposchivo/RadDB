@@ -249,7 +249,7 @@ def filter_dt(
 
     Parameters
     ----------
-    dt : xr.DataTree
+    dt : xarry.DataTree
         Input DataTree with ``sweep_N`` groups.
     feature : str
         Variable name to use as the filter criterion (default ``"DBZH"``).

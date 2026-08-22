@@ -452,7 +452,7 @@ def archive_volume(
 
     Parameters
     ----------
-    dt : xr.DataTree
+    dt : xarry.DataTree
         Processed volume (any radar network).
     radar : str
         Radar identifier, e.g. ``"A"`` or ``"KTLX"``.
@@ -1052,7 +1052,7 @@ def dataframe_to_datatree(
 
     Parameters
     ----------
-    df : pd.DataFrame
+    df : pandas.DataFrame
         Per-gate rows with a ``gate_id`` column (+ measurement columns).
     radar : str
         Radar identifier whose LUT to join against.
@@ -1359,7 +1359,7 @@ def add_feature_to_dt(
 
     Parameters
     ----------
-    dt : xr.DataTree
+    dt : xarray.DataTree
         Input DataTree with ``sweep_N`` groups.
     feature_name : str
         Name of the new variable to add to each sweep Dataset.

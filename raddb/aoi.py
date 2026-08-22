@@ -278,7 +278,7 @@ def _resolve_aoi_centroids(centroids: pl.DataFrame, aoi_geom) -> pl.DataFrame:
 
     Parameters
     ----------
-    centroids : pl.DataFrame
+    centroids : polars.DataFrame
         Output of :func:`_lut_centroids` (needs ``x``, ``y``, ``gate_id``).
     aoi_geom : shapely geometry
         AOI footprint, already in the AOI CRS.
