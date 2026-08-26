@@ -1,12 +1,12 @@
 """Tests for :mod:`raddb.viz.interactive` — the ipyleaflet AOI selector.
 
 The module splits into a **pure** dispatch layer (a drawn GeoJSON feature to the matching
-``RadDB`` method) and a widget wrapper.  The dispatch is where the behaviour lives and is
+``RadDB`` method) and a widget wrapper.  The dispatch is where the behavior lives and is
 tested directly with hand-written features; the widget is driven by calling its callbacks
 rather than by simulating clicks, which needs no Jupyter frontend.
 
 The map is WGS-84, so every dispatched call must carry ``crs=4326``.  Reading those
-degrees as archive metres would put the AOI thousands of kilometres away.
+degrees as archive meters would put the AOI thousands of kilometers away.
 """
 
 from __future__ import annotations
@@ -90,14 +90,14 @@ def test_a_marker_dispatches_to_crop_around_point(rdb):
 
 
 def test_a_rectangle_dispatches_to_crop_by_bbox(rdb):
-    """An axis-aligned polygon is recognised as a bbox crop."""
+    """An axis-aligned polygon is recognized as a bbox crop."""
     kind, out = _crop_from_feature(rdb, _feature({"type": "Polygon", "coordinates": [_box(*CH_SITE)]}))
 
     assert kind == "bbox"
     assert len(out) > 0
 
 
-def test_a_rotated_polygon_dispatches_to_crop_by_polygone(rdb):
+def test_a_rotated_polygon_dispatches_to_crop_by_polygon(rdb):
     """Not axis-aligned, so the full polygon path runs instead."""
     ring = [
         [CH_SITE[0], CH_SITE[1] + 0.06],
@@ -177,13 +177,13 @@ def test_feature_collection_wraps_a_bare_geometry():
 
 
 def test_a_saved_collection_reloads_as_an_aoi(tmp_path, rdb):
-    """The round trip the docstring promises: save, then ``crop_by_polygone(path)``."""
+    """The round trip the docstring promises: save, then ``crop_by_polygon(path)``."""
     ring = _box(*CH_SITE)
     fc = _feature_collection(_feature({"type": "Polygon", "coordinates": [ring]}))
     path = tmp_path / "aoi.geojson"
     path.write_text(json.dumps(fc))
 
-    assert len(rdb.crop_by_polygone(str(path))) > 0
+    assert len(rdb.crop_by_polygon(str(path))) > 0
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +201,7 @@ def test_AOISelector(rdb):
 
 
 def test_AOISelector_init(rdb):
-    """The map centres on the radar sites and marks each one."""
+    """The map centers on the radar sites and marks each one."""
     sel = AOISelector(rdb, point_radius_m=8_000)
 
     lat, lon = sel.map.center
@@ -209,14 +209,14 @@ def test_AOISelector_init(rdb):
     assert sel.radius.value == pytest.approx(8_000.0)
 
 
-def test_the_centre_falls_back_to_switzerland_without_sites(rdb):
+def test_the_center_falls_back_to_switzerland_without_sites(rdb):
     """An unknown radar yields no site, so the map still opens somewhere sensible."""
     sel = AOISelector(rdb, radars=["ZZZZ"])
 
     assert tuple(sel.map.center) == (46.82, 8.23)
 
 
-def test_an_explicit_centre_wins(rdb):
+def test_an_explicit_center_wins(rdb):
     """``center=`` overrides the derived one."""
     assert tuple(AOISelector(rdb, center=(35.3, -97.3)).map.center) == (35.3, -97.3)
 
@@ -298,7 +298,7 @@ def test_save_without_a_shape_says_so(rdb, capsys):
 
 
 def test_save_writes_a_reloadable_geojson(tmp_path, rdb):
-    """The saved file is a FeatureCollection that ``crop_by_polygone`` accepts."""
+    """The saved file is a FeatureCollection that ``crop_by_polygon`` accepts."""
     sel = AOISelector(rdb)
     sel.feature = _feature({"type": "Polygon", "coordinates": [_box(*CH_SITE)]})
     sel.save_path.value = str(tmp_path / "aoi.geojson")
@@ -307,7 +307,7 @@ def test_save_writes_a_reloadable_geojson(tmp_path, rdb):
 
     saved = json.loads((tmp_path / "aoi.geojson").read_text())
     assert saved["type"] == "FeatureCollection"
-    assert len(rdb.crop_by_polygone(sel.save_path.value)) > 0
+    assert len(rdb.crop_by_polygon(sel.save_path.value)) > 0
 
 
 def test_AOISelector_display(rdb):

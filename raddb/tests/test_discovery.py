@@ -4,7 +4,7 @@ Both sides of the archive live here: finding DataTree inputs on disk, and findin
 ``*_POL.parquet`` outputs in a time range.  Everything is pure filesystem plus pandas, so
 these tests touch no radar data at all — empty files with the right *names* are enough.
 
-The one behaviour worth stating up front: a ``.zarr`` store is a **directory**, and it is
+The one behavior worth stating up front: a ``.zarr`` store is a **directory**, and it is
 matched as a leaf.  Descending into one would return its internal chunk files as if they
 were volumes.
 """

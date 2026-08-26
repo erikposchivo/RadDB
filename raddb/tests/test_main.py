@@ -72,7 +72,7 @@ def datatree_dir(tmp_path):
 
 
 def _site_xy(db):
-    """The radar site in the archive's own projected metres."""
+    """The radar site in the archive's own projected meters."""
     from raddb.aoi import _reproject_to_aoi
 
     info = db.get_radar_info(RADAR)
@@ -168,7 +168,7 @@ def test_archive_resumes_from_its_checkpoint(tmp_path, datatree_dir):
     assert db.archive(datatree_dir=datatree_dir, radar=RADAR)["n_archived"] == 0
 
 
-def test_archive_honours_a_time_period(tmp_path, datatree_dir):
+def test_archive_honors_a_time_period(tmp_path, datatree_dir):
     """Only volumes whose filename timestamp falls in the window are read."""
     result = RadDB(archive_dir=str(tmp_path / "arch"), crs=SWISS_EPSG).archive(
         datatree_dir=datatree_dir,
@@ -402,7 +402,7 @@ def test_RadDB_export_h_plane_geoparquet(db, tmp_path):
 
 
 def test_export_h_plane_geoparquet_falls_back_to_wgs84(db, tmp_path):
-    """An EPSG the LUT does not carry falls back rather than writing an unlabelled file."""
+    """An EPSG the LUT does not carry falls back rather than writing an unlabeled file."""
     gpd = pytest.importorskip("geopandas")
     out = tmp_path / "h_plane_4326.parquet"
 
@@ -553,7 +553,7 @@ def test_open_selects_columns(db):
 
 
 def test_open_applies_filters(db):
-    """``filters=`` runs at read time, so filtered rows are never materialised."""
+    """``filters=`` runs at read time, so filtered rows are never materialized."""
     rdf = db.open(radars=RADAR, filters={"var": "DBZH", "logic": ">", "threshold": 20})
 
     assert rdf.data["DBZH"].min() > 20
@@ -588,7 +588,7 @@ def test_filter_ands_a_list_of_dicts(rdb):
     assert ((values > 10) & (values < 20)).all()
 
 
-def test_filter_rejects_a_misspelt_key(rdb):
+def test_filter_rejects_a_misspelled_key(rdb):
     """``value`` is not a filter key; ``threshold`` would default to 0 and keep every row."""
     with pytest.raises(KeyError, match="unknown filter key"):
         rdb.filter({"var": "DBZH", "logic": ">", "value": 10})
@@ -699,7 +699,7 @@ def test_sel_on_radars(archive_dir_two_radars):
     assert 0 < len(only_a) < len(both)
 
 
-def test_sel_keeps_the_lut_synchronised(rdb):
+def test_sel_keeps_the_lut_synchronized(rdb):
     """The geometry must shrink with the data, gate for gate."""
     out = rdb.sel(range=slice(2_000, 10_000), DBZH=slice(10, None))
 
@@ -852,9 +852,9 @@ def test_to_geoarrow_wedges_surround_their_own_centroid(rdb, db):
         on="gate_id",
         how="left",
     )
-    centres = shapely.centroid(polygons)
-    dx = (shapely.get_x(centres) - reference["longitude"].to_numpy()) * 111_320 * np.cos(np.radians(46.0))
-    dy = (shapely.get_y(centres) - reference["latitude"].to_numpy()) * 111_320
+    centers = shapely.centroid(polygons)
+    dx = (shapely.get_x(centers) - reference["longitude"].to_numpy()) * 111_320 * np.cos(np.radians(46.0))
+    dy = (shapely.get_y(centers) - reference["latitude"].to_numpy()) * 111_320
 
     assert np.hypot(dx, dy).max() < 20_000 / 24  # one gate length
 
@@ -935,7 +935,7 @@ def test_RadDB_end_time(two_volume_rdb):
 
 
 def test_RadDB_extent(rdb):
-    """``[xmin, xmax, ymin, ymax]`` in the archive's projected metres."""
+    """``[xmin, xmax, ymin, ymax]`` in the archive's projected meters."""
     extent = rdb.extent()
 
     assert len(extent) == 4
@@ -969,7 +969,7 @@ def test_RadDB_geographic_crs(rdb):
 
 
 def test_RadDB_crop_by_bbox(rdb, db):
-    """A bounding box in the archive's own metres selects a strict subset."""
+    """A bounding box in the archive's own meters selects a strict subset."""
     cx, cy = _site_xy(db)
 
     crop = rdb.crop_by_bbox(bounds=(cx - 5000, cy - 5000, cx + 5000, cy + 5000))
@@ -996,18 +996,18 @@ def test_a_crop_matching_nothing_still_converts(rdb):
     assert far.to_pandas(with_geometry=True).empty
 
 
-def test_RadDB_crop_by_polygone(rdb, db):
+def test_RadDB_crop_by_polygon(rdb, db):
     """An arbitrary shapely polygon, in the archive's frame."""
     cx, cy = _site_xy(db)
 
-    crop = rdb.crop_by_polygone(shapely.Point(cx, cy).buffer(5_000))
+    crop = rdb.crop_by_polygon(shapely.Point(cx, cy).buffer(5_000))
 
     assert 0 < len(crop) < len(rdb)
     assert crop.columns() == rdb.columns()
 
 
-def test_crop_by_polygone_reads_a_geojson_in_its_own_crs(rdb, tmp_path):
-    """A GeoJSON is lon/lat; reading those degrees as metres lands 2600 km away."""
+def test_crop_by_polygon_reads_a_geojson_in_its_own_crs(rdb, tmp_path):
+    """A GeoJSON is lon/lat; reading those degrees as meters lands 2600 km away."""
     import json
 
     square = {
@@ -1017,11 +1017,11 @@ def test_crop_by_polygone_reads_a_geojson_in_its_own_crs(rdb, tmp_path):
     path = tmp_path / "aoi.geojson"
     path.write_text(json.dumps(square))
 
-    assert len(rdb.crop_by_polygone(str(path))) > 0
+    assert len(rdb.crop_by_polygon(str(path))) > 0
 
 
 def test_RadDB_crop_around_point(rdb, db):
-    """A radius in true metres around a point."""
+    """A radius in true meters around a point."""
     crop = rdb.crop_around_point(_site_xy(db), distance=5_000)
 
     assert 0 < len(crop) < len(rdb)
@@ -1048,7 +1048,7 @@ def test_a_valid_aoi_crs_override_selects_gates(rdb):
     assert len(crop) > 0
 
 
-def test_a_crop_radius_is_true_metres_outside_switzerland(us_archive_dir):
+def test_a_crop_radius_is_true_meters_outside_switzerland(us_archive_dir):
     """The 17% bug end to end: a "10 km" crop used to reach ~8.3 km at a US radar."""
     import pyproj
 

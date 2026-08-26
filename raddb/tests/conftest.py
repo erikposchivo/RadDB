@@ -31,7 +31,7 @@ SITE_LAT = 46.0
 # Longitude of the synthetic radar site, in degrees east.
 SITE_LON = 7.0
 
-# Altitude of the synthetic radar site, in metres above sea level.
+# Altitude of the synthetic radar site, in meters above sea level.
 SITE_ALT = 1000.0
 
 # CH1903+/LV95 — the projected CRS valid at the synthetic site.
@@ -150,7 +150,7 @@ def relocate(dt: xr.DataTree, longitude: float, latitude: float) -> xr.DataTree:
 
 # Rad4Alp antenna drift, measured from real METRANET files. Every ray is reported ~0.0327
 # degrees past its nominal angle, with a ~0.0069 degree spread. ``gate_id`` resolves azimuth to
-# 0.1 degrees, so an unsnapped drifting ray lands in a neighbouring bin and its gates match no
+# 0.1 degrees, so an unsnapped drifting ray lands in a neighboring bin and its gates match no
 # LUT row.
 MCH_BIAS, MCH_SPREAD = 0.0327, 0.0069
 
@@ -225,7 +225,7 @@ US_EPSG = 32614
 def us_archive_dir(tmp_path, make_datatree):
     """A one-radar archive at KTLX, written in UTM 14N.
 
-    The non-Swiss counterpart to :func:`archive_dir`: any AOI or plotting behaviour that
+    The non-Swiss counterpart to :func:`archive_dir`: any AOI or plotting behavior that
     silently assumes LV95 shows up here as a gross error rather than a rounding one.
 
     Returns
@@ -372,7 +372,7 @@ def plot_site(plot_archive_dir):
     Returns
     -------
     tuple of float
-        Projected easting and northing, in metres.
+        Projected easting and northing, in meters.
     """
     import shapely
 

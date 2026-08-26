@@ -33,7 +33,7 @@ def test_all_has_no_duplicates():
 def test_star_import_matches_all():
     """``from raddb import *`` exposes exactly ``__all__`` and nothing more."""
     namespace: dict = {}
-    exec("from raddb import *", namespace)  # - the behaviour under test
+    exec("from raddb import *", namespace)  # - the behavior under test
     namespace.pop("__builtins__", None)
     assert sorted(namespace) == sorted(raddb.__all__)
 

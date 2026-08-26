@@ -1,9 +1,10 @@
 """Core I/O conversion functions for radar data.
 
 This module provides generic conversions between xarray DataTree,
-pandas DataFrame, and Parquet files.  It does **not** depend on pyart
-or radar_api — all MCH-specific I/O lives in the private ``raddb.mch``
-subpackage.
+polars DataFrame, and Parquet files.  pandas survives only at the xarray
+seam, where DataTree reconstruction needs ``reindex(MultiIndex)`` and
+``to_xarray()``.  It does **not** depend on pyart or radar_api — all
+MCH-specific I/O lives in the private ``raddb.mch`` subpackage.
 """
 
 from __future__ import annotations
@@ -296,7 +297,7 @@ def _snap_volume_azimuths(sweeps, azimuths, grids, radar):
 
     The antenna reports where it actually pointed, which drifts by a few
     hundredths of a degree between volumes; ``gate_id`` resolves 0.1°, so an
-    unsnapped ray lands in a neighbouring bin and its gates match no LUT row.
+    unsnapped ray lands in a neighboring bin and its gates match no LUT row.
     See :func:`raddb.lut.nominal_azimuth_grid`.
 
     Returns
@@ -366,7 +367,7 @@ def _build_polar_dataframe(
     ``azimuth_grids`` maps sweep -> canonical azimuths (tenths of a degree); when
     given, every ray is snapped onto it before its ``gate_id`` is built, so the
     volume joins its LUT exactly.  ``None`` — an archive predating the grid —
-    keeps the measured azimuths, i.e. the previous behaviour.
+    keeps the measured azimuths, i.e. the previous behavior.
 
     Returns
     -------
@@ -682,7 +683,7 @@ def _finalize_polar_dtypes(
     df: pl.DataFrame | pd.DataFrame,
     mask: np.ndarray,
 ) -> pl.DataFrame:
-    """Apply dtype optimisations and add the TEMP column.
+    """Apply dtype optimizations and add the TEMP column.
 
     HC columns are shifted +1 to the 1-based parquet scale; all polar
     variables are cast to float32; TEMP is computed from gate geometry + HZT.
@@ -755,7 +756,7 @@ def parquet_to_dataframe(
     Parameters
     ----------
     radar : str
-        Single-letter radar identifier.
+        Radar identifier, e.g. ``"A"`` or ``"KTLX"``.
     base_path : str or Path
         RadDB base directory.
     start_time, end_time : optional
@@ -871,7 +872,7 @@ def scan_polar_parquet(
     Parameters
     ----------
     radar : str
-        Single-letter radar identifier.
+        Radar identifier, e.g. ``"A"`` or ``"KTLX"``.
     base_path : str or Path
         RadDB base directory.
     start_time, end_time : optional
@@ -947,7 +948,7 @@ def parquet_to_datatree(
     Parameters
     ----------
     radar : str
-        Single-letter radar identifier.
+        Radar identifier, e.g. ``"A"`` or ``"KTLX"``.
     base_path : str or Path
         RadDB base directory.
     start_time, end_time : optional
@@ -1042,7 +1043,7 @@ def dataframe_to_datatree(
     fills the full ``(azimuth x range)`` grid, and NaN-fills gates absent from
     ``df`` — so a **cropped/filtered** DataFrame reconstructs to a DataTree that
     carries the correct geometry but only the rows present in ``df``, with
-    **the DataFrame's own values** (honouring crops or added feature columns).
+    **the DataFrame's own values** (honoring crops or added feature columns).
 
     ``df`` must be a **single radar and a single volume** already (see
     :meth:`raddb.RadDB.datatree_from_df` for the radar/volume selection helper).

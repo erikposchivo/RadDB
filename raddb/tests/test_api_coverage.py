@@ -1,6 +1,6 @@
 """The structural gate: every public callable of RadDB has a test named after it.
 
-The suite is organised **structurally**, not thematically: ``raddb/<module>.py`` is tested
+The suite is organized **structurally**, not thematically: ``raddb/<module>.py`` is tested
 by ``raddb/tests/test_<module>.py``, and every public callable in that module has a
 ``test_<callable>`` in that file.  This module checks that mapping mechanically by parsing
 both sides with :mod:`ast`, so a new public function that ships without a test turns CI

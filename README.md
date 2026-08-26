@@ -16,10 +16,10 @@
 | Citation          | [![DOI](XXX)](XXX)          |                                                                                                                                                                                                                                                                                                                                                                                                                                                               [**Documentation**](https://raddb.readthedocs.io/en/latest/)
 
 RadDB archives xarray **DataTree** radar volumes as compact Parquet files and
-gives you a small, fluent interface to load, filter, crop, extract cross-section and
+gives you a small, fluent interface to load, filter, crop, extract cross-sections and
 plot them.  It is **network-agnostic**: any DataTree with the standard
 [xradar](https://docs.openradarscience.org/projects/xradar/) coordinate layout
-(NEXRAD, ODIM, IRIS, …) can be archived and analysed.
+(NEXRAD, ODIM, IRIS, …) can be archived and analyzed.
 
 ## Storage model
 
@@ -98,7 +98,7 @@ rdf.crs(), rdf.geographic_crs()
 ```
 
 `columns=` and `filters=` are pushed down into the scan, so only the rows you
-asked for are ever materialised.
+asked for are ever materialized.
 
 ### Filter and convert
 
@@ -124,8 +124,8 @@ CRS object, or `None`.
 
 ```python
 box = rdf.crop_by_bbox(extent=[636_504, 676_504, 3_891_333, 3_931_333])
-poly = rdf.crop_by_polygone("catchment.geojson")
-disc = rdf.crop_around_point((656_504, 3_911_333), distance=20_000)  # metres
+poly = rdf.crop_by_polygon("catchment.geojson")
+disc = rdf.crop_around_point((656_504, 3_911_333), distance=20_000)  # meters
 # rdf.interactive_crop()   # draw an AOI on a Jupyter map
 ```
 
@@ -141,7 +141,7 @@ cs = rdf.extract_cross_section(p1=(626_504, 3_911_333), p2=(686_504, 3_911_333))
 rdf.plot_ppi(sweep=1, variable="DBZH", save="ppi.png")
 rdf.plot_rhi(azimuth=270, variable="DBZH")
 rdf.plot_cappi(altitude=3000, variable="DBZH")
-cs.plot_cross_section(variable="DBZH", save="xsec.png")
+cs.plot_vcs(variable="DBZH", save="xsec.png")
 ```
 
 Each plot draws into one `Axes` and returns the matplotlib artist, so you compose
@@ -182,7 +182,7 @@ raddb/
 ├── lut.py          # LUT generation / geo projection
 ├── aoi.py          # AOI / crop / cross-section geometry
 ├── discovery.py    # find_datatree_files + filename-time parsing
-├── helper.py       # filters, radar-name normalisation, timers
+├── helper.py       # filters, radar-name normalization, timers
 └── viz/            # plot.py (PPI/RHI/CAPPI/cross-section), interactive.py
 ```
 

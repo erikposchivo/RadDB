@@ -209,7 +209,7 @@ def test_the_round_trip_is_total_over_canonical_names():
 
 
 def test_only_the_ml_aliases_break_the_code_round_trip():
-    """``MLA`` normalises to ``A`` first, so 36 codes can never be emitted."""
+    """``MLA`` normalizes to ``A`` first, so 36 codes can never be emitted."""
     broken = [c for c in range(MAX_RADAR_CODE + 1) if encode_radar_code(decode_radar_code(c)) != c]
 
     assert len(broken) == 36
@@ -283,7 +283,7 @@ def test_generate_gate_id():
 
 
 def test_encode_gate_ids():
-    """The vectorised form, over parallel arrays."""
+    """The vectorized form, over parallel arrays."""
     ids = encode_gate_ids("A", np.array([1, 2]), np.array([45.5, 90.0]), np.array([1000.0, 2000.0]))
 
     assert ids.dtype == np.int64
@@ -406,7 +406,7 @@ def test_the_grid_is_stable_across_volumes():
 
 
 def test_rounding_is_half_up_not_bankers():
-    """A 720-ray grid puts every centre on ``x.x5``.
+    """A 720-ray grid puts every center on ``x.x5``.
 
     numpy's banker's rounding would turn a uniform 0.5 degree grid into an alternating
     0.4/0.6 one.
@@ -474,7 +474,7 @@ def test_holes_survive_antenna_drift():
     """WSR-88D drift plus two dropped rays.
 
     The grid is the same rotation, but not necessarily the same integers: a 720-ray grid
-    is centred on ``x.x5``, exactly the 0.1 degree rounding boundary, so the ~0.002
+    is centered on ``x.x5``, exactly the 0.1 degree rounding boundary, so the ~0.002
     degrees the two ray sets differ by can tip the whole grid one tenth either way.
     That is a tenth against a half-spacing tolerance of 0.25 degrees, so every ray still
     snaps to its own point.
@@ -506,7 +506,7 @@ def test_too_many_holes_is_not_a_rotation():
 
 @pytest.fixture
 def degree_grid():
-    """A 360-point grid centred on 0.5, 1.5 ... 359.5 degrees, in tenths."""
+    """A 360-point grid centered on 0.5, 1.5 ... 359.5 degrees, in tenths."""
     return nominal_azimuth_grid(np.arange(360) + 0.5)
 
 
@@ -525,7 +525,7 @@ def test_the_seam_is_measured_the_short_way(degree_grid, azimuth, expected):
 
 
 def test_a_ray_below_360_can_snap_to_a_grid_point_at_zero():
-    """With rays centred on 0, 1, 2 ..., 359.7 degrees belongs to 0.0, not 359.0."""
+    """With rays centered on 0, 1, 2 ..., 359.7 degrees belongs to 0.0, not 359.0."""
     grid = nominal_azimuth_grid(np.arange(360) * 1.0)
 
     snapped, distance = snap_azimuths_to_grid([359.7, 359.4, 0.3], grid)
@@ -843,7 +843,7 @@ def test_a_wider_beamwidth_makes_a_taller_gate(tmp_path, make_datatree):
 
 
 def test_the_horizontal_face_is_beamwidth_independent(tmp_path, make_datatree):
-    """A PPI draws the beam *centre*, so its footprint cannot depend on beamwidth."""
+    """A PPI draws the beam *center*, so its footprint cannot depend on beamwidth."""
     nodes = {}
     for beamwidth in (0.8, 1.2):
         out = tmp_path / f"h{beamwidth}"
@@ -866,7 +866,7 @@ def test_the_horizontal_face_is_beamwidth_independent(tmp_path, make_datatree):
 
 
 def test_load_plane_nodes(lut_base):
-    """One ``(n_az+1) x (n_rng+1)`` node grid per sweep, at the centre level."""
+    """One ``(n_az+1) x (n_rng+1)`` node grid per sweep, at the center level."""
     nodes = load_plane_nodes(RADAR, lut_base, "h_plane")
 
     assert nodes.height == N_SWEEPS * (N_AZ + 1) * (N_RNG + 1)
@@ -882,7 +882,7 @@ def test_load_plane_nodes_filters_by_sweep(lut_base):
 
 
 def test_the_corner_lattice_has_two_elevation_levels(lut_base):
-    """Bottom and top of the beam; the horizontal face is the centre only."""
+    """Bottom and top of the beam; the horizontal face is the center only."""
     nodes = load_plane_nodes(RADAR, lut_base, "corners")
 
     assert sorted(nodes["el_level"].unique().to_list()) == [-1, 1]
@@ -996,11 +996,11 @@ def test_a_centroid_lies_between_its_elevation_levels(lut_base):
     """1 cm tolerance: on a negative-elevation sweep ``z(r)`` has a turning point."""
     table = gate_corner_table(RADAR, lut_base, kind="corners").sort("gate_id")
     lut = load_radar_lut(RADAR, lut_base).sort("gate_id")
-    z_centre = lut["z"].to_numpy()
+    z_center = lut["z"].to_numpy()
     z_corners = np.stack([table[f"z_rel_{k}"].to_numpy() for k in range(1, 9)], axis=1)
 
-    assert (z_centre >= z_corners.min(axis=1) - 0.01).all()
-    assert (z_centre <= z_corners.max(axis=1) + 0.01).all()
+    assert (z_center >= z_corners.min(axis=1) - 0.01).all()
+    assert (z_center <= z_corners.max(axis=1) + 0.01).all()
 
 
 def test_the_vertical_lattice_relates_the_two_altitude_references(lut_base):
@@ -1041,8 +1041,8 @@ def test_each_geometry_file_stays_inside_its_byte_budget(real_lut_base, kind, bu
     assert per_gate <= budget, f"{kind} is {per_gate:.1f} B/gate, over the {budget} B/gate budget"
 
 
-def test_the_lattice_beats_per_gate_materialisation(real_lut_base):
-    """Neighbouring gates share corner nodes, which is where the saving comes from."""
+def test_the_lattice_beats_per_gate_materialization(real_lut_base):
+    """Neighboring gates share corner nodes, which is where the saving comes from."""
     stored = lut_file_path(RADAR, "corners", real_lut_base).stat().st_size
     naive = gate_corner_table(RADAR, real_lut_base, kind="corners").height * 8 * 3 * 4
 
@@ -1322,7 +1322,7 @@ def test_an_area_of_use_check_alone_would_pass_web_mercator():
 
 
 def test_a_geographic_crs_is_refused():
-    """Degrees are not metres; EPSG:4326 can never measure a crop radius."""
+    """Degrees are not meters; EPSG:4326 can never measure a crop radius."""
     with pytest.raises(ValueError, match="geographic"):
         validate_crs_for_site(4326, *CH_SITE)
 

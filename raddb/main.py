@@ -6,7 +6,7 @@
   :meth:`~RadDB.archive` DataTree volumes and to :meth:`~RadDB.open` archived
   data.  ``archive_dir`` / ``crs`` are the shared defaults for every task.
 * **Data-carrying** — the object returned by :meth:`~RadDB.open` (and by
-  ``filter`` / ``crop_* `` / ``extract_cross_section``).  It holds the loaded
+  ``filter`` / ``crop_*`` / ``extract_cross_section``).  It holds the loaded
   data as a **polars** DataFrame (``rdf.data``) and exposes the query,
   conversion, area-of-interest, cross-section and plotting methods.  These
   return a **new** ``RadDB`` (fluent ``open → filter → crop → plot``).
@@ -260,7 +260,7 @@ def _ccw_polygons(polys: np.ndarray) -> np.ndarray:
     """Force counter-clockwise exterior rings, as GeoParquet/GeoArrow prefer.
 
     The gate corner order is deterministically clockwise (inherited from the
-    reference prototype), so serialised output needs flipping.
+    reference prototype), so serialized output needs flipping.
     """
     if hasattr(shapely, "orient_polygons"):  # shapely >= 2.1
         return shapely.orient_polygons(polys)
@@ -275,7 +275,7 @@ def _resolve_filters(filters) -> list[tuple[str, str, float]]:
     """Normalize a filter dict / list-of-dicts to ``[(var, logic, threshold), ...]``.
 
     Unknown keys are rejected rather than ignored: ``threshold`` defaults to 0,
-    so a misspelt one (``{"var": "DBZH", "logic": ">", "value": 45}``) would
+    so a misspelled one (``{"var": "DBZH", "logic": ">", "value": 45}``) would
     otherwise silently become ``DBZH > 0`` — a filter that keeps everything and
     looks like it ran.
     """
@@ -836,7 +836,7 @@ class RadDB:
 
         ``per_gate=False`` (default) returns the compact **node lattice** as
         stored: ``sweep, az_idx, rng_idx, x, y`` (+ ``x_<epsg>, y_<epsg>`` when
-        the LUT was generated with a projection).  Neighbouring gates share
+        the LUT was generated with a projection).  Neighboring gates share
         nodes, which is why the file is ~4x smaller than per-gate corners.
 
         ``per_gate=True`` expands it to **4 corners per gate**, keyed by
@@ -911,7 +911,7 @@ class RadDB:
         one exception is the first range bin, whose near face collapses onto the
         radar itself.
 
-        Add the site altitude from :meth:`get_radar_info` to ``z_rel`` for metres
+        Add the site altitude from :meth:`get_radar_info` to ``z_rel`` for meters
         above sea level.
         """
         radar = normalize_radar_name(radar)
@@ -935,7 +935,7 @@ class RadDB:
 
         ``epsg`` selects the output CRS: the LUT's projected columns when they
         exist and match, otherwise WGS-84 (4326) derived from the radar-relative
-        ``x``/``y``.  Exterior rings are normalised counter-clockwise, as the
+        ``x``/``y``.  Exterior rings are normalized counter-clockwise, as the
         GeoParquet spec prefers.
         """
         import geopandas as gpd
@@ -953,7 +953,7 @@ class RadDB:
             ycols = [f"y_{epsg}_{k}" for k in range(1, 5)]
             out_crs = f"EPSG:{epsg}"
         else:
-            # Fall back to WGS-84 from the radar-relative metres.
+            # Fall back to WGS-84 from the radar-relative meters.
             info = load_radar_info(radar, base)
             ring = np.stack(
                 [np.stack([tbl[f"x_{k}"].to_numpy(), tbl[f"y_{k}"].to_numpy()], axis=1) for k in range(1, 5)],
@@ -1003,7 +1003,7 @@ class RadDB:
     ) -> None:
         """Print what data is available on disk — which radars, which time periods.
 
-        Answers "what can I analyse?" before :meth:`open` (archive side) or
+        Answers "what can I analyze?" before :meth:`open` (archive side) or
         :meth:`archive` (input side).  Prints only; nothing is loaded into memory.
 
         Parameters
@@ -1179,7 +1179,7 @@ class RadDB:
             if lf is not None:
                 scans.append(lf)
 
-        # Filters are applied to the plan, so polars only materialises the rows
+        # Filters are applied to the plan, so polars only materializes the rows
         # that survive them.
         if scans:
             plan = pl.concat(scans, how="vertical_relaxed")
@@ -1250,7 +1250,7 @@ class RadDB:
         ``azimuth``, ``elevation_angle``, ``x``/``y``/``z`` … .  Column
         projection is pushed into the parquet reader, and the result is
         restricted to the gates currently in ``.data``, so the geometry stays
-        synchronised with the (possibly already filtered) values.
+        synchronized with the (possibly already filtered) values.
         """
         paths = self._lut_paths()
         if not paths:
@@ -1498,7 +1498,7 @@ class RadDB:
             raise ValueError(
                 f"to_geoarrow() would build {len(data):,} features, over the "
                 f"max_rows={max_rows:,} guardrail. Narrow the selection first "
-                "(crop_by_bbox / crop_by_polygone / crop_around_point / filter), "
+                "(crop_by_bbox / crop_by_polygon / crop_around_point / filter), "
                 "or pass max_rows=None to override.",
             )
         if columns is not None:
@@ -1748,7 +1748,7 @@ class RadDB:
         geom = _reproject_to_aoi(shapely.box(xmin, ymin, xmax, ymax), crs, epsg)
         return self._derive(self._crop_to_aoi(self._require_data(), geom, quicklook, epsg))
 
-    def crop_by_polygone(self, polygon, crs: int | str | None = None, quicklook: bool = False, aoi_crs=None) -> RadDB:
+    def crop_by_polygon(self, polygon, crs: int | str | None = None, quicklook: bool = False, aoi_crs=None) -> RadDB:
         """Crop to an arbitrary polygon; returns a new RadDB.
 
         ``polygon`` is a shapely geometry, a GeoDataFrame/GeoSeries, or a
@@ -1766,12 +1766,12 @@ class RadDB:
         quicklook: bool = False,
         aoi_crs=None,
     ) -> RadDB:
-        """Crop to a circle of radius ``distance`` (metres) around ``point``.
+        """Crop to a circle of radius ``distance`` (meters) around ``point``.
 
         Returns a new RadDB.  ``point`` is ``(x, y)`` or a shapely Point in ``crs``.
         """
         if distance <= 0:
-            raise ValueError(f"distance must be positive (metres); got {distance!r}.")
+            raise ValueError(f"distance must be positive (meters); got {distance!r}.")
         if hasattr(point, "geom_type"):
             if point.geom_type != "Point":
                 raise TypeError(f"point geometry must be a Point; got {point.geom_type}.")
@@ -1788,7 +1788,7 @@ class RadDB:
         """The CRS this object's AOI operations run in.
 
         The archive's own, from ``info.yaml`` — never a built-in default, so a
-        crop radius always means metres in a frame that is valid where the radar
+        crop radius always means meters in a frame that is valid where the radar
         actually is.  ``aoi_crs=`` names a different one explicitly and is
         validated against every site before use.
         """
@@ -1854,8 +1854,8 @@ class RadDB:
 
         The line need not pass through a radar.  Each selected gate gets a polygon
         in the (distance-along-line, altitude) plane (``cs_polygon``) plus its
-        centre ``d_center``/``z_center``; visualize with
-        :meth:`plot_cross_section`.  ``p1``/``p2`` are ``(x, y)`` or shapely Points
+        center ``d_center``/``z_center``; visualize with
+        :meth:`plot_vcs`.  ``p1``/``p2`` are ``(x, y)`` or shapely Points
         in ``crs``; distance is measured from ``p1``.
         """
         data = self._require_data()
@@ -1897,7 +1897,7 @@ class RadDB:
         # available nowhere else, so they travel with the rows.
         # The geometry table computes in the projected frame under plain x/y.
         # Publish it as x_<epsg>/y_<epsg>, and give x/y back to the LUT's
-        # radar-relative metres, so both meanings are unambiguous downstream.
+        # radar-relative meters, so both meanings are unambiguous downstream.
         cs_geom = cs_geom.rename(
             columns={
                 "x": f"x_{epsg}",

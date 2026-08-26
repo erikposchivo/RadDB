@@ -66,7 +66,7 @@ def _n_polys(artist) -> int:
 
 
 def _line_across(site, half=12_000):
-    """A diagonal section line through the radar, in the archive's own metres."""
+    """A diagonal section line through the radar, in the archive's own meters."""
     return ((site[0] - half, site[1] - half), (site[0] + half, site[1] + half))
 
 
@@ -378,8 +378,8 @@ def test_vcs_refuses_a_datatree():
         plot_vcs(build_datatree(24, 20), line=((0, 0), (1, 1)))
 
 
-def test_a_geojson_line_honours_its_own_crs(plot_rdb, plot_site, tmp_path):
-    """A GeoJSON is lon/lat by RFC 7946, not archive metres.
+def test_a_geojson_line_honors_its_own_crs(plot_rdb, plot_site, tmp_path):
+    """A GeoJSON is lon/lat by RFC 7946, not archive meters.
 
     Reading those degrees as LV95 would put the section about 2600 km away.
     """
@@ -394,10 +394,10 @@ def test_a_geojson_line_honours_its_own_crs(plot_rdb, plot_site, tmp_path):
     path.write_text(json.dumps({"type": "LineString", "coordinates": [list(a), list(b)]}))
 
     from_file = _n_polys(plot_vcs(plot_rdb, line=str(path)))
-    from_metres = _n_polys(plot_vcs(plot_rdb, line=(p1, p2)))
+    from_meters = _n_polys(plot_vcs(plot_rdb, line=(p1, p2)))
 
     assert from_file > 0
-    assert abs(from_file - from_metres) <= 0.02 * from_metres
+    assert abs(from_file - from_meters) <= 0.02 * from_meters
 
 
 def test_a_shapefile_line_is_read(plot_rdb, plot_site, tmp_path):
@@ -481,7 +481,7 @@ def test_plot_cross_section(plot_rdb, plot_site):
     assert ax.figure is fig
 
 
-def test_plot_cross_section_honours_a_supplied_axes(plot_rdb, plot_site):
+def test_plot_cross_section_honors_a_supplied_axes(plot_rdb, plot_site):
     """It composes like the other four, through ``ax=``."""
     p1, p2 = _line_across(plot_site)
     cs = plot_rdb.extract_cross_section(p1, p2)
@@ -643,20 +643,20 @@ def test_every_accepted_coordinate_frame_plots(plot_rdb, coords):
 
 
 def test_lonlat_axes_are_in_degrees(plot_rdb):
-    """``lonlat`` must not leave metres on the axis."""
+    """``lonlat`` must not leave meters on the axis."""
     artist = plot_ppi(plot_rdb, sweep=1, coords="lonlat")
 
     assert -180 <= artist.axes.get_xlim()[0] <= 180
     assert -90 <= artist.axes.get_ylim()[0] <= 90
 
 
-def test_projected_axes_are_lv95_metres(plot_rdb):
+def test_projected_axes_are_lv95_meters(plot_rdb):
     """``coords=2056`` uses the LUT's own ``x_2056``/``y_2056`` columns."""
     assert 2.4e6 < plot_ppi(plot_rdb, sweep=1, coords=2056).axes.get_xlim()[0] < 2.9e6
 
 
-def test_xy_is_centred_on_the_radar(plot_rdb):
-    """``xy`` is metres from the radar, so the origin is inside the view."""
+def test_xy_is_centered_on_the_radar(plot_rdb):
+    """``xy`` is meters from the radar, so the origin is inside the view."""
     x0, x1 = plot_ppi(plot_rdb, sweep=1, coords="xy").axes.get_xlim()
 
     assert x0 < 0 < x1
@@ -741,7 +741,7 @@ def test_datatree_geometry_matches_the_stored_lattice(plot_dtree, plot_archive_d
         axis=1,
     )
 
-    # The lattices are float32, so ~1e-7 relative — a few centimetres at 200 km range.
+    # The lattices are float32, so ~1e-7 relative — a few centimeters at 200 km range.
     # Anything tighter would be testing parquet, not geometry.
     assert np.abs(np.sort(drawn, axis=0) - np.sort(stored, axis=0)).max() < 5e-2
 
@@ -835,7 +835,7 @@ def test_a_wider_declared_beam_reaches_a_cappi_over_more_bins(plot_dtree):
 
 
 # ---------------------------------------------------------------------------
-# _KmFormatter — data in metres, axes labelled in km
+# _KmFormatter — data in meters, axes labeled in km
 # ---------------------------------------------------------------------------
 
 

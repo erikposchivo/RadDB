@@ -219,7 +219,7 @@ def test_a_footprint_selects_the_whole_vertical_column(archive_dir):
     assert sorted(sub["sweep"].unique().to_list()) == sorted(centroids["sweep"].unique().to_list())
 
 
-def test_a_crop_radius_is_true_metres(us_archive_dir):
+def test_a_crop_radius_is_true_meters(us_archive_dir):
     """The 17% bug, in one assertion: a 10 km crop must select a 10 km radius.
 
     Truth is a WGS-84 geodesic from the radar to every gate; the projected selection
@@ -308,8 +308,8 @@ def test_reproject_to_aoi_is_a_no_op_when_the_frames_match():
         assert _reproject_to_aoi(geom, crs, 2056) is geom
 
 
-def test_reproject_to_aoi_moves_lonlat_into_metres():
-    """Degrees in, metres out — the failure mode is a section 2600 km away."""
+def test_reproject_to_aoi_moves_lonlat_into_meters():
+    """Degrees in, meters out — the failure mode is a section 2600 km away."""
     projected = _reproject_to_aoi(shapely.Point(*CH_SITE), 4326, SWISS_EPSG)
 
     assert 2_400_000 < projected.x < 2_900_000
@@ -317,7 +317,7 @@ def test_reproject_to_aoi_moves_lonlat_into_metres():
 
 
 def test_reproject_to_aoi_round_trips():
-    """There and back lands within a millimetre."""
+    """There and back lands within a millimeter."""
     geom = shapely.Point(*CH_SITE)
 
     there = _reproject_to_aoi(geom, 4326, SWISS_EPSG)
@@ -403,11 +403,11 @@ def _write_geojson(path, geometry, crs_name=None):
 
 
 def test_geojson_defaults_to_wgs84_per_rfc_7946():
-    """A GeoJSON without a ``crs`` member is lon/lat, not archive metres."""
+    """A GeoJSON without a ``crs`` member is lon/lat, not archive meters."""
     assert _geojson_crs({"type": "Polygon"}) == 4326
 
 
-def test_geojson_honours_a_legacy_crs_member():
+def test_geojson_honors_a_legacy_crs_member():
     """The pre-RFC ``crs`` member is still read when present."""
     member = {"crs": {"type": "name", "properties": {"name": "urn:ogc:def:crs:EPSG::2056"}}}
 
@@ -453,11 +453,11 @@ def test_read_geometry_file_reads_a_feature_collection(tmp_path):
 
 
 def test_read_geometry_file_rejects_an_unknown_type(tmp_path):
-    """An unrecognised GeoJSON object is refused rather than half-read."""
+    """An unrecognized GeoJSON object is refused rather than half-read."""
     path = tmp_path / "bad.geojson"
     path.write_text(json.dumps({"type": "Topology"}))
 
-    with pytest.raises(ValueError, match="Unrecognised GeoJSON"):
+    with pytest.raises(ValueError, match="Unrecognized GeoJSON"):
         _read_geometry_file(path)
 
 
@@ -498,7 +498,7 @@ def test_prj_crs_ignores_an_empty_prj(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# _load_aoi_polygon — the crop_by_polygone entry point
+# _load_aoi_polygon — the crop_by_polygon entry point
 # ---------------------------------------------------------------------------
 
 
@@ -510,7 +510,7 @@ def test_load_aoi_polygon_from_a_shapely_geometry():
 
 
 def test_load_aoi_polygon_reprojects_a_geojson_from_its_own_crs(tmp_path):
-    """A GeoJSON is lon/lat; reading those degrees as metres lands 2600 km away."""
+    """A GeoJSON is lon/lat; reading those degrees as meters lands 2600 km away."""
     square = {"type": "Polygon", "coordinates": [[[6.9, 45.9], [7.1, 45.9], [7.1, 46.1], [6.9, 46.1], [6.9, 45.9]]]}
     path = _write_geojson(tmp_path / "aoi.geojson", square)
 
@@ -531,7 +531,7 @@ def test_an_explicit_crs_overrides_the_files_declaration(tmp_path):
 
 
 def test_load_aoi_polygon_from_a_geodataframe():
-    """A GeoDataFrame's own ``.crs`` is honoured and its parts dissolved."""
+    """A GeoDataFrame's own ``.crs`` is honored and its parts dissolved."""
     gpd = pytest.importorskip("geopandas")
 
     gdf = gpd.GeoDataFrame(geometry=[shapely.box(6.9, 45.9, 7.1, 46.1)], crs="EPSG:4326")

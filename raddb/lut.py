@@ -64,7 +64,7 @@ LEGACY_RADAR_TO_IDX: dict[str, int] = {chr(ord("A") + i): i for i in range(26)}
 def encode_radar_code(radar: str) -> int:
     """Base-36 radar code for the leading ``gate_id`` field.
 
-    The name is normalised, right-aligned and zero-padded to
+    The name is normalized, right-aligned and zero-padded to
     :data:`~raddb.helper.RADAR_CODE_LEN` characters, then read as a base-36
     integer over :data:`~raddb.helper.RADAR_ALPHABET`.
 
@@ -363,7 +363,7 @@ def _round_half_up(values) -> np.ndarray:
     """``round`` that always breaks .5 upwards, unlike numpy's banker's rounding.
 
     A nominal grid lands exactly on a half-step whenever the ray spacing is an
-    odd multiple of 0.05° — 720-ray NEXRAD sweeps put every ray centre on
+    odd multiple of 0.05° — 720-ray NEXRAD sweeps put every ray center on
     ``x.x5``.  Banker's rounding would then alternate down/up and turn a uniform
     0.5° grid into an irregular 0.4°/0.6° one.
     """
@@ -381,7 +381,7 @@ def nominal_azimuth_grid(azimuths) -> np.ndarray:
     LUT row — 6% of gates per volume on Rad4Alp, 35% on WSR-88D.
 
     So the grid is derived from the scan strategy rather than from one volume's
-    measurements: the spacing is the **median gap between neighbouring rays**,
+    measurements: the spacing is the **median gap between neighboring rays**,
     and the offset is the circular mean of the measured residuals (circular
     because the offset is only defined modulo one step).  That gives 1.0° for a
     360-ray Rad4Alp sweep and 0.5° for a 720-ray NEXRAD super-resolution sweep,
@@ -428,7 +428,7 @@ def nominal_azimuth_grid(azimuths) -> np.ndarray:
             f"spacing (median gap {spacing:.6f}°).",
         )
 
-    # How many ray slots each gap spans: 1 between neighbours, 2 or more across
+    # How many ray slots each gap spans: 1 between neighbors, 2 or more across
     # a hole.  Summing them counts the slots of the whole rotation, so the grid
     # size is the ray count plus whatever is missing.  The median spacing on its
     # own is too noisy to divide 360 by — antenna jitter alone turns a 360-ray
@@ -469,13 +469,13 @@ def nominal_azimuth_grid(azimuths) -> np.ndarray:
     # The residual is defined only modulo one step, so it is averaged about the
     # first ray's own residual, with the rest wrapped into ±half a step of it.
     # Averaging on the raw period instead would put the mean on the seam exactly
-    # when the rays are centred on half-steps — which is every 720-ray NEXRAD
+    # when the rays are centered on half-steps — which is every 720-ray NEXRAD
     # sweep — and a 1e-16 wobble there moves the whole grid by a tenth of a
     # degree, differently for a volume that dropped a ray than for one that
     # did not.
     anchor = float(resid[0])
-    centred = (resid - anchor + step / 2.0) % step - step / 2.0
-    offset = anchor + float(centred.mean())
+    centered = (resid - anchor + step / 2.0) % step - step / 2.0
+    offset = anchor + float(centered.mean())
 
     grid = (np.arange(n_grid) * step + offset) % 360.0
     az_int = np.sort(_round_half_up(grid * AZIMUTH_SCALE).astype(np.int64) % AZIMUTH_STEPS)
@@ -501,7 +501,7 @@ def nominal_azimuth_grid(azimuths) -> np.ndarray:
 def azimuth_grid_tolerance(grid) -> float:
     """Largest snap distance accepted for *grid*, in tenths of a degree.
 
-    Half the ray spacing: beyond that a ray is closer to its neighbour than to
+    Half the ray spacing: beyond that a ray is closer to its neighbor than to
     itself, so it is not antenna drift but a different scan strategy.
     """
     n = len(grid)
@@ -511,7 +511,7 @@ def azimuth_grid_tolerance(grid) -> float:
 def snap_azimuths_to_grid(azimuths, grid) -> tuple[np.ndarray, np.ndarray]:
     """Match measured azimuths onto a sweep's canonical grid.
 
-    Nearest neighbour **on the circle** — a ray reported at 359.97° belongs to
+    Nearest neighbor **on the circle** — a ray reported at 359.97° belongs to
     the grid point at 0.0°, not to the one at 359.5°.
 
     Parameters
@@ -536,7 +536,7 @@ def snap_azimuths_to_grid(azimuths, grid) -> tuple[np.ndarray, np.ndarray]:
     if g.size == 0:
         raise ValueError("cannot snap to an empty azimuth grid.")
 
-    # Wrap the grid once each way so the nearest neighbour of a ray near 0° or
+    # Wrap the grid once each way so the nearest neighbor of a ray near 0° or
     # 360° is found across the seam.
     ext = np.concatenate([g - AZIMUTH_STEPS, g, g + AZIMUTH_STEPS]).astype(np.float64)
     idx = np.clip(np.searchsorted(ext, az_t), 1, ext.size - 1)
@@ -589,13 +589,13 @@ def encode_gate_ids(
     azimuths: np.ndarray,
     ranges: np.ndarray,
 ) -> np.ndarray:
-    """Vectorised 64-bit gate identifier encoding.
+    """Vectorized 64-bit gate identifier encoding.
 
     Encoding: ``radar_code * 10^12 + sweep * 10^10 + az_int * 10^6 + range_int``
 
     where ``radar_code`` is :func:`encode_radar_code`,
     ``az_int = round(azimuth * 10)`` (1 decimal place precision) and
-    ``range_int = int(range_m)`` (integer metres).  This is the single
+    ``range_int = int(range_m)`` (integer meters).  This is the single
     canonical implementation, used by LUT generation and volume archiving.
 
     Parameters
@@ -1076,7 +1076,7 @@ def _save_lut_outputs(lut_dir, radar, df_lut, radar_info, planes=None):
     polars) or a pandas frame (accepted so external callers keep working).
 
     ``planes`` is the :func:`build_gate_planes` output.  When ``None`` only the
-    LUT parquet and the info YAML are written (legacy two-file behaviour).
+    LUT parquet and the info YAML are written (legacy two-file behavior).
 
     The idempotence gate checks **all** expected files: an archive written before
     the geometry lattices existed still has its LUT parquet and info YAML, so the
@@ -1128,7 +1128,7 @@ def _save_lut_outputs(lut_dir, radar, df_lut, radar_info, planes=None):
 # ============================================================================
 
 #: Elevation levels of a gate, as offsets in units of the half beamwidth.
-#: ``-1`` = bottom of the beam, ``0`` = beam centre, ``+1`` = top.
+#: ``-1`` = bottom of the beam, ``0`` = beam center, ``+1`` = top.
 #: Follows the reference prototype's ``En`` / ``Eo`` / ``Ep`` face naming.
 EL_LEVELS: tuple[int, ...] = (-1, 0, 1)
 
@@ -1155,14 +1155,14 @@ def compute_sweep_corners(
         mesh is computed at three elevation levels
         (``elevation - beamwidth/2``, ``elevation``, ``elevation + beamwidth/2``)
         and returned under the extra ``levels`` key.  Without it only the
-        centre-elevation mesh is produced, which has *no* vertical extent — that
-        is the legacy behaviour and cannot describe a gate's 8 corners.
+        center-elevation mesh is produced, which has *no* vertical extent — that
+        is the legacy behavior and cannot describe a gate's 8 corners.
 
     Returns
     -------
     dict
         Always contains ``x_edges``, ``y_edges``, ``z_edges``, ``lon_edges``,
-        ``lat_edges``, each shape ``(n_az+1, n_range+1)`` — the beam-centre mesh,
+        ``lat_edges``, each shape ``(n_az+1, n_range+1)`` — the beam-center mesh,
         kept for backwards compatibility.
 
         When ``beamwidth_deg`` is given, also contains
@@ -1199,15 +1199,15 @@ def compute_sweep_corners(
             "lat_edges": lat_e.astype(np.float64),
         }
 
-    centre = _mesh(elevations)
+    center = _mesh(elevations)
     if beamwidth_deg is None:
-        return centre
+        return center
 
     half_bw = float(beamwidth_deg) / 2.0
-    # dict(centre) for level 0 so the `levels` key added below cannot make the
+    # dict(center) for level 0 so the `levels` key added below cannot make the
     # structure self-referential.
-    levels = {lvl: dict(centre) if lvl == 0 else _mesh(elevations + lvl * half_bw) for lvl in EL_LEVELS}
-    return {**centre, "levels": levels}
+    levels = {lvl: dict(center) if lvl == 0 else _mesh(elevations + lvl * half_bw) for lvl in EL_LEVELS}
+    return {**center, "levels": levels}
 
 
 # ============================================================================
@@ -1249,9 +1249,9 @@ def build_gate_planes(
     Input is the output of :func:`compute_sweep_corners` called with
     ``beamwidth_deg`` (so each sweep carries a ``levels`` dict).
 
-    The lattices store *nodes*, not per-gate corners: neighbouring gates share
+    The lattices store *nodes*, not per-gate corners: neighboring gates share
     corner nodes, so a lattice is ~4x smaller for the horizontal face and ~8x
-    smaller for the 3-D corners than materialising every gate's corners, and is
+    smaller for the 3-D corners than materializing every gate's corners, and is
     exactly equivalent.  A gate's corners are recovered by indexing
     ``(az_idx + i, rng_idx + j)`` over :data:`GATE_RING_OFFSETS` — see
     :meth:`raddb.RadDB.get_h_plane` / :meth:`raddb.RadDB.get_corners`.
@@ -1261,7 +1261,7 @@ def build_gate_planes(
     dict
         ``{"h_plane": pl.DataFrame, "v_plane": pl.DataFrame, "corners": pl.DataFrame}``
 
-        * ``h_plane`` — beam-centre level only: ``sweep, az_idx, rng_idx, x, y,
+        * ``h_plane`` — beam-center level only: ``sweep, az_idx, rng_idx, x, y,
           lon, lat`` (+ ``x_<epsg>, y_<epsg>``).
         * ``v_plane`` — bottom/top levels in the RHI plane: ``sweep, el_level,
           az_idx, rng_idx, d, z_asl, z_rel``.
@@ -1403,7 +1403,7 @@ def gate_corner_table(
     kind: str = "h_plane",
     sweep: int | None = None,
 ) -> pl.DataFrame:
-    """Materialise per-gate corners from a node lattice, keyed by ``gate_id``.
+    """Materialize per-gate corners from a node lattice, keyed by ``gate_id``.
 
     This is the "hybrid" read side: the archive stores compact node lattices, and
     this expands them to explicit per-gate corners on demand.
@@ -1602,7 +1602,7 @@ def cappi_chords(
     lut_base_path : str or Path
         Archive root (the directory holding ``{radar}/LUT/``).
     altitude : float
-        Slice altitude in metres.
+        Slice altitude in meters.
     height : {"asl", "rel"}
         Whether ``altitude`` is above sea level (default) or above the radar.
 
@@ -1616,7 +1616,7 @@ def cappi_chords(
           the first and last bin of a band are genuinely trimmed.
         * ``z_center`` — the gate's mid-face altitude, in the same reference as
           ``altitude``.  Used to resolve overlapping sweeps by taking the beam
-          whose centre is closest to the slice.
+          whose center is closest to the slice.
         * ``dz_center`` — ``abs(z_center - altitude)``.
 
         Empty when no beam reaches that altitude.
@@ -1626,7 +1626,7 @@ def cappi_chords(
     Beam thickness grows with range (~1.7 km at 100 km for a 1° beam) and far
     exceeds the height gained across one range bin, so a sweep typically
     intersects a **wide contiguous band** of bins rather than a thin ring, and
-    neighbouring sweeps overlap heavily.
+    neighboring sweeps overlap heavily.
     """
     if height not in ("asl", "rel"):
         raise ValueError(f"height must be 'asl' or 'rel'; got {height!r}.")
@@ -1804,7 +1804,7 @@ def compute_corners_from_lut(
             ke=ke,
             beamwidth_deg=beamwidth_deg,
         )
-        # The npz keeps only the beam-centre mesh (its consumers — plot_ppi and
+        # The npz keeps only the beam-center mesh (its consumers — plot_ppi and
         # reconstruct_sweep_dataset — are 2-D). The vertical levels live in the
         # *_corners_LUT.parquet / *_v_plane_LUT.parquet files.
         corners_by_sweep[int(sweep_num)] = {k: v for k, v in full.items() if k != "levels"}
@@ -1866,7 +1866,7 @@ def decode_gate_ids(gate_ids) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     -------
     (sweeps, azimuths, ranges) : np.ndarray
         Sweep number (int64), azimuth in degrees (float64, 1 decimal) and range
-        in metres (float64), one entry per gate_id.
+        in meters (float64), one entry per gate_id.
     """
     ids = np.asarray(gate_ids, dtype=np.int64)
     sweeps = (ids // np.int64(10_000_000_000)) % np.int64(100)
@@ -1963,14 +1963,14 @@ def gate_polygons_geoarrow(
     Parameters
     ----------
     radar : str
-        Single-letter radar identifier.
+        Radar identifier, e.g. ``"A"`` or ``"KTLX"``.
     lut_base_path : str or Path
         RadDB archive base directory.
     gate_ids : array-like of int64
         Gates to build polygons for, in the order they should appear.
     frame : {"geographic", "cartesian"}
         ``"geographic"`` uses ``lon_edges``/``lat_edges`` (EPSG:4326, the frame
-        web maps expect); ``"cartesian"`` uses ``x_edges``/``y_edges`` (metres
+        web maps expect); ``"cartesian"`` uses ``x_edges``/``y_edges`` (meters
         from the radar).
 
     Returns
@@ -2160,7 +2160,7 @@ def add_lut_projection(
     -------
     pl.DataFrame or pd.DataFrame
         Copy of ``lut_df`` (same kind) with two new columns:
-        ``x_{suffix}`` (easting / metres) and ``y_{suffix}`` (northing / metres).
+        ``x_{suffix}`` (easting / meters) and ``y_{suffix}`` (northing / meters).
 
     Raises
     ------

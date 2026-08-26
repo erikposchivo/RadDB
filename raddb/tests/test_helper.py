@@ -1,4 +1,4 @@
-"""Tests for :mod:`raddb.helper` — filters, radar-name normalisation, StageTimer.
+"""Tests for :mod:`raddb.helper` — filters, radar-name normalization, StageTimer.
 
 Two contracts carry most of the weight here.
 
@@ -223,7 +223,7 @@ def test_is_valid_radar_name():
 
 
 def test_normalize_radar_name_is_idempotent():
-    """A canonical name normalises to itself, so archiving twice hits the same path."""
+    """A canonical name normalizes to itself, so archiving twice hits the same path."""
     for name in ("A", "KTLX", "0", "ZZZZ"):
         assert normalize_radar_name(normalize_radar_name(name)) == name
 
@@ -295,7 +295,7 @@ def test_filter_df_resets_the_pandas_index():
 
 
 @pytest.mark.parametrize("logic", ["==", "!=", ">", ">=", "<", "<="])
-def test_filter_df_honours_every_operator(logic):
+def test_filter_df_honors_every_operator(logic):
     """Each operator selects what the plain numpy comparison would."""
     values = np.array([-5.0, 0.0, 5.0])
     out = filter_df(pl.DataFrame({"DBZH": values}), threshold=0.0, logic=logic)

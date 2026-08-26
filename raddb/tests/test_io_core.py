@@ -150,7 +150,7 @@ def test_datatree_to_dataframe_keeps_true_range_values(datatree, make_datatree):
 
     ``to_dataframe`` then indexes that dimension by position and emits the true values
     as a same-named column, which ``reset_index`` refuses to insert.  The flattener
-    rebuilds the index first, so metres survive rather than the positions 0..n-1.
+    rebuilds the index first, so meters survive rather than the positions 0..n-1.
     """
     expected = datatree_to_dataframe(datatree)
     got = datatree_to_dataframe(_drop_range_index(make_datatree()))
@@ -492,7 +492,7 @@ def test_parquet_to_dataframe_selects_columns(archive_dir):
     assert set(df.columns) <= {"gate_id", "DBZH", "volume_time", "radar"}
 
 
-def test_parquet_to_dataframe_honours_the_time_window(archive_dir_two_volumes):
+def test_parquet_to_dataframe_honors_the_time_window(archive_dir_two_volumes):
     """Only volumes inside the window are read."""
     both = parquet_to_dataframe(RADAR, archive_dir_two_volumes, *TIME_WINDOW)
     first = parquet_to_dataframe(RADAR, archive_dir_two_volumes, "2024-08-01 11:59", "2024-08-01 12:01")
@@ -501,7 +501,7 @@ def test_parquet_to_dataframe_honours_the_time_window(archive_dir_two_volumes):
 
 
 def test_scan_polar_parquet(archive_dir):
-    """The lazy entry point, for queries that should not materialise the archive."""
+    """The lazy entry point, for queries that should not materialize the archive."""
     lazy = scan_polar_parquet(RADAR, archive_dir, *TIME_WINDOW)
 
     assert isinstance(lazy, pl.LazyFrame)
@@ -612,7 +612,7 @@ def test_labels_to_dataframe_carries_extra_columns():
 def test_join_labels_with_lut(archive_dir):
     """Labels gain the static geometry their ``gate_id`` points at.
 
-    The join is LUT-left, so every gate keeps a row and unlabelled ones carry a null —
+    The join is LUT-left, so every gate keeps a row and unlabeled ones carry a null —
     which is what lets a partial model output be reconstructed onto the full grid.
     """
     lut_path = lut_file_path(RADAR, "lut", archive_dir)

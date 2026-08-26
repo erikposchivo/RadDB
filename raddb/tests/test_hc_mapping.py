@@ -38,17 +38,17 @@ def test_class_labels_are_unique():
 
 
 def test_hc_colors_is_index_aligned_with_hc_classes():
-    """One colour per class, same order — this is what the plots zip together."""
+    """One color per class, same order — this is what the plots zip together."""
     assert len(HC_COLORS) == len(HC_CLASSES)
-    assert len(set(HC_COLORS)) == N_CLASSES, "a repeated colour makes two classes indistinguishable"
+    assert len(set(HC_COLORS)) == N_CLASSES, "a repeated color makes two classes indistinguishable"
 
 
-def test_hc_colors_are_recognised_by_matplotlib():
+def test_hc_colors_are_recognized_by_matplotlib():
     """Every entry must actually resolve; a typo only shows up at plot time."""
     from matplotlib.colors import to_rgba
 
-    for colour in HC_COLORS:
-        assert len(to_rgba(colour)) == 4
+    for color in HC_COLORS:
+        assert len(to_rgba(color)) == 4
 
 
 def test_hc_color_by_label_matches_the_two_lists():
