@@ -47,7 +47,6 @@ from raddb.viz.plot import (
     plot_aoi_quicklook,
     plot_cappi,
     plot_cross_section,
-    plot_latent_scatter,
     plot_ppi,
     plot_rhi,
     plot_vcs,
@@ -575,60 +574,6 @@ def test_the_quicklook_context_can_be_dropped(plot_archive_dir, plot_site):
     )
 
     assert ax is not None
-
-
-# ---------------------------------------------------------------------------
-# plot_latent_scatter
-# ---------------------------------------------------------------------------
-
-
-# The six panels of the AMT latent-space figure — the layout is fixed at 2 x 3.
-LATENT_VARS = ["DBZH", "ZDR", "KDP", "RHOHV", "PHIDP", "TEMP"]
-
-
-def _latent_frame(n=200):
-    """A synthetic latent space: ``L1``/``L2`` plus one column per panel."""
-    rng = np.random.default_rng(0)
-    data = {"L1": rng.normal(size=n), "L2": rng.normal(size=n)}
-    data.update({v: rng.normal(size=n) for v in LATENT_VARS})
-    return pl.DataFrame(data)
-
-
-def _latent_config():
-    """Six minimal panel descriptors, one per variable."""
-    return [{"var": v, "label": v, "cmap": "viridis", "cbar_kwargs": {}} for v in LATENT_VARS]
-
-
-def test_plot_latent_scatter():
-    """A fixed 2 x 3 grid: six panels, one per polarimetric variable."""
-    fig, axes = plot_latent_scatter(_latent_frame(), _latent_config())
-
-    assert axes.shape == (2, 3)
-    assert fig.get_figwidth() == pytest.approx(6.9)
-    assert all(ax.collections for ax in axes.ravel())
-
-
-def test_plot_latent_scatter_accepts_pandas():
-    """Both frame kinds are coerced at entry, like everything else in the package."""
-    fig, axes = plot_latent_scatter(_latent_frame().to_pandas(), _latent_config())
-
-    assert axes.shape == (2, 3)
-
-
-def test_plot_latent_scatter_requires_exactly_six_panels():
-    """The layout is not derived from the config, so a mismatch is refused."""
-    with pytest.raises(ValueError, match="exactly 6 entries"):
-        plot_latent_scatter(_latent_frame(), _latent_config()[:2])
-
-
-def test_plot_latent_scatter_labels_only_the_outer_axes():
-    """Tick labels live on the bottom row and the first column only."""
-    _fig, axes = plot_latent_scatter(_latent_frame(), _latent_config())
-
-    assert axes[0, 1].get_xlabel() == ""
-    assert axes[1, 1].get_ylabel() == ""
-    assert axes[1, 0].get_xlabel()
-    assert axes[1, 0].get_ylabel()
 
 
 # ---------------------------------------------------------------------------

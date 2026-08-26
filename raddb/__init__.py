@@ -101,7 +101,6 @@ from raddb.main import RadDB
 from raddb.viz.plot import (
     plot_cappi,
     plot_cross_section,
-    plot_latent_scatter,
     plot_ppi,
     plot_rhi,
     plot_vcs,
@@ -182,7 +181,6 @@ __all__ = [
     "plot_cappi",
     "plot_vcs",
     "plot_cross_section",
-    "plot_latent_scatter",
 ]
 
 _root_path = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))

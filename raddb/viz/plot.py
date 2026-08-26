@@ -1,9 +1,7 @@
 """PPI, RHI, CAPPI and vertical-cross-section plots for RadDB.
 
 The four gate-accurate plots are :func:`plot_ppi`, :func:`plot_rhi`,
-:func:`plot_cappi` and :func:`plot_vcs`.  :func:`plot_latent_scatter` also lives
-here but is unrelated to gate geometry: it is a publication-figure helper that
-scatters a latent-space embedding.
+:func:`plot_cappi` and :func:`plot_vcs`.
 
 A radar gate is not a rectangle: it is a curved frustum whose footprint depends
 on range, azimuth, elevation and Earth curvature.  Every plot here draws that
@@ -22,7 +20,6 @@ from __future__ import annotations
 
 import contextlib
 
-import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
@@ -2224,152 +2221,3 @@ def _trim_footprints_to_chord(verts, verts_xy, d_near, d_far):
         ],
         axis=1,
     )
-
-
-# ============================================================================
-# LATENT SPACE SCATTER (AMT publication figure)
-# ============================================================================
-
-
-def plot_latent_scatter(
-    df: pl.DataFrame | pd.DataFrame,
-    config: list[dict],
-    figsize: tuple[float, float] | None = None,
-    fig_height: float = 4.6,
-    **scatter_kwargs,
-):
-    """Publication-ready 2x3 AMT latent-space scatter figure.
-
-    Creates a 2-row x 3-column figure with width=6.9 inches (AMT full-column
-    width). Each subplot shows a scatter of ``df["L1"]`` vs ``df["L2"]``
-    colored by one radar variable. A compact inset colorbar with a white
-    semi-transparent background is placed inside each subplot.
-
-    x-tick labels and x-axis labels are shown only on the bottom row.
-    y-tick labels and y-axis labels are shown only on the first column.
-
-    Parameters
-    ----------
-    df : pl.DataFrame or pd.DataFrame
-        Must contain columns ``"L1"``, ``"L2"``, and the variable column
-        named in each panel's ``"var"`` key.
-    config : list of dict
-        Exactly 6 panel descriptors, one per subplot (row-major: panels
-        0-2 fill row 0, panels 3-5 fill row 1). Each dict must have:
-
-        - ``"var"`` : str — column in ``df`` to use for coloring.
-        - ``"label"`` : str — colorbar label text.
-        - ``"cmap"`` : str or Colormap — colormap passed to ``scatter``.
-        - ``"norm"`` : matplotlib Normalize, optional — normalization.
-        - ``"cbar_kwargs"`` : dict — extra kwargs forwarded to
-          ``fig.colorbar()`` (e.g. ``{"ticks": [...]}``, ``{"extend": "both"}``).
-        - ``"scatter_kwargs"`` : dict, optional — extra kwargs for
-          ``ax.scatter()`` (e.g. ``{"s": 1, "alpha": 0.5}``).
-    figsize : tuple, optional
-        Override figure size. Default ``(6.9, fig_height)``.
-    fig_height : float
-        Figure height in inches. Default ``4.6``.
-    **scatter_kwargs
-        Global fallback kwargs for ``ax.scatter()`` (overridden per-panel
-        by ``config[i]["scatter_kwargs"]``).
-
-    Returns
-    -------
-    fig : matplotlib.figure.Figure
-    axes : ndarray of shape (2, 3)
-
-    Example config
-    --------------
-    config = [
-        {"var": "DBZH",    "label": "DBZH [dBZ]",   "cmap": "turbo",
-         "norm": Normalize(-10, 60), "cbar_kwargs": {}, "scatter_kwargs": {"s": 0.5}},
-        {"var": "ZDR",     "label": "ZDR [dB]",      "cmap": "RdBu_r",
-         "norm": Normalize(-2, 5),  "cbar_kwargs": {}, "scatter_kwargs": {"s": 0.5}},
-        ...
-    ]
-    """
-    if len(config) != 6:
-        raise ValueError(f"config must have exactly 6 entries, got {len(config)}.")
-
-    n_rows, n_cols = 2, 3
-    fw = figsize[0] if figsize is not None else 6.9
-    fh = figsize[1] if figsize is not None else fig_height
-    fig, axes = plt.subplots(
-        n_rows,
-        n_cols,
-        figsize=(fw, fh),
-        gridspec_kw={"hspace": 0, "wspace": 0},
-    )
-
-    # Colorbar inset geometry (in axes-fraction coordinates).
-    cbar_inset_axes = [0.04, 0.87, 0.50, 0.05]
-    cbar_fontsize = 7
-    x_pad = 0.05
-    y_pad = 0.10
-
-    for idx, panel in enumerate(config):
-        row, col = divmod(idx, n_cols)
-        ax = axes[row, col]
-
-        var = panel["var"]
-        cmap = panel.get("cmap", "viridis")
-        norm = panel.get("norm", None)
-        panel_scatter_kw = {**scatter_kwargs, **panel.get("scatter_kwargs", {})}
-
-        m = ax.scatter(
-            df["L1"].to_numpy(),
-            df["L2"].to_numpy(),
-            c=df[var].to_numpy(),
-            cmap=cmap,
-            norm=norm,
-            **panel_scatter_kw,
-        )
-
-        # ---- inset colorbar with white fancy-box background ----
-        cax = ax.inset_axes(cbar_inset_axes)
-        fancybox_zorder = cax.get_zorder() + 1
-        cax.set_zorder(cax.get_zorder() + 2)
-
-        cb = fig.colorbar(
-            m,
-            cax=cax,
-            orientation="horizontal",
-            **panel.get("cbar_kwargs", {}),
-        )
-        cb.set_label(panel["label"], fontsize=cbar_fontsize, labelpad=3.1)
-        cb.ax.xaxis.set_label_position("top")
-        cb.ax.tick_params(labelsize=6, pad=1, length=2)
-        cb.outline.set_linewidth(0.5)
-
-        fancy_box_coords = (cbar_inset_axes[0] - x_pad, cbar_inset_axes[1] - y_pad)
-        fancy_box_width = cbar_inset_axes[2] + 2 * x_pad
-        fancy_box_height = cbar_inset_axes[3] + 2 * y_pad
-        fancy_patch = mpatches.FancyBboxPatch(
-            fancy_box_coords,
-            width=fancy_box_width,
-            height=fancy_box_height,
-            boxstyle="square,pad=0",
-            fc="white",
-            ec="none",
-            lw=0.5,
-            alpha=0.6,
-            transform=ax.transAxes,
-            zorder=fancybox_zorder,
-            clip_on=False,
-        )
-        ax.add_artist(fancy_patch)
-        for spine in ax.spines.values():
-            spine.set_zorder(fancybox_zorder + 2)
-
-        # ---- tick / label visibility ----
-        if row < n_rows - 1:
-            ax.tick_params(labelbottom=False)
-        else:
-            ax.set_xlabel("$L_1$")
-
-        if col > 0:
-            ax.tick_params(labelleft=False)
-        else:
-            ax.set_ylabel("$L_2$")
-
-    return fig, axes
