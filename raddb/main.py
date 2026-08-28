@@ -12,9 +12,8 @@
   return a **new** ``RadDB`` (fluent ``open → filter → crop → plot``).
 
 Note: network-specific constants such as a list of radar identifiers
-(e.g. Swiss radars A, D, L, P, W) belong in the user script or in the
-network-specific pipeline (e.g. the private ``raddb.mch`` subpackage),
-not here.
+(e.g. the FMI sites ``FKUO``, ``FANJ``, ``FKOR``) belong in the user script or
+in the network-specific ingestion package, not here.
 """
 
 from __future__ import annotations
@@ -403,7 +402,7 @@ class RadDB:
     Examples
     --------
     >>> db = RadDB(archive_dir="/data/raddb", crs=2056)
-    >>> db.archive(datatree_dir="/data/MCH_datatree")  # or datatree=dt
+    >>> db.archive(datatree_dir="/data/FMI_datatree")  # or datatree=dt
     >>> rdf = db.open(time_period=("2024-08-26", "2024-08-27"))
     >>> rdf.filter({"var": "DBZH", "logic": ">", "threshold": 20}).crop_by_bbox(extent=rdf.extent()).plot_ppi(
     ...     variable="DBZH", save="ppi.png"
@@ -516,6 +515,7 @@ class RadDB:
         radar: str | list[str] | None = None,
         filter: dict | None = None,
         time_period=None,
+        variables: list[str] | None = None,
     ) -> dict:
         """Archive DataTree volumes to the RadDB Parquet store.
 
@@ -549,6 +549,14 @@ class RadDB:
         time_period : str, datetime or (start, end), optional
             For ``datatree_dir``: keep only files whose filename timestamp falls
             in the period.
+        variables : list of str, optional
+            Which moments to archive.  ``None`` (default) archives every **per-gate**
+            variable each volume carries — anything measured on both the azimuth and
+            the range dimension — so nothing a network records is silently dropped.
+            The per-ray and scalar metadata a sweep also holds (``sweep_mode``,
+            ``prt_mode``, ``nyquist_velocity``, ...) is never archived: it describes
+            the scan, not the weather.  Pass a list to keep an archive lean, e.g.
+            ``variables=["DBZH", "ZDR", "RHOHV"]``.
 
         Returns
         -------
@@ -599,6 +607,7 @@ class RadDB:
                 feat,
                 logic,
                 thr,
+                variables,
             )
         else:
             radars_done, n_ok, n_fail, n_skip = self._archive_from_disk(
@@ -610,6 +619,7 @@ class RadDB:
                 logic,
                 thr,
                 time_period,
+                variables,
             )
 
         print("=" * 70)
@@ -653,7 +663,7 @@ class RadDB:
         except Exception as e:
             print(f"  [{radar}] LUT generation failed: {e}")
 
-    def _archive_in_memory(self, datatree, radar, archive_dir, crs, feat, logic, thr):
+    def _archive_in_memory(self, datatree, radar, archive_dir, crs, feat, logic, thr, variables=None):
         archive_dir = Path(archive_dir)
         # {radar: [DataTree, ...]} -- multi-radar
         if isinstance(datatree, dict) and datatree and all(not isinstance(v, xr.DataTree) for v in datatree.values()):
@@ -668,6 +678,7 @@ class RadDB:
                 filter_threshold=thr,
                 filter_logic=logic,
                 verbose=False,
+                variables=variables,
             )
             # Count outcomes, not attempts: archive_multiple_volumes reports a
             # failed volume as a record with success=False, and calling every
@@ -691,6 +702,7 @@ class RadDB:
                 filter_feature=feat,
                 filter_threshold=thr,
                 filter_logic=logic,
+                variables=variables,
             )
             # A None path means the volume held nothing to archive; counting it
             # as archived is how an empty volume gets reported as stored.
@@ -706,12 +718,13 @@ class RadDB:
             filter_threshold=thr,
             filter_logic=logic,
             verbose=False,
+            variables=variables,
         )
         n_ok = sum(1 for res in results if res.get("success"))
         n_skip = sum(1 for res in results if res.get("skipped"))
         return [r], n_ok, len(results) - n_ok - n_skip, n_skip
 
-    def _archive_from_disk(self, datatree_dir, radar, archive_dir, crs, feat, logic, thr, time_period):
+    def _archive_from_disk(self, datatree_dir, radar, archive_dir, crs, feat, logic, thr, time_period, variables=None):
         archive_dir = Path(archive_dir)
         start, end = _normalize_time_period(time_period)
         files = find_datatree_files(
@@ -726,9 +739,9 @@ class RadDB:
             by_radar: dict[str, list] = {normalize_radar_name(radar): list(files)}
         else:
             # Infer the radar per file from its filename (``<RADAR>_...``).
-            # Group on the canonical name so that case and the MeteoSwiss
-            # ``ML*`` spelling collapse together; an unusable prefix is kept
-            # verbatim so the per-radar loop can report and skip it.
+            # Group on the canonical name so that case and the legacy ``ML*``
+            # spelling collapse together; an unusable prefix is kept verbatim
+            # so the per-radar loop can report and skip it.
             by_radar = defaultdict(list)
             for f in files:
                 prefix = _radar_from_filename(f)
@@ -748,6 +761,7 @@ class RadDB:
                 feat,
                 logic,
                 thr,
+                variables,
             )
             radars_done.append(r)
             total_ok += n_ok
@@ -755,7 +769,7 @@ class RadDB:
             total_skip += n_skip
         return radars_done, total_ok, total_fail, total_skip
 
-    def _archive_files_one_radar(self, radar, files, archive_dir, crs, feat, logic, thr):
+    def _archive_files_one_radar(self, radar, files, archive_dir, crs, feat, logic, thr, variables=None):
         """Archive every saved DataTree file for one radar (LUT autogen, resume)."""
         try:
             radar = normalize_radar_name(radar)
@@ -795,6 +809,7 @@ class RadDB:
                     filter_threshold=thr,
                     filter_logic=logic,
                     volume=stem,
+                    variables=variables,
                 )
                 # Checkpoint either way: a volume with nothing to archive is
                 # settled, and re-reading it on resume would only skip again.
@@ -1023,7 +1038,7 @@ class RadDB:
         --------
         >>> db.inventory()  # what is archived
         >>> db.inventory(detailed=True)  # ... day by day
-        >>> db.inventory(datatree_dir="/data/MCH_datatree")  # what could be archived
+        >>> db.inventory(datatree_dir="/data/FMI_datatree")  # what could be archived
         """
         if datatree_dir is not None:
             self._inventory_datatrees(Path(datatree_dir), detailed)

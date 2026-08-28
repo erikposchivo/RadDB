@@ -3,8 +3,9 @@
 This module provides generic conversions between xarray DataTree,
 polars DataFrame, and Parquet files.  pandas survives only at the xarray
 seam, where DataTree reconstruction needs ``reindex(MultiIndex)`` and
-``to_xarray()``.  It does **not** depend on pyart or radar_api — all
-MCH-specific I/O lives in the private ``raddb.mch`` subpackage.
+``to_xarray()``.  It does **not** depend on pyart, and it makes no assumption
+about which network a volume came from — reading a national archive's own raw
+format belongs in a separate package.
 """
 
 from __future__ import annotations
@@ -43,22 +44,6 @@ from raddb.lut import (
 logger = logging.getLogger(__name__)
 
 # --- Constants --- #
-POL_FEATURES = ["DBZH", "ZDR", "RHOHV", "PHIDP"]
-POLAR_COLUMNS = [
-    "gate_id",
-    "time",
-    "DBZH",
-    "DBZH_raw",
-    "ZDR",
-    "ZDR_raw",
-    "KDP",
-    "RHOHV",
-    "PHIDP",
-    "HC_MCH",
-    "HC_PYART",
-    "HZT",
-    "TEMP",
-]
 LUT_COLUMNS = [
     "gate_id",
     "sweep",
@@ -73,11 +58,12 @@ LUT_COLUMNS = [
     "z",
 ]
 
-# float32 gives 7 significant digits — sufficient for all radar variables.
-_POLAR_FLOAT32_COLS: frozenset = frozenset(
-    {"DBZH", "DBZH_raw", "ZDR", "ZDR_raw", "KDP", "RHOHV", "PHIDP", "HZT", "HC_MCH", "HC_PYART", "TEMP"},
-)
-_LAPSE_RATE: float = -0.0065  # °C/m (standard environmental lapse rate, -6.5 °C/km)
+#: Per-gate geometry, which lives in the LUT and is joined back on ``gate_id`` — never
+#: duplicated into a POL parquet.  Used to pick the moments out of a *flattened* volume,
+#: where the per-ray/scalar metadata a DataTree carries has already been broadcast away
+#: and only the column names distinguish geometry from data.  Projected ``x_<epsg>`` /
+#: ``y_<epsg>`` pairs are matched separately by :func:`_projection_columns`.
+_GEOMETRY_COLUMNS: frozenset = frozenset(set(LUT_COLUMNS) - {"gate_id"} | {"sweep", "elevation"})
 
 
 def _projection_columns(df: pl.DataFrame | pd.DataFrame) -> list[str]:
@@ -251,45 +237,46 @@ def _save_polar_parquet(
     return str(pp)
 
 
-def _cast_hc_column(arr, shift: int = 0) -> np.ndarray:
-    """Cast an HC column to float32, optionally shifting values first.
+def _gate_variables(dt: xr.DataTree) -> list[str]:
+    """Names of the **per-gate** data variables of a volume, in first-seen order.
 
-    HC_MCH raw = 0-8; shift=1 → parquet 1-9.
-    HC_PYART after PYART_TO_OPE remapping = 1-8; shift=1 → parquet 2-9.
-    Both land on the same 1-9 scale.  Values outside [1, 9] after shifting → NaN.
+    A moment is measured per gate, so it is carried on both the azimuth and the range
+    dimension.  Everything else a sweep holds — ``sweep_mode``, ``prt_mode``,
+    ``follow_mode``, ``sweep_number``, ``sweep_fixed_angle``, ``nyquist_velocity`` — is
+    per-ray or scalar metadata that describes the scan rather than the weather, and the
+    first three are strings that cannot go in a numeric column at all.
+
+    This is what replaces a hardcoded list of moment names: a network is free to record
+    whatever it measures, and all of it is archived.  Checked against real volumes, it
+    selects 19 of 25 variables on an FMI volume and 6 of 11 on a NEXRAD one, leaving exactly
+    the scalar metadata behind.
     """
-    arr_f = pd.to_numeric(pd.Series(arr), errors="coerce").to_numpy(dtype=float, na_value=np.nan)
-    if shift:
-        arr_f = np.where(np.isnan(arr_f), np.nan, arr_f + shift)
-    arr_f[(arr_f < 1) | (arr_f > 9)] = np.nan
-    return arr_f.astype(np.float32)
+    seen: dict[str, None] = {}
+    for name in list_sweep_names(dt):
+        ds = dt[name].to_dataset()
+        for var, arr in ds.data_vars.items():
+            if {"azimuth", "range"} <= set(arr.dims):
+                seen.setdefault(str(var), None)
+    return list(seen)
 
 
-def _compute_gate_temperature(
+def _resolve_polar_columns(
     df: pl.DataFrame | pd.DataFrame,
-    mask: np.ndarray,
-) -> np.ndarray | None:
-    """Compute temperature (°C) at surviving gates using standard lapse rate.
+    variables: list[str] | None,
+) -> list[str]:
+    """Moment columns to write for a flattened volume, ``gate_id`` and ``time`` aside.
 
-    TEMP = _LAPSE_RATE x (gate_altitude - HZT)
-    gate_altitude = radar site altitude + z-height above radar (4/3 Earth radius model).
-    Returns NaN array if HZT is absent; returns None only if geometry columns
-    (range, elevation, altitude) are missing so no array can be sized.
+    ``variables`` — typically :func:`_gate_variables` of the source tree — is honoured
+    in the order given, minus anything the frame does not carry.  ``None`` falls back to
+    "every column that is not geometry", which is what the frame-in entry points
+    (:func:`labels_to_dataframe`, a hand-built DataFrame) have to use: once a volume is
+    flattened, the per-ray metadata has been broadcast to one value per row and only the
+    column name still says what a column is.
     """
-    geom_required = {"range", "elevation", "altitude"}
-    if not geom_required.issubset(df.columns):
-        return None
-    n = int(mask.sum())
-    r = _col(df, "range")[mask]
-    el_rad = np.deg2rad(_col(df, "elevation")[mask])
-    site_alt = _col(df, "altitude")[mask]
-    ke, Re = 4.0 / 3.0, 6_371_000.0
-    z_gate = np.sqrt(r**2 + (ke * Re) ** 2 + 2 * r * ke * Re * np.sin(el_rad)) - ke * Re
-    gate_alt = site_alt + z_gate
-    if "HZT" not in df.columns:
-        return np.full(n, np.nan, dtype=np.float32)
-    hzt = _col(df, "HZT")[mask]
-    return (_LAPSE_RATE * (gate_alt - hzt)).astype(np.float32)
+    if variables is not None:
+        return [c for c in variables if c in df.columns and c not in ("gate_id", "time")]
+    skip = _GEOMETRY_COLUMNS | {"gate_id", "time"} | set(_projection_columns(df))
+    return [c for c in df.columns if c not in skip]
 
 
 def _snap_volume_azimuths(sweeps, azimuths, grids, radar):
@@ -354,12 +341,15 @@ def _build_polar_dataframe(
     filter_threshold: float,
     filter_logic: str,
     azimuth_grids: dict | None = None,
+    variables: list[str] | None = None,
 ) -> tuple[pl.DataFrame, np.ndarray]:
     """Filter a flattened volume DataFrame and attach gate_ids.
 
     Rows that do not satisfy ``filter_feature [filter_logic] filter_threshold``
-    are dropped (row removal — zeros in surviving gates stay zeros).  HC_PYART
-    is skipped when HZT is absent (it requires HZT to be meaningful).
+    are dropped (row removal — zeros in surviving gates stay zeros).
+
+    ``variables`` names the moment columns to keep; ``None`` keeps every non-geometry
+    column.  See :func:`_resolve_polar_columns`.
 
     This is the single shared core of :func:`datatree_to_parquet` and
     :func:`archive_volume`.
@@ -372,7 +362,7 @@ def _build_polar_dataframe(
     Returns
     -------
     (df_polar, mask) : the polar DataFrame (gate_id + polar columns) and the
-    boolean row mask, needed afterwards for TEMP computation.
+    boolean row mask, which callers reuse to align other per-row arrays.
     """
     fn = resolve_filter_logic(filter_logic)
 
@@ -416,10 +406,9 @@ def _build_polar_dataframe(
         _col(df, "range")[mask],
     )
 
-    hzt_available = "HZT" in df.columns
-    polar_cols = [
-        c for c in POLAR_COLUMNS if c in df.columns and c != "gate_id" and not (c == "HC_PYART" and not hzt_available)
-    ]
+    polar_cols = _resolve_polar_columns(df, variables)
+    if "time" in df.columns:
+        polar_cols = ["time", *polar_cols]
     df_polar = pl.DataFrame(
         {"gate_id": gate_ids, **{c: _col(df, c)[mask] for c in polar_cols}},
     )
@@ -435,6 +424,7 @@ def archive_volume(
     filter_logic: str = ">",
     timer=None,
     volume: str | None = None,
+    variables: list[str] | None = None,
 ) -> str | None:
     """Archive a single DataTree volume to Parquet format.
 
@@ -447,9 +437,6 @@ def archive_volume(
     surviving gates are never converted to NaN.  NaN values in the
     reconstruction come only from gates absent in the parquet (i.e. gates
     that were filtered out or had no data in the original DataTree).
-
-    HZT availability check: if ``"HZT"`` is not present in the DataTree,
-    ``"HC_PYART"`` is also skipped because it requires HZT to be meaningful.
 
     Parameters
     ----------
@@ -469,6 +456,10 @@ def archive_volume(
         Profiling timer.
     volume : str, optional
         Volume label for timer records.
+    variables : list of str, optional
+        Moments to archive.  ``None`` (default) archives every **per-gate** variable the
+        volume carries — see :func:`_gate_variables` — so nothing a network records is
+        silently dropped.  Pass a list to keep an archive lean.
 
     Returns
     -------
@@ -492,11 +483,11 @@ def archive_volume(
             filter_threshold,
             filter_logic,
             azimuth_grids=load_azimuth_grids(radar, base_output_path),
+            variables=_gate_variables(dt) if variables is None else variables,
         )
 
     with timer.time_stage("save_parquet", volume=volume) if timer else _nullctx():
-        df_polar = _finalize_polar_dtypes(df_polar, df, _mask)
-        return _save_polar_parquet(df_polar, radar, base_output_path)
+        return _save_polar_parquet(_finalize_polar_dtypes(df_polar), radar, base_output_path)
 
 
 def archive_multiple_volumes(
@@ -508,6 +499,7 @@ def archive_multiple_volumes(
     filter_logic: str = ">",
     verbose: bool = True,
     timer: StageTimer | None = None,
+    variables: list[str] | None = None,
 ) -> list[dict]:
     """Archive multiple DataTree volumes sequentially.
 
@@ -530,6 +522,9 @@ def archive_multiple_volumes(
         Print progress.
     timer : StageTimer, optional
         Profiling timer.
+    variables : list of str, optional
+        Moments to archive.  ``None`` (default) archives every **per-gate** variable each
+        volume carries — see :func:`_gate_variables`.
 
     Returns
     -------
@@ -573,6 +568,7 @@ def archive_multiple_volumes(
                     filter_logic=filter_logic,
                     timer=timer,
                     volume=label,
+                    variables=variables,
                 )
 
             vol_elapsed = _time.perf_counter() - vol_t0
@@ -627,6 +623,7 @@ def archive_volumes_multi_radar(
     filter_logic: str = ">",
     verbose: bool = True,
     timer: StageTimer | None = None,
+    variables: list[str] | None = None,
 ) -> dict[str, list[dict]]:
     """Archive volumes for multiple radars sequentially.
 
@@ -647,6 +644,9 @@ def archive_volumes_multi_radar(
         Print progress.
     timer : StageTimer, optional
         Profiling timer.
+    variables : list of str, optional
+        Moments to archive.  ``None`` (default) archives every **per-gate** variable each
+        volume carries — see :func:`_gate_variables`.
 
     Returns
     -------
@@ -671,6 +671,7 @@ def archive_volumes_multi_radar(
             filter_logic=filter_logic,
             verbose=verbose,
             timer=timer,
+            variables=variables,
         )
 
         all_results[radar] = results
@@ -678,30 +679,18 @@ def archive_volumes_multi_radar(
     return all_results
 
 
-def _finalize_polar_dtypes(
-    df_polar: pl.DataFrame | pd.DataFrame,
-    df: pl.DataFrame | pd.DataFrame,
-    mask: np.ndarray,
-) -> pl.DataFrame:
-    """Apply dtype optimizations and add the TEMP column.
+def _finalize_polar_dtypes(df_polar: pl.DataFrame | pd.DataFrame) -> pl.DataFrame:
+    """Narrow every float column to float32.
 
-    HC columns are shifted +1 to the 1-based parquet scale; all polar
-    variables are cast to float32; TEMP is computed from gate geometry + HZT.
+    Decided by dtype rather than by column name, so a moment this package has never
+    heard of is stored as compactly as ``DBZH``.  float32 gives 7 significant digits,
+    which is more than any radar moment carries; ``gate_id`` (int64) and ``time``
+    (datetime) are untouched.
     """
     df_polar = _to_polars_frame(df_polar)
-
-    updates = []
-    for col in df_polar.columns:
-        if col in ("HC_MCH", "HC_PYART"):
-            updates.append(pl.Series(col, _cast_hc_column(df_polar[col].to_numpy(), shift=1)))
-        elif col in _POLAR_FLOAT32_COLS:
-            updates.append(pl.col(col).cast(pl.Float32))
-    if updates:
-        df_polar = df_polar.with_columns(updates)
-
-    temp = _compute_gate_temperature(df, mask)
-    if temp is not None:
-        df_polar = df_polar.with_columns(pl.Series("TEMP", temp))
+    floats = [c for c, dtype in zip(df_polar.columns, df_polar.dtypes, strict=False) if dtype == pl.Float64]
+    if floats:
+        df_polar = df_polar.with_columns([pl.col(c).cast(pl.Float32) for c in floats])
     return df_polar
 
 
@@ -713,6 +702,7 @@ def datatree_to_parquet(
     filter_threshold: float = 0.0,
     filter_logic: str = ">",
     max_workers: int = 1,
+    variables: list[str] | None = None,
 ) -> str:
     """Convert a DataTree to a filtered POL parquet file.
 
@@ -720,22 +710,22 @@ def datatree_to_parquet(
     are dropped (row removal) before saving.  Zero values in surviving gates
     are preserved as-is.
 
-    If ``"HZT"`` is absent from the DataTree, ``"HC_PYART"`` is also skipped
-    because it requires HZT to be meaningful.
+    ``variables`` names the moments to write; ``None`` writes every per-gate variable
+    the tree carries (:func:`_gate_variables`).
     """
     resolve_filter_logic(filter_logic)  # fail fast before flattening
 
     df = datatree_to_dataframe(dt, max_workers)
-    df_polar, mask = _build_polar_dataframe(
+    df_polar, _mask = _build_polar_dataframe(
         df,
         radar,
         filter_feature,
         filter_threshold,
         filter_logic,
         azimuth_grids=load_azimuth_grids(radar, base_output_path),
+        variables=_gate_variables(dt) if variables is None else variables,
     )
-    df_polar = _finalize_polar_dtypes(df_polar, df, mask)
-    return _save_polar_parquet(df_polar, radar, base_output_path)
+    return _save_polar_parquet(_finalize_polar_dtypes(df_polar), radar, base_output_path)
 
 
 # ============================================================================

@@ -103,8 +103,8 @@ def decode_radar_code(code: int) -> str:
     ``decode_radar_code(encode_radar_code(name)) == name`` for every canonical
     name (all 1,679,580 of them).  The reverse holds for every code the encoder
     can emit; the 36 codes spelling ``"ML0".."MLZ"`` are the exception, because
-    :func:`~raddb.helper.normalize_radar_name` resolves that MeteoSwiss spelling
-    to its final letter before encoding, so no ``gate_id`` ever carries one.
+    :func:`~raddb.helper.normalize_radar_name` resolves that legacy spelling to
+    its final letter before encoding, so no ``gate_id`` ever carries one.
 
     Returns
     -------
@@ -143,8 +143,9 @@ def decode_radar_code(code: int) -> str:
 RADAR_TO_IDX: dict[str, int] = {chr(ord("A") + i): encode_radar_code(chr(ord("A") + i)) for i in range(26)}
 
 #: Antenna 3 dB beamwidth in degrees, used for the gate's angular extent.
-#: 1.0 deg matches the MeteoSwiss Rad4Alp radars and the reference prototype
-#: (which hardcoded ``beta = deg2rad(0.5)`` as the *half* beamwidth).
+#: 1.0 deg is typical of an operational C-band antenna, and matches the
+#: reference prototype (which hardcoded ``beta = deg2rad(0.5)`` as the *half*
+#: beamwidth).
 DEFAULT_BEAMWIDTH_DEG: float = 1.0
 
 #: The five files that make up a complete LUT directory for one radar.
@@ -378,15 +379,15 @@ def nominal_azimuth_grid(azimuths) -> np.ndarray:
     itself, which drifts by a few hundredths of a degree.  Rounding those
     measured angles to 0.1° therefore puts the same physical ray in different
     ``gate_id`` bins on different volumes, and every gate whose bin moved has no
-    LUT row — 6% of gates per volume on Rad4Alp, 35% on WSR-88D.
+    LUT row — measured at 6% of gates per volume on a 360-ray C-band network
+    and 35% on WSR-88D.
 
     So the grid is derived from the scan strategy rather than from one volume's
     measurements: the spacing is the **median gap between neighboring rays**,
     and the offset is the circular mean of the measured residuals (circular
     because the offset is only defined modulo one step).  That gives 1.0° for a
-    360-ray Rad4Alp sweep and 0.5° for a 720-ray NEXRAD super-resolution sweep,
-    from the same rule — which is why no per-network resolution has to be
-    configured.
+    360-ray sweep and 0.5° for a 720-ray NEXRAD super-resolution sweep, from the
+    same rule — which is why no per-network resolution has to be configured.
 
     The spacing is a **median rather than ``360 / n_rays``** because a real
     sweep drops the odd ray — 718 or 719 of 720 on WSR-88D, 358 of 360 — and
@@ -432,8 +433,8 @@ def nominal_azimuth_grid(azimuths) -> np.ndarray:
     # a hole.  Summing them counts the slots of the whole rotation, so the grid
     # size is the ray count plus whatever is missing.  The median spacing on its
     # own is too noisy to divide 360 by — antenna jitter alone turns a 360-ray
-    # Rad4Alp sweep into 361 — but it is easily good enough to tell a 1-slot gap
-    # from a 2-slot one.
+    # sweep into 361 — but it is easily good enough to tell a 1-slot gap from a
+    # 2-slot one.
     slots_per_gap = _round_half_up(gaps / spacing).astype(np.int64)
     n_grid = int(slots_per_gap.sum())
     if n_grid < n:
@@ -808,9 +809,6 @@ def generate_lut_from_datatree(
     that has the standard xradar coordinate layout (azimuth, range,
     elevation per sweep).
 
-    For MCH-specific LUT generation from raw METRANET files, use
-    ``raddb.mch.generate_mch_lut()`` instead.
-
     Parameters
     ----------
     dt : xarray.DataTree
@@ -834,8 +832,7 @@ def generate_lut_from_datatree(
     beamwidth_deg : float, optional
         Antenna 3 dB beamwidth in degrees, defining the gate's angular extent.
         Read from the DataTree's ``radar_beam_width_h`` / ``beamwidth`` attribute
-        when present, else :data:`DEFAULT_BEAMWIDTH_DEG` (1.0, the MeteoSwiss
-        value).
+        when present, else :data:`DEFAULT_BEAMWIDTH_DEG` (1.0).
 
     Returns
     -------
@@ -879,8 +876,8 @@ def generate_lut_from_datatree(
         # The LUT is the radar's *nominal* scan geometry, not a snapshot of this
         # one volume's antenna readings.  Every later volume snaps onto this same
         # grid, so a gate keeps its gate_id for the life of the archive; keying
-        # off the measured angles instead loses 6% (Rad4Alp) to 35% (WSR-88D) of
-        # the gates of every volume after the first.
+        # off the measured angles instead loses 6% (a 360-ray C-band network) to
+        # 35% (WSR-88D) of the gates of every volume after the first.
         az_grid = nominal_azimuth_grid(measured_az)
         snapped, snap_dist = snap_azimuths_to_grid(measured_az, az_grid)
         if np.unique(snapped).size != measured_az.size:

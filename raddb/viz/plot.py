@@ -26,10 +26,7 @@ import numpy as np
 import pandas as pd
 import polars as pl
 import xarray as xr
-from matplotlib.colors import BoundaryNorm, ListedColormap, TwoSlopeNorm
-
-from raddb.hc_mapping import HC_CLASSES as _HC_CLASSES
-from raddb.hc_mapping import HC_COLORS as _HC_COLORS
+from matplotlib.colors import BoundaryNorm, ListedColormap
 
 # ============================================================================
 # Per-variable plotting defaults
@@ -49,27 +46,41 @@ def _first_available_cmap(*names: str) -> str:
     return names[-1]
 
 
-# Colormaps chosen to match raddb/viz/report_raddb_figures.py (raddb_ppi_ex.png),
-# with two deliberate departures: KDP uses a non-cyclic map (the report's twilight
-# wraps around and is misleading for a signed quantity), and TEMP is a 0-centered
-# diverging (coolwarm's midpoint is gray) via TwoSlopeNorm so 0 °C reads gray.
-
-_PLOT_DEFAULTS: dict[str, dict] = {
+#: Per-variable plot styling, keyed by moment name.  A variable with no entry is drawn
+#: with matplotlib's defaults and labelled with its own name, so plotting never depends
+#: on being listed here.
+#:
+#: **This is the extension point for a network's own moments.**  RadDB ships the ODIM
+#: moments it can style generically; a package that produces others registers them at
+#: import time::
+#:
+#:     from raddb.viz.plot import PLOT_DEFAULTS
+#:
+#:     PLOT_DEFAULTS["HCLASS"] = {
+#:         "discrete": True,
+#:         "classes": ["rain", "wet snow", "graupel", ...],
+#:         "colors": ["royalblue", "yellow", "orangered", ...],
+#:         "label": "Hydrometeor class",
+#:     }
+#:
+#: Recognised keys: ``cmap``, ``vmin``/``vmax``, ``norm`` (a Normalize, or a zero-argument
+#: callable returning a fresh one), ``label`` for the colorbar, and ``discrete`` +
+#: ``classes`` + ``colors`` for a classification, which gets a ListedColormap, a
+#: BoundaryNorm over 1..n and the class names as colorbar ticks.
+#:
+#: KDP deliberately departs from the reference figures: they used a cyclic ``twilight``,
+#: which is misleading for a signed quantity.
+PLOT_DEFAULTS: dict[str, dict] = {
     "DBZH": {"cmap": "HomeyerRainbow", "vmin": 0, "vmax": 60, "label": "Reflectivity [dBz]"},
     "DBZH_raw": {"cmap": "HomeyerRainbow", "vmin": 0, "vmax": 60, "label": "Raw reflectivity [dBz]"},
+    "TH": {"cmap": "HomeyerRainbow", "vmin": 0, "vmax": 60, "label": "Total reflectivity [dBz]"},
     "ZDR": {"cmap": "viridis", "vmin": -2, "vmax": 7, "label": "Differential reflectivity [dB]"},
     "ZDR_raw": {"cmap": "viridis", "vmin": -2, "vmax": 7, "label": "Raw differential reflectivity [dB]"},
     "KDP": {"cmap": "plasma", "vmin": -2, "vmax": 5, "label": "Specific differential phase [°/km]"},
     "RHOHV": {"cmap": "cividis", "vmin": 0.5, "vmax": 1.0, "label": "Co-polar correlation [-]"},
     "PHIDP": {"cmap": "twilight", "vmin": -180, "vmax": 180, "label": "Differential phase [deg]"},
-    "HZT": {"cmap": "viridis", "vmin": 0, "vmax": 5000, "label": "Freezing level height [m]"},
-    "TEMP": {
-        "cmap": "coolwarm",
-        "norm": lambda: TwoSlopeNorm(vmin=-30, vcenter=0, vmax=30),
-        "label": "Temperature [°C]",
-    },
-    "HC_MCH": {"discrete": True, "classes": _HC_CLASSES, "colors": _HC_COLORS, "label": "MCH hydrometeor class"},
-    "HC_PYART": {"discrete": True, "classes": _HC_CLASSES, "colors": _HC_COLORS, "label": "PyART hydrometeor class"},
+    "VRADH": {"cmap": "coolwarm", "label": "Radial velocity [m/s]"},
+    "WRADH": {"cmap": "magma", "label": "Spectrum width [m/s]"},
 }
 
 
@@ -114,7 +125,7 @@ def _resolve_plot_kwargs(variable: str, user_kwargs: dict):
     ``cmap.set_bad("none")`` so NaN (filtered) gates render transparent
     instead of picking up a colormap endpoint.
     """
-    defaults = _PLOT_DEFAULTS.get(variable, {})
+    defaults = PLOT_DEFAULTS.get(variable, {})
     is_discrete = bool(defaults.get("discrete", False))
     class_labels = defaults.get("classes")
     cbar_label = defaults.get("label", variable)

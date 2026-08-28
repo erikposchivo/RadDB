@@ -33,7 +33,6 @@ MODULE_TO_TEST_FILE: dict[str, str] = {
     "raddb/_proj.py": "test__proj.py",
     "raddb/aoi.py": "test_aoi.py",
     "raddb/discovery.py": "test_discovery.py",
-    "raddb/hc_mapping.py": "test_hc_mapping.py",
     "raddb/helper.py": "test_helper.py",
     "raddb/io_core.py": "test_io_core.py",
     "raddb/lut.py": "test_lut.py",

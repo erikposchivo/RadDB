@@ -11,7 +11,6 @@ were volumes.
 
 from __future__ import annotations
 
-import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -19,10 +18,8 @@ import pytest
 
 from raddb.discovery import (
     _find_polar_files_in_range,
-    _group_files_by_volume,
     _parse_datatree_file_time,
     _parse_pol_time,
-    _parse_volume_time,
     find_datatree_files,
 )
 
@@ -232,39 +229,3 @@ def test_find_polar_files_in_range_without_bounds(tmp_path):
 def test_find_polar_files_in_range_on_an_empty_tree(tmp_path):
     """A radar directory with no volumes yields an empty list, not an error."""
     assert _find_polar_files_in_range(tmp_path) == []
-
-
-# ---------------------------------------------------------------------------
-# METRANET filename helpers — shared with the private raddb.mch subpackage
-# ---------------------------------------------------------------------------
-
-
-def test_parse_volume_time_reads_a_metranet_stem():
-    """``XXXYYJJJHHMM...``: 3-char prefix, 2-digit year, day-of-year, hour, minute."""
-    # MLA 24 194 23 30 -> 2024, day 194, 23:30
-    assert _parse_volume_time("MLA2419423300U") == datetime.datetime(2024, 1, 1) + datetime.timedelta(
-        days=193,
-        hours=23,
-        minutes=30,
-    )
-    # HZT 21 240 10 00 -> 2021, day 240, 10:00
-    assert _parse_volume_time("HZT2124010000L") == datetime.datetime(2021, 1, 1) + datetime.timedelta(
-        days=239,
-        hours=10,
-        minutes=0,
-    )
-
-
-def test_parse_volume_time_falls_back_to_the_epoch():
-    """An unparsable stem sorts first rather than raising mid-scan."""
-    assert _parse_volume_time("garbage") == datetime.datetime(1970, 1, 1)
-
-
-def test_group_files_by_volume():
-    """Sweep files sharing a filename stem belong to one volume."""
-    grouped = _group_files_by_volume(
-        ["/a/MLA2419423300U.001", "/b/MLA2419423300U.002", "/a/MLA2419423305U.001"],
-    )
-
-    assert sorted(grouped) == ["MLA2419423300U", "MLA2419423305U"]
-    assert len(grouped["MLA2419423300U"]) == 2

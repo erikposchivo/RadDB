@@ -633,7 +633,7 @@ def _lut_cs_table(
 
     Half-dimensions (prototype convention):
       - ``dR``: half the radial gate spacing, derived per sweep from the LUT's
-        range grid (500 m -> 250 m for MCH radars);
+        range grid (e.g. 500 m -> 250 m at 500 m range sampling);
       - ``dA`` (= dE): half the across-beam extent, ``range * tan(beamwidth/2)``
         — grows with range.
     """
