@@ -69,9 +69,7 @@ def test_proj_is_the_first_raddb_import():
 
 
 def test_the_private_mch_subpackage_is_not_imported():
-    """Network-specific ingestion lives in its own repo: gitignored, excluded from wheels,
-    and absent from this checkout.
-    """
+    """Network-specific ingestion lives in its own repo: gitignored, excluded from wheels, absent from checkout."""
     tree = ast.parse(INIT_PATH.read_text(encoding="utf-8"))
     offenders = [
         node.module

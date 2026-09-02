@@ -507,7 +507,10 @@ def test_timer_accumulates_across_a_batch(tmp_path, make_datatree):
     timer = StageTimer()
     volumes = {f"vol_{i:03d}": make_datatree(vol_time=pd.Timestamp(f"2024-08-01 19:0{i}:00")) for i in range(3)}
     generate_lut_from_datatree(
-        volumes["vol_000"], radar=RADAR, output_base_path=str(tmp_path), projection_epsg=FMI_EPSG
+        volumes["vol_000"],
+        radar=RADAR,
+        output_base_path=str(tmp_path),
+        projection_epsg=FMI_EPSG,
     )
 
     archive_multiple_volumes(volumes, radar=RADAR, base_output_path=str(tmp_path), timer=timer, verbose=False)

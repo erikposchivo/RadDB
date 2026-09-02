@@ -40,7 +40,6 @@ from raddb.aoi import (
 from raddb.main import RadDB
 from raddb.tests.conftest import FI_SITE, FMI_EPSG, RADAR, RADAR_B, US_EPSG, US_SITE, relocate
 
-
 # ---------------------------------------------------------------------------
 # aoi_epsg — the archive's own frame
 # ---------------------------------------------------------------------------

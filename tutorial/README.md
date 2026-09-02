@@ -3,13 +3,13 @@
 Five notebooks that walk through the whole workflow, in order. Each one is
 self-contained.
 
-| #   | notebook                                                | covers                                                                                              |
-| --- | ------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| 1   | [Archiving](01_archiving.ipynb)                         | the storage model, the CRS contract, `archive()`, what lands on disk                                |
-| 2   | [Opening and filtering](02_opening_and_filtering.ipynb) | `open()`, `filter()`, `sel()`, computed columns, converters                                         |
-| 3   | [Areas of interest](03_area_of_interest.ipynb)          | bbox / point / polygon crops, cross-sections, the interactive map                                   |
-| 4   | [Plots](04_plots.ipynb)                                 | PPI, RHI, CAPPI, vertical cross-section                                                             |
-| 5   | [Demo pipeline](05_demo_pipeline.ipynb)                 | the whole pipeline on data it downloads itself — two FMI radars, archived, plotted, cropped         |
+| #   | notebook                                                | covers                                                                                      |
+| --- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| 1   | [Archiving](01_archiving.ipynb)                         | the storage model, the CRS contract, `archive()`, what lands on disk                        |
+| 2   | [Opening and filtering](02_opening_and_filtering.ipynb) | `open()`, `filter()`, `sel()`, computed columns, converters                                 |
+| 3   | [Areas of interest](03_area_of_interest.ipynb)          | bbox / point / polygon crops, cross-sections, the interactive map                           |
+| 4   | [Plots](04_plots.ipynb)                                 | PPI, RHI, CAPPI, vertical cross-section                                                     |
+| 5   | [Demo pipeline](05_demo_pipeline.ipynb)                 | the whole pipeline on data it downloads itself — two FMI radars, archived, plotted, cropped |
 
 ## The data
 
