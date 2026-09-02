@@ -919,7 +919,13 @@ def scan_polar_parquet(
 
     if not scans:
         return None
-    return pl.concat(scans, how="vertical_relaxed")
+    # Diagonal, not vertical: :func:`_gate_variables` keeps a volume's moments in the
+    # order its own file lists them, so two volumes of the same radar read from
+    # different sources (a converted zarr and a raw ODIM, say) archive the same moments
+    # in a different column order, and a plain vertical concat rejects that with
+    # "schema names differ".  A radar can also gain or lose a moment over the life of an
+    # archive.  Diagonal takes the union by name and null-fills what a file lacks.
+    return pl.concat(scans, how="diagonal_relaxed")
 
 
 def parquet_to_datatree(

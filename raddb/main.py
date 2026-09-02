@@ -785,10 +785,14 @@ class RadDB:
         if not lut_path.exists() and files:
             try:
                 dt0 = open_any_datatree(files[0])
-                preopened[files[0]] = dt0
-                self._ensure_lut(radar, dt0, archive_dir, crs)
             except Exception as e:
                 print(f"  [{radar}] LUT generation failed: {e}")
+            else:
+                preopened[files[0]] = dt0
+                # Not wrapped: _ensure_lut re-raises a rejected CRS deliberately, and
+                # catching it here would write POL files against a LUT that was never
+                # generated and still report them as archived.
+                self._ensure_lut(radar, dt0, archive_dir, crs)
 
         n_ok = n_fail = n_skip = 0
         for f in files:
@@ -1197,7 +1201,10 @@ class RadDB:
         # Filters are applied to the plan, so polars only materializes the rows
         # that survive them.
         if scans:
-            plan = pl.concat(scans, how="vertical_relaxed")
+            # Diagonal: two radars in one archive need not record the same moments,
+            # and the same moment set can be listed in a different column order —
+            # see the concat in `io_core._scan_polar_files`.
+            plan = pl.concat(scans, how="diagonal_relaxed")
             for var, logic, thr in _resolve_filters(filters):
                 plan = plan.filter(_filter_expr(var, logic, thr))
             data = plan.collect()
@@ -1281,7 +1288,9 @@ class RadDB:
                 pl.scan_parquet(p).select(keep).join(present.lazy(), on="gate_id", how="semi"),
             )
         return (
-            pl.concat(parts, how="vertical_relaxed")
+            # Diagonal: a radar may lack a LUT column another one has (a projection
+            # only some were given), which a vertical concat rejects outright.
+            pl.concat(parts, how="diagonal_relaxed")
             .collect()
             .unique(
                 subset="gate_id",
@@ -1674,7 +1683,7 @@ class RadDB:
             if epsg and f"x_{epsg}" in lut.columns:
                 keep += [f"x_{epsg}", f"y_{epsg}"]
             parts.append(lut.select(keep))
-        geo = pl.concat(parts, how="vertical").unique(subset="gate_id", maintain_order=True)
+        geo = pl.concat(parts, how="diagonal").unique(subset="gate_id", maintain_order=True)
         present = self._require_data().select("gate_id").unique()
         return geo.join(present, on="gate_id", how="semi")
 

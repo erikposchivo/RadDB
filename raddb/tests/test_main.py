@@ -244,6 +244,29 @@ def test_a_rejected_crs_aborts_and_writes_nothing(tmp_path, make_datatree):
     assert not list(tmp_path.rglob("*POL.parquet"))
 
 
+def test_a_rejected_crs_aborts_a_directory_archive_too(tmp_path, make_datatree):
+    """The file path used to swallow the refusal and write POL files anyway.
+
+    ``_ensure_lut`` re-raises a rejected CRS on purpose, but the ``datatree_dir=``
+    branch caught it under a bare ``except Exception`` and carried on: every volume
+    was written against a LUT that had never been generated, and the run still
+    reported them as archived.
+    """
+    pytest.importorskip("netCDF4")
+    directory = tmp_path / "datatrees"
+    directory.mkdir()
+    for when in VOL_TIMES:
+        relocate(make_datatree(vol_time=when), *US_SITE).to_netcdf(
+            directory / f"{RADAR}_{when:%Y%m%d_%H%M%S}.nc",
+        )
+    out = tmp_path / "arch"
+
+    with pytest.raises(ValueError, match="distorts distance"):
+        RadDB(archive_dir=str(out), crs=FMI_EPSG).archive(datatree_dir=directory, radar=RADAR)
+
+    assert not list(out.rglob("*POL.parquet"))
+
+
 def test_a_valid_crs_archives_a_us_radar(tmp_path, make_datatree):
     """UTM 14N at KTLX, recorded in the info YAML for every later read."""
     us_volume = relocate(make_datatree(), *US_SITE)

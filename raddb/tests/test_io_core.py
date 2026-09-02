@@ -590,6 +590,27 @@ def test_scan_polar_parquet_returns_none_when_nothing_matches(archive_dir):
     assert scan_polar_parquet(RADAR, archive_dir, "1999-01-01", "1999-12-31") is None
 
 
+def test_two_volumes_join_whatever_order_their_moments_are_in(archive_dir_two_volumes):
+    """``_gate_variables`` keeps a volume's own column order, so files disagree.
+
+    The same radar read from two sources — a converted zarr and a raw ODIM, say —
+    archives the same moments in a different order, and a plain vertical concat
+    rejects that outright with ``schema names differ``.  A volume may also carry a
+    moment another one does not: that column reads back null-filled, not as an error.
+    """
+    files = sorted(archive_dir_two_volumes.rglob("*POL.parquet"))
+    assert len(files) == 2
+
+    df = pl.read_parquet(files[1])
+    reordered = df.select([*reversed(df.columns)]).with_columns(pl.lit(1.0).alias("EXTRA"))
+    reordered.write_parquet(files[1])
+
+    out = scan_polar_parquet(RADAR, archive_dir_two_volumes, *TIME_WINDOW).collect()
+
+    assert out.height == pl.read_parquet(files[0]).height + df.height
+    assert out["EXTRA"].null_count() == pl.read_parquet(files[0]).height
+
+
 # ---------------------------------------------------------------------------
 # Reconstruction back to a DataTree
 # ---------------------------------------------------------------------------
